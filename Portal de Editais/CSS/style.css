@@ -848,6 +848,92 @@ a{color:inherit;}
 
 .message.user{background:var(--chat-bg-user); color:#0b1320; align-self:flex-end; border-bottom-right-radius:2px; text-align:right;}
 
+/* =========================================================
+   Chat (compat) — JS novo usa .chat-message + .bubble
+   (mantém também .message pra não quebrar versões antigas)
+   ========================================================= */
+
+/* Container */
+#chatbot-messages{
+  flex:1 1 auto;
+  padding:15px;
+  overflow-y:auto;
+  min-height:0;
+  font-size:0.9rem;
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+  background:#f9fafb;
+}
+
+/* Linha da mensagem */
+.chat-message{
+  display:flex;
+  width:100%;
+}
+
+.chat-message.bot{justify-content:flex-start;}
+.chat-message.user{justify-content:flex-end;}
+
+/* Bolha */
+.chat-message .bubble{
+  padding:8px 12px;
+  border-radius:15px;
+  line-height:1.4;
+  font-size:0.9rem;
+  width:fit-content;
+  max-width:80%;
+  word-wrap:break-word;
+  white-space:pre-wrap;
+}
+
+/* Cores / alinhamento */
+.chat-message.bot .bubble{
+  background:var(--chat-bg-bot);
+  color:#fff;
+  border-bottom-left-radius:2px;
+}
+
+.chat-message.user .bubble{
+  background:var(--chat-bg-user);
+  color:#0b1320;
+  border-bottom-right-radius:2px;
+  text-align:right;
+}
+
+/* Opções retornadas pelo bot (cards clicáveis) */
+.chat-options{
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+  margin-top:10px;
+}
+
+.chat-option-btn{
+  width:100%;
+  text-align:left;
+  padding:10px 12px;
+  border-radius:12px;
+  border:1px solid var(--border);
+  background:#fff;
+  cursor:pointer;
+  font-weight:900;
+  color:var(--night);
+}
+
+.chat-option-btn:hover{
+  border-color:rgba(47,143,131,0.55);
+  background:rgba(47,143,131,0.08);
+}
+
+/* details de fontes (se aparecerem) */
+.chat-sources-details summary{
+  cursor:pointer;
+  font-weight:900;
+  color:var(--muted);
+}
+
+
 .chat-input-area{display:flex; gap:8px; padding:10px; border-top:1px solid var(--border); background:#fff; flex-shrink:0;}
 
 .chat-input-area input,#chat-input{
