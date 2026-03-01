@@ -11,6 +11,43 @@ const API_BASE = 'https://atimus-api-acb4gfgagefcevb5.brazilsouth-01.azurewebsit
 const IS_LOCAL = window.location.hostname.includes('localhost') || window.location.hostname.includes('127.0.0.1');
 const LOGIN_URL = IS_LOCAL ? '../Login/API/index.html' : 'https://login.atimus.agr.br';
 
+function getStoredToken() {
+  try { return localStorage.getItem('cliente_token') || sessionStorage.getItem('cliente_token'); } catch (_) { return null; }
+}
+
+function authHeaders() {
+  const t = getStoredToken();
+  if (!t) return {};
+  return {
+    'Authorization': `Bearer ${t}`,
+    'X-Cliente-Token': t,
+  };
+}
+
+// Se o backend redirecionar com ?token=..., salva e limpa da URL (evita "vazar" em compartilhamentos/referrer)
+function bootstrapAuthFromUrl() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const t = params.get('token');
+    if (!t) return;
+
+    try { localStorage.setItem('cliente_token', t); } catch (_) {
+      try { sessionStorage.setItem('cliente_token', t); } catch (_) {}
+    }
+
+    params.delete('token');
+    const newQuery = params.toString();
+    const newUrl = window.location.pathname + (newQuery ? `?${newQuery}` : '');
+    window.history.replaceState({}, document.title, newUrl);
+  } catch (_) {}
+}
+
+function buildLoginUrlWithNext() {
+  const next = encodeURIComponent(window.location.href);
+  const sep = LOGIN_URL.includes('?') ? '&' : '?';
+  return `${LOGIN_URL}${sep}next=${next}`;
+}
+
 // =========================
 // ESTADO
 // =========================
@@ -24,9 +61,142 @@ let lastFiltered = [];
 // Filtros aplicados (só mudam quando clicar em "Aplicar filtros")
 let applied = {
   estado: [],
-  apoio: [],
+  apoio: [],        // Instrumento
+  area: [],         // Categoria
   instituicao: [],
+  situacao: [],
 };
+
+/** Normaliza texto pra comparação (ignora acento/case/duplo espaço). */
+function normKey(v) {
+  return String(v ?? '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** Opções fixas (como você listou + a do print). */
+const FIXED_FILTERS = {
+  // Estados (UF)
+  estado: [
+    { value: 'AC', label: 'Acre - AC' },
+    { value: 'AL', label: 'Alagoas - AL' },
+    { value: 'AP', label: 'Amapá - AP' },
+    { value: 'AM', label: 'Amazonas - AM' },
+    { value: 'BA', label: 'Bahia - BA' },
+    { value: 'CE', label: 'Ceará - CE' },
+    { value: 'DF', label: 'Distrito Federal - DF' },
+    { value: 'ES', label: 'Espírito Santo - ES' },
+    { value: 'GO', label: 'Goiás - GO' },
+    { value: 'MA', label: 'Maranhão - MA' },
+    { value: 'MT', label: 'Mato Grosso - MT' },
+    { value: 'MS', label: 'Mato Grosso do Sul - MS' },
+    { value: 'MG', label: 'Minas Gerais - MG' },
+    { value: 'PA', label: 'Pará - PA' },
+    { value: 'PB', label: 'Paraíba - PB' },
+    { value: 'PR', label: 'Paraná - PR' },
+    { value: 'PE', label: 'Pernambuco - PE' },
+    { value: 'PI', label: 'Piauí - PI' },
+    { value: 'RJ', label: 'Rio de Janeiro - RJ' },
+    { value: 'RN', label: 'Rio Grande do Norte - RN' },
+    { value: 'RS', label: 'Rio Grande do Sul - RS' },
+    { value: 'RO', label: 'Rondônia - RO' },
+    { value: 'RR', label: 'Roraima - RR' },
+    { value: 'SC', label: 'Santa Catarina - SC' },
+    { value: 'SP', label: 'São Paulo - SP' },
+    { value: 'SE', label: 'Sergipe - SE' },
+    { value: 'TO', label: 'Tocantins - TO' },
+  ],
+
+  // Instrumento (print)
+  apoio: [
+    { value: 'Financiamento não reembolsável', label: 'Financiamento não reembolsável' },
+    { value: 'Bolsa para pesquisadores', label: 'Bolsa para pesquisadores' },
+    { value: 'Prêmios de Inovação', label: 'Prêmios de Inovação' },
+    { value: 'Financiamento reembolsável', label: 'Financiamento reembolsável' },
+    { value: 'Edital privado', label: 'Edital privado' },
+    { value: 'Fundo de Investimento', label: 'Fundo de Investimento' },
+  ],
+
+  // Categoria
+  area: [
+    { value: 'Governo e Politicas Publicas', label: 'Governo & Políticas Públicas' },
+    { value: 'Administracao e Gestao', label: 'Administração & Gestão' },
+    { value: 'Tecnologia e Inovacao', label: 'Tecnologia & Inovação' },
+    { value: 'Educacao e Capacitacao', label: 'Educação & Capacitação' },
+    { value: 'Saude e Bem-Estar', label: 'Saúde & Bem-Estar' },
+    { value: 'Meio Ambiente e Sustentabilidade', label: 'Meio Ambiente & Sustentabilidade' },
+    { value: 'Agricultura e Desenvolvimento Rural', label: 'Agricultura & Desenvolvimento Rural' },
+    { value: 'Infraestrutura, Obras e Engenharia', label: 'Infraestrutura, Obras & Engenharia' },
+    { value: 'Logistica, Suprimentos e Operacoes', label: 'Logística, Suprimentos & Operações' },
+    { value: 'Economia, Financas e Licitacoes', label: 'Economia, Finanças & Licitações' },
+    { value: 'Ciencia, Pesquisa e Desenvolvimento', label: 'Ciência, Pesquisa & Desenvolvimento' },
+    { value: 'Social, Direitos e Comunidade', label: 'Social, Direitos & Comunidade' },
+    { value: 'Cultura, Arte e Patrimonio', label: 'Cultura, Arte & Patrimônio' },
+    { value: 'Esporte, Lazer e Qualidade de Vida', label: 'Esporte, Lazer & Qualidade de Vida' },
+    { value: 'Cooperacao e Relacoes Internacionais', label: 'Cooperação & Relações Internacionais' },
+  ],
+
+  // Instituição
+  instituicao: [
+    { value: 'FINEP', label: 'FINEP' },
+    { value: 'FAPESP', label: 'FAPESP' },
+    { value: 'FAPEMIG', label: 'FAPEMIG' },
+    { value: 'Araucaria', label: 'Araucária' },
+    { value: 'FAPEG', label: 'FAPEG' },
+    { value: 'FAPERGS', label: 'FAPERGS' },
+    { value: 'FAPEAL', label: 'FAPEAL' },
+    { value: 'FAPESB', label: 'FAPESB' },
+    { value: 'FAPESC', label: 'FAPESC' },
+    { value: 'FAPT', label: 'FAPT' },
+    { value: 'FUNCAP', label: 'FUNCAP' },
+    { value: 'FAPEMA', label: 'FAPEMA' },
+    { value: 'FACEPE', label: 'FACEPE' },
+    { value: 'FAPES', label: 'FAPES' },
+    { value: 'FAPERO', label: 'FAPERO' },
+    { value: 'FUNDECT', label: 'FUNDECT' },
+    { value: 'FAPESQ', label: 'FAPESQ' },
+    { value: 'FAPEAP', label: 'FAPEAP' },
+    { value: 'FAPEAM', label: 'FAPEAM' },
+    { value: 'FAPEPI', label: 'FAPEPI' },
+    { value: 'FAPERJ', label: 'FAPERJ' },
+    { value: 'FAPERN', label: 'FAPERN' },
+    { value: 'FAPITEC', label: 'FAPITEC' },
+    { value: 'CONFAP', label: 'CONFAP' },
+    { value: 'Senai', label: 'SENAI' },
+    { value: 'Serpro', label: 'SERPRO' },
+    { value: 'AwesomeFoundation', label: 'Awesome Foundation' },
+    { value: 'BASF', label: 'BASF' },
+    { value: 'BNDES', label: 'BNDES' },
+    { value: 'Prosas', label: 'Prosas' },
+    { value: 'TetraPak', label: 'Tetra Pak' },
+    { value: 'CocaCola', label: 'Coca-Cola' },
+    { value: 'IAF', label: 'IAF' },
+    { value: 'CAPES', label: 'CAPES' },
+    { value: 'BRICS', label: 'BRICS' },
+    { value: 'Santander', label: 'Santander' },
+    { value: 'BancoDoNordeste', label: 'Banco do Nordeste' },
+    { value: 'BRDE', label: 'BRDE' },
+    { value: 'Cresol', label: 'Cresol' },
+    { value: 'Correios', label: 'Correios' },
+    { value: 'Petrobras', label: 'Petrobras' },
+    { value: 'ANP', label: 'ANP' },
+    { value: 'MiningHub', label: 'Mining Hub' },
+    { value: 'VALE', label: 'VALE' },
+    { value: 'Inovale', label: 'Inovale' },
+    { value: 'Ambev', label: 'Ambev' },
+  ],
+
+  // Situação (calculada)
+  situacao: [
+    { value: 'Aberto', label: 'Aberto' },
+    { value: 'Em andamento', label: 'Em andamento' },
+    { value: 'Fechado', label: 'Fechado' },
+  ],
+};
+
 
 // =========================
 // ELEMENTOS DOM (novo layout)
@@ -39,9 +209,8 @@ const paginationEl = document.getElementById('pagination');
 
 // Hero stats
 const statTotal = document.getElementById('statTotal');
-const statNew = document.getElementById('statNew');
-const statValue = document.getElementById('statValue');
-
+const statAbertos = document.getElementById('statAbertos');
+const statFechados = document.getElementById('statFechados');
 // Filtros
 const filtersPanel = document.getElementById('filtersPanel');
 const applyFiltersBtn = document.getElementById('applyFiltersBtn');
@@ -52,8 +221,9 @@ const filtersCloseBtn = document.getElementById('filtersCloseBtn');
 
 const filterSearchEstado = document.getElementById('filterSearchEstado');
 const filterSearchApoio = document.getElementById('filterSearchApoio');
+const filterSearchCategoria = document.getElementById('filterSearchCategoria');
 const filterSearchInstituicao = document.getElementById('filterSearchInstituicao');
-
+const filterSearchSituacao = document.getElementById('filterSearchSituacao');
 // Sidebar + topbar
 const sidebarToggle = document.getElementById('sidebarToggle');
 const appSidebar = document.getElementById('appSidebar');
@@ -83,6 +253,7 @@ let chatState = null;
 document.addEventListener('DOMContentLoaded', init);
 
 async function init() {
+  bootstrapAuthFromUrl();
   const isLogged = await checkAuth();
   if (!isLogged) return;
 
@@ -111,17 +282,17 @@ async function init() {
 // =========================
 async function checkAuth() {
   try {
-    const res = await fetch(`${API_BASE}/cliente/me`, { credentials: 'include' });
+    const res = await fetch(`${API_BASE}/cliente/me`, { credentials: 'include', headers: authHeaders() });
     if (!res.ok) throw new Error('Sessão inválida ou expirada');
     const data = await res.json();
     if (!data.logado) {
-      window.location.href = LOGIN_URL;
+      window.location.href = buildLoginUrlWithNext();
       return false;
     }
     return true;
   } catch (e) {
     console.error('Erro na verificação de autenticação:', e);
-    window.location.href = LOGIN_URL;
+    window.location.href = buildLoginUrlWithNext();
     return false;
   }
 }
@@ -162,6 +333,9 @@ function normalizeEdital(api) {
   const arquivos = typeof api?.arquivos_json === 'string' ? safeJsonParse(api.arquivos_json, []) : (api?.arquivos_json || []);
   const titulo = data.titulo || api?.titulo || 'Sem título';
 
+  const data_fechamento = api?.data_final_submissao || data.data_final_submissao || null;
+  const data_abertura = data.data_abertura || null;
+
   return {
     id: api?.id,
     titulo,
@@ -175,8 +349,9 @@ function normalizeEdital(api) {
     apoio: data.apoio || 'Não informado', // Instrumento
     tipo: data.tipo || 'Não informado',
     valor_total: data.valor_total || '',
-    data_fechamento: api?.data_final_submissao || data.data_final_submissao || null,
-    data_abertura: data.data_abertura || null,
+    data_fechamento,
+    data_abertura,
+    situacao: computeSituacao(data_abertura, data_fechamento),
     tags: data.tags || [],
     arquivos,
     share_link: api?.share_link || ''
@@ -216,30 +391,57 @@ function generateDynamicFilters() {
   const types = [
     { key: 'estado', type: 'estado' },
     { key: 'apoio', type: 'apoio' },
+    { key: 'area', type: 'area' },
     { key: 'instituicao', type: 'instituicao' },
+    { key: 'situacao', type: 'situacao' },
   ];
 
   types.forEach(({ key, type }) => {
     const box = document.querySelector(`.filter-options[data-filter-type="${type}"]`);
     if (!box) return;
 
-    const counts = new Map();
+    // conta por chave normalizada (pra não sofrer com acento/case)
+    const counts = new Map();      // norm -> count
+    const rawByKey = new Map();    // norm -> primeiro raw visto
+
     for (const e of editaisOriginais) {
       const raw = (e?.[key] ?? '').toString().trim();
       if (!raw) continue;
-      counts.set(raw, (counts.get(raw) || 0) + 1);
+      const nk = normKey(raw);
+      if (!nk) continue;
+      counts.set(nk, (counts.get(nk) || 0) + 1);
+      if (!rawByKey.has(nk)) rawByKey.set(nk, raw);
     }
 
-    const values = Array.from(counts.keys()).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+    const fixed = FIXED_FILTERS[type] || null;
+    let options = [];
+
+    if (fixed && fixed.length) {
+      const fixedKeys = new Set(fixed.map(o => normKey(o.value)));
+      const extras = Array.from(rawByKey.entries())
+        .filter(([nk]) => !fixedKeys.has(nk))
+        .map(([, raw]) => ({ value: raw, label: raw }))
+        .sort((a, b) => a.label.localeCompare(b.label, 'pt-BR'));
+
+      options = [...fixed, ...extras];
+    } else {
+      options = Array.from(rawByKey.values())
+        .sort((a, b) => a.localeCompare(b, 'pt-BR'))
+        .map(v => ({ value: v, label: v }));
+    }
+
     box.innerHTML = '';
-    if (values.length === 0) {
+    if (options.length === 0) {
       box.innerHTML = '<div style="font-size:12px; color:#9CA3AF; padding:6px;">Nenhuma opção</div>';
       return;
     }
 
-    for (const val of values) {
+    for (const opt of options) {
+      const val = opt.value;
+      const labelText = opt.label;
+
       const label = document.createElement('label');
-      label.setAttribute('data-label', val.toLowerCase());
+      label.setAttribute('data-label', normKey(labelText));
 
       const left = document.createElement('span');
       left.className = 'label-left';
@@ -249,7 +451,7 @@ function generateDynamicFilters() {
       input.value = val;
 
       const text = document.createElement('span');
-      text.textContent = val;
+      text.textContent = labelText;
       text.style.minWidth = '0';
       text.style.overflow = 'hidden';
       text.style.textOverflow = 'ellipsis';
@@ -260,7 +462,7 @@ function generateDynamicFilters() {
 
       const count = document.createElement('span');
       count.className = 'filter-count';
-      count.textContent = counts.get(val);
+      count.textContent = counts.get(normKey(val)) || counts.get(normKey(labelText)) || 0;
 
       label.appendChild(left);
       label.appendChild(count);
@@ -270,13 +472,15 @@ function generateDynamicFilters() {
 
   wireFilterSearch(filterSearchEstado, document.querySelector('.filter-options[data-filter-type="estado"]'));
   wireFilterSearch(filterSearchApoio, document.querySelector('.filter-options[data-filter-type="apoio"]'));
+  wireFilterSearch(filterSearchCategoria, document.querySelector('.filter-options[data-filter-type="area"]'));
   wireFilterSearch(filterSearchInstituicao, document.querySelector('.filter-options[data-filter-type="instituicao"]'));
+  wireFilterSearch(filterSearchSituacao, document.querySelector('.filter-options[data-filter-type="situacao"]'));
 }
 
 function wireFilterSearch(inputEl, optionsEl) {
   if (!inputEl || !optionsEl) return;
   inputEl.addEventListener('input', () => {
-    const q = inputEl.value.trim().toLowerCase();
+    const q = normKey(inputEl.value);
     optionsEl.querySelectorAll('label').forEach(label => {
       const key = label.getAttribute('data-label') || '';
       label.style.display = (!q || key.includes(q)) ? 'flex' : 'none';
@@ -317,21 +521,38 @@ function applyFiltersAndRender({ resetPage } = { resetPage: false }) {
   }
 
   // 2) Filtros aplicados (checkboxes)
-  let filtered = base;
-  if (applied.estado.length) filtered = filtered.filter(e => applied.estado.includes(e.estado));
-  if (applied.apoio.length) filtered = filtered.filter(e => applied.apoio.includes(e.apoio));
-  if (applied.instituicao.length) filtered = filtered.filter(e => applied.instituicao.includes(e.instituicao));
+let filtered = base;
 
-  // 3) Ordenação
-  const sort = sortSelect?.value || 'relevancia';
-  if (sort === 'prazo') {
-    filtered = [...filtered].sort((a, b) => compareIsoDate(a.data_fechamento, b.data_fechamento));
-  } else if (sort === 'atualizacao') {
-    filtered = [...filtered].sort((a, b) => -compareIsoDate(a.data_abertura, b.data_abertura));
-  } else {
-    // relevância: se veio do Fuse, mantém ordem; se não, mantém ordem do backend
-    if (!fromFuse) filtered = filtered;
-  }
+const setEstado = new Set(applied.estado);
+const setApoio = new Set(applied.apoio.map(normKey));
+const setArea = new Set(applied.area.map(normKey));
+const setInstituicao = new Set(applied.instituicao.map(normKey));
+const setSituacao = new Set(applied.situacao.map(normKey));
+
+if (applied.estado.length) filtered = filtered.filter(e => setEstado.has(e.estado));
+if (applied.apoio.length) filtered = filtered.filter(e => setApoio.has(normKey(e.apoio)));
+if (applied.area.length) filtered = filtered.filter(e => setArea.has(normKey(e.area)));
+if (applied.instituicao.length) filtered = filtered.filter(e => setInstituicao.has(normKey(e.instituicao)));
+if (applied.situacao.length) filtered = filtered.filter(e => setSituacao.has(normKey(e.situacao)));
+
+// 3) Ordenação
+const sort = (sortSelect?.value || 'prazo').toLowerCase();
+
+if (sort === 'prazo') {
+  filtered = [...filtered].sort((a, b) => compareIsoDate(a.data_fechamento, b.data_fechamento));
+} else if (sort === 'titulo') {
+  filtered = [...filtered].sort((a, b) => String(a.titulo || '').localeCompare(String(b.titulo || ''), 'pt-BR'));
+} else if (sort === 'instituicao') {
+  filtered = [...filtered].sort((a, b) => String(a.instituicao || '').localeCompare(String(b.instituicao || ''), 'pt-BR'));
+} else if (sort === 'estado') {
+  filtered = [...filtered].sort((a, b) => String(a.estado || '').localeCompare(String(b.estado || ''), 'pt-BR'));
+} else if (sort === 'atualizado' || sort === 'atualizacao') {
+  // "atualizado": mais recente primeiro (data_abertura quando existir)
+  filtered = [...filtered].sort((a, b) => -compareIsoDate(a.data_abertura, b.data_abertura));
+} else {
+  // relevância: se veio do Fuse, mantém ordem; se não, mantém ordem do backend
+  if (!fromFuse) filtered = filtered;
+}
 
   lastFiltered = filtered;
 
@@ -379,34 +600,38 @@ function parseAnyDateToTime(dateString) {
   return Number.isFinite(t) ? t : null;
 }
 
+
+function computeSituacao(dataAbertura, dataFechamento) {
+  const now = Date.now();
+  const openT = parseAnyDateToTime(dataAbertura);
+  const closeT = parseAnyDateToTime(dataFechamento);
+
+  // Ainda não abriu
+  if (openT !== null && now < openT) return 'Em andamento';
+
+  // Tem prazo final: aberto até o fim do dia do fechamento
+  if (closeT !== null) {
+    const endOfCloseDay = closeT + (24 * 60 * 60 * 1000) - 1;
+    return now > endOfCloseDay ? 'Fechado' : 'Aberto';
+  }
+
+  // Sem prazo (ou prazo inválido): mantém como "Em andamento"
+  return 'Em andamento';
+}
+
 function updateHeroStats(filtered) {
   if (statTotal) statTotal.textContent = String(filtered.length);
 
-  // "novos hoje" como proxy: data_abertura == hoje (quando existir)
-  const today = new Date();
-  const y = today.getFullYear();
-  const m = String(today.getMonth() + 1).padStart(2, '0');
-  const d = String(today.getDate()).padStart(2, '0');
-  const todayIso = `${y}-${m}-${d}`;
+  let abertos = 0;
+  let fechados = 0;
 
-  let novos = 0;
   for (const e of filtered) {
-    if (e.data_abertura && String(e.data_abertura).startsWith(todayIso)) novos++;
+    if (e.situacao === 'Fechado') fechados++;
+    else if (e.situacao === 'Aberto') abertos++;
   }
-  if (statNew) statNew.textContent = String(novos);
 
-  const totalValue = filtered
-    .map(e => parseMoneyToNumber(e.valor_total))
-    .filter(v => Number.isFinite(v));
-
-  if (statValue) {
-    if (totalValue.length === 0) {
-      statValue.textContent = '—';
-    } else {
-      const sum = totalValue.reduce((a, b) => a + b, 0);
-      statValue.textContent = formatBRL(sum);
-    }
-  }
+  if (statAbertos) statAbertos.textContent = String(abertos);
+  if (statFechados) statFechados.textContent = String(fechados);
 }
 
 function parseMoneyToNumber(value) {
@@ -532,14 +757,14 @@ function setupUIEvents() {
     try {
       for (const ep of endpoints) {
         try {
-          const r = await fetch(ep.url, { method: ep.method, credentials: "include" });
+          const r = await fetch(ep.url, { method: ep.method, credentials: "include", headers: authHeaders() });
           if (r.ok) break;
         } catch (_) { /* tenta o próximo */ }
       }
     } finally {
-      try { localStorage.clear(); } catch (_) {}
-      try { sessionStorage.clear(); } catch (_) {}
-      window.location.href = LOGIN_URL;
+      try { localStorage.removeItem('cliente_token'); } catch (_) {}
+      try { sessionStorage.removeItem('cliente_token'); } catch (_) {}
+      window.location.href = buildLoginUrlWithNext();
     }
   };
   if (logoutIconBtn) logoutIconBtn.addEventListener('click', doLogout);
@@ -561,7 +786,9 @@ function setupUIEvents() {
       applied = {
         estado: readSelected('estado'),
         apoio: readSelected('apoio'),
+        area: readSelected('area'),
         instituicao: readSelected('instituicao'),
+        situacao: readSelected('situacao'),
       };
       closeFiltersMobile();
       applyFiltersAndRender({ resetPage: true });
@@ -573,10 +800,12 @@ function setupUIEvents() {
       document.querySelectorAll('.filter-options input[type="checkbox"]').forEach(cb => { cb.checked = false; });
       if (filterSearchEstado) filterSearchEstado.value = '';
       if (filterSearchApoio) filterSearchApoio.value = '';
+      if (filterSearchCategoria) filterSearchCategoria.value = '';
       if (filterSearchInstituicao) filterSearchInstituicao.value = '';
+      if (filterSearchSituacao) filterSearchSituacao.value = '';
       document.querySelectorAll('.filter-options label').forEach(l => l.style.display = 'flex');
 
-      applied = { estado: [], apoio: [], instituicao: [] };
+      applied = { estado: [], apoio: [], area: [], instituicao: [], situacao: [] };
       closeFiltersMobile();
       applyFiltersAndRender({ resetPage: true });
     });
