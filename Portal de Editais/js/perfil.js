@@ -2,9 +2,16 @@
    Athos / Atimus — Perfil (layout do print)
    ========================================================= */
 
-const API_BASE = 'https://atimus-api-acb4gfgagefcevb5.brazilsouth-01.azurewebsites.net';
-const IS_LOCAL = window.location.hostname.includes('localhost') || window.location.hostname.includes('127.0.0.1');
-const LOGIN_URL = IS_LOCAL ? '../Login/API/index.html' : 'https://login.atimus.agr.br';
+import {
+  API_BASE,
+  LOGIN_URL,
+  authHeaders,
+  bootstrapAuthFromUrl,
+  buildLoginUrlWithNext,
+  apiFetch,
+  apiFetchJson,
+} from './auth.js';
+
 
 const sidebarToggle = document.getElementById('sidebarToggle');
 const appSidebar = document.getElementById('appSidebar');
@@ -13,6 +20,7 @@ const logoutIconBtn = document.getElementById('logoutIconBtn');
 document.addEventListener('DOMContentLoaded', init);
 
 async function init(){
+  bootstrapAuthFromUrl();
   const isLogged = await checkAuth();
   if(!isLogged) return;
 
@@ -22,17 +30,25 @@ async function init(){
 
 async function checkAuth(){
   try{
-    const res = await fetch(`${API_BASE}/cliente/me`, { credentials: 'include' });
-    if(!res.ok) throw new Error('Sessão inválida');
-    const data = await res.json();
-    if(!data.logado){
-      window.location.href = LOGIN_URL;
+    const { res, data } = await apiFetchJson('/cliente/me', { method: 'GET' });
+
+    if(!res.ok){
+      if(res.status === 401 || res.status === 403){
+        window.location.href = buildLoginUrlWithNext();
+        return false;
+      }
+      // erro estranho: não quebra tudo, mas não temos como preencher perfil
+      return true;
+    }
+
+    if (data && typeof data === 'object' && 'logado' in data && !data.logado){
+      window.location.href = buildLoginUrlWithNext();
       return false;
     }
 
     // Preenche dados se a API devolver algo útil
-    const nome = data.nome || data.nome_completo || data.user?.nome || data.usuario?.nome;
-    const email = data.email || data.user?.email || data.usuario?.email;
+    const nome = data?.nome || data?.nome_completo || data?.user?.nome || data?.usuario?.nome;
+    const email = data?.email || data?.user?.email || data?.usuario?.email;
 
     if(nome){
       setText('sidebarUserName', nome);
@@ -50,10 +66,14 @@ async function checkAuth(){
     return true;
   }catch(e){
     console.error('Erro na verificação de autenticação:', e);
-    window.location.href = LOGIN_URL;
+
+    if (e instanceof TypeError) return true;
+
+    window.location.href = buildLoginUrlWithNext();
     return false;
   }
 }
+
 
 function setupUI(){
   if(sidebarToggle && appSidebar){
@@ -78,13 +98,13 @@ function setupUI(){
     try{
       for(const ep of endpoints){
         try{
-          const r = await fetch(ep.url, { method: ep.method, credentials: 'include' });
+          const r = await apiFetch(ep.url, { method: ep.method });
           if(r.ok) break;
         }catch(_){ }
       }
     }finally{
-      try{ localStorage.clear(); }catch(_){ }
-      try{ sessionStorage.clear(); }catch(_){ }
+      try{ localStorage.removeItem('cliente_token'); }catch(_){ }
+      try{ sessionStorage.removeItem('cliente_token'); }catch(_){ }
       window.location.href = LOGIN_URL;
     }
   };
