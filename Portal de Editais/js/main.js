@@ -7,9 +7,15 @@ import { renderEditais } from './render.js';
 // =========================
 // CONFIGURAÇÕES & SEGURANÇA
 // =========================
-const API_BASE = 'https://atimus-api-acb4gfgagefcevb5.brazilsouth-01.azurewebsites.net';
-const IS_LOCAL = window.location.hostname.includes('localhost') || window.location.hostname.includes('127.0.0.1');
-const LOGIN_URL = IS_LOCAL ? '../Login/API/index.html' : 'https://login.atimus.agr.br';
+import {
+  API_BASE,
+  LOGIN_URL,
+  authHeaders,
+  bootstrapAuthFromUrl,
+  buildLoginUrlWithNext,
+  safeReadJson,
+  apiFetchJson,
+} from './auth.js';
 
 // =========================
 // ESTADO
@@ -39,8 +45,8 @@ const paginationEl = document.getElementById('pagination');
 
 // Hero stats
 const statTotal = document.getElementById('statTotal');
-const statNew = document.getElementById('statNew');
-const statValue = document.getElementById('statValue');
+const statAbertos = document.getElementById('statAbertos');
+const statFechados = document.getElementById('statFechados');
 
 // Filtros
 const filtersPanel = document.getElementById('filtersPanel');
@@ -65,7 +71,7 @@ const logoutBtn = document.getElementById('logoutBtn');
 // Modal
 const modalOverlay = document.getElementById('modal-overlay');
 const modalContentContainer = document.getElementById('modal-content-container');
-const modalCloseBtn = document.getElementById('modal-close-btn');
+const modalCloseBtn = document.getElementById('close-modal-btn') || document.getElementById('modal-close-btn');
 
 // Chat
 const chatInput = document.getElementById('chat-input');
@@ -73,6 +79,7 @@ const sendButton = document.getElementById('send-button');
 const messageContainer = document.getElementById('chatbot-messages');
 const chatWrapper = document.getElementById('chatbot-wrapper');
 const chatButton = document.querySelector('.e-contact-buttons__chat-button');
+const chatHeader = document.querySelector('.chat-header');
 
 let botIsTyping = false;
 let chatState = null;
@@ -83,6 +90,7 @@ let chatState = null;
 document.addEventListener('DOMContentLoaded', init);
 
 async function init() {
+  bootstrapAuthFromUrl();
   const isLogged = await checkAuth();
   if (!isLogged) return;
 
@@ -111,26 +119,43 @@ async function init() {
 // =========================
 async function checkAuth() {
   try {
-    const res = await fetch(`${API_BASE}/cliente/me`, { credentials: 'include' });
-    if (!res.ok) throw new Error('Sessão inválida ou expirada');
-    const data = await res.json();
-    if (!data.logado) {
-      window.location.href = LOGIN_URL;
+    const { res, data } = await apiFetchJson('/cliente/me', { method: 'GET' });
+
+    // Se a API respondeu "não autorizado", aí sim é login obrigatório.
+    if (!res.ok) {
+      if (res.status === 401 || res.status === 403) {
+        window.location.href = buildLoginUrlWithNext();
+        return false;
+      }
+      // Outros erros: não mata a página (pode ser CORS/instabilidade). Deixa o loadEditais decidir.
+      return true;
+    }
+
+    // Alguns backends devolvem {logado:true/false}; outros devolvem o usuário direto.
+    if (data && typeof data === 'object' && 'logado' in data && !data.logado) {
+      window.location.href = buildLoginUrlWithNext();
       return false;
     }
+
     return true;
   } catch (e) {
     console.error('Erro na verificação de autenticação:', e);
-    window.location.href = LOGIN_URL;
+
+    // Se for erro de rede/CORS, não entra em loop de login. Tenta seguir.
+    if (e instanceof TypeError) return true;
+
+    window.location.href = buildLoginUrlWithNext();
     return false;
   }
 }
+
 
 // =========================
 // DATA LOAD
 // =========================
 async function loadEditais() {
   if (!container) return;
+
   container.innerHTML = `
     <div class="loading-container">
       <div class="spinner"></div>
@@ -139,23 +164,45 @@ async function loadEditais() {
   `;
 
   try {
-    const res = await fetch(`${API_BASE}/editais`);
-    if (!res.ok) throw new Error('Erro na resposta da API');
-    const apiData = await res.json();
-    editaisOriginais = (apiData || []).map(normalizeEdital);
+    const { res, data } = await apiFetchJson('/editais', { method: 'GET' });
+
+    if (!res.ok) {
+      // Se não estiver logado, manda pro login.
+      if (res.status === 401 || res.status === 403) {
+        container.innerHTML = `
+          <div style="grid-column: 1/-1; text-align:center; padding:2rem; color:#ef4444;">
+            <i class="fas fa-lock fa-2x"></i>
+            <p>Sessão expirada. Faça login para ver os editais.</p>
+            <br>
+            <a class="btn btn-primary" href="${buildLoginUrlWithNext()}">Ir para o login</a>
+          </div>
+        `;
+        return;
+      }
+
+      throw new Error(`Erro na API (${res.status})`);
+    }
+
+    const rawList =
+      Array.isArray(data) ? data :
+      (Array.isArray(data?.editais) ? data.editais :
+      (Array.isArray(data?.data) ? data.data : []));
+
+    editaisOriginais = rawList.map(normalizeEdital).filter(Boolean);
   } catch (e) {
     console.error('Erro ao carregar editais:', e);
     container.innerHTML = `
       <div style="grid-column: 1/-1; text-align:center; padding:2rem; color:#ef4444;">
         <i class="fas fa-exclamation-triangle fa-2x"></i>
         <p>Não foi possível carregar os editais.</p>
-        <small>${escapeHtml(e.message)}</small>
+        <small>${escapeHtml(e?.message || String(e))}</small>
         <br><br>
         <button onclick="location.reload()" class="btn btn-primary">Tentar novamente</button>
       </div>
     `;
   }
 }
+
 
 function normalizeEdital(api) {
   const data = typeof api?.json_data === 'string' ? safeJsonParse(api.json_data, {}) : (api?.json_data || {});
@@ -323,14 +370,26 @@ function applyFiltersAndRender({ resetPage } = { resetPage: false }) {
   if (applied.instituicao.length) filtered = filtered.filter(e => applied.instituicao.includes(e.instituicao));
 
   // 3) Ordenação
-  const sort = sortSelect?.value || 'relevancia';
+  const sort = (sortSelect?.value || 'prazo').toLowerCase();
+
+  const collate = (a, b) => String(a || '').localeCompare(String(b || ''), 'pt-BR', { sensitivity: 'base' });
+
   if (sort === 'prazo') {
     filtered = [...filtered].sort((a, b) => compareIsoDate(a.data_fechamento, b.data_fechamento));
-  } else if (sort === 'atualizacao') {
+  } else if (sort === 'atualizado' || sort === 'atualizacao') {
     filtered = [...filtered].sort((a, b) => -compareIsoDate(a.data_abertura, b.data_abertura));
+  } else if (sort === 'titulo') {
+    filtered = [...filtered].sort((a, b) => collate(a.titulo, b.titulo));
+  } else if (sort === 'instituicao') {
+    filtered = [...filtered].sort((a, b) => collate(a.instituicao, b.instituicao));
+  } else if (sort === 'estado') {
+    filtered = [...filtered].sort((a, b) => collate(a.estado, b.estado));
+  } else if (sort === 'relevancia') {
+    // se veio do Fuse, mantém a ordem do Fuse; se não, mantém a ordem do backend
+    filtered = filtered;
   } else {
-    // relevância: se veio do Fuse, mantém ordem; se não, mantém ordem do backend
-    if (!fromFuse) filtered = filtered;
+    // fallback
+    filtered = filtered;
   }
 
   lastFiltered = filtered;
@@ -382,32 +441,29 @@ function parseAnyDateToTime(dateString) {
 function updateHeroStats(filtered) {
   if (statTotal) statTotal.textContent = String(filtered.length);
 
-  // "novos hoje" como proxy: data_abertura == hoje (quando existir)
-  const today = new Date();
-  const y = today.getFullYear();
-  const m = String(today.getMonth() + 1).padStart(2, '0');
-  const d = String(today.getDate()).padStart(2, '0');
-  const todayIso = `${y}-${m}-${d}`;
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
 
-  let novos = 0;
+  let abertos = 0;
+  let fechados = 0;
+
   for (const e of filtered) {
-    if (e.data_abertura && String(e.data_abertura).startsWith(todayIso)) novos++;
-  }
-  if (statNew) statNew.textContent = String(novos);
-
-  const totalValue = filtered
-    .map(e => parseMoneyToNumber(e.valor_total))
-    .filter(v => Number.isFinite(v));
-
-  if (statValue) {
-    if (totalValue.length === 0) {
-      statValue.textContent = '—';
-    } else {
-      const sum = totalValue.reduce((a, b) => a + b, 0);
-      statValue.textContent = formatBRL(sum);
+    const t = parseAnyDateToTime(e.data_fechamento);
+    // Sem data final: considera como aberto (melhor UX do que sumir com números)
+    if (t === null) {
+      abertos++;
+      continue;
     }
+    // Data final no passado (ou hoje): fechado
+    if (t < todayStart) fechados++;
+    else abertos++;
   }
+
+  if (statAbertos) statAbertos.textContent = String(abertos);
+  if (statFechados) statFechados.textContent = String(fechados);
 }
+
+
 
 function parseMoneyToNumber(value) {
   if (!value) return NaN;
@@ -629,6 +685,7 @@ function setupUIEvents() {
   if (chatButton && chatWrapper) {
     chatButton.addEventListener('click', () => {
       chatWrapper.classList.toggle('open');
+      updateChatHeader();
       scrollToBottom();
       if (messageContainer?.children.length === 0) {
         addMessage('Olá! Busque por um tema (ex: inovação) e eu listarei os editais disponíveis.', 'bot');
@@ -645,19 +702,61 @@ function setupUIEvents() {
       }
     });
   }
+
+
+  // opções clicáveis do chat (ex: lista de editais)
+  if (messageContainer) {
+    messageContainer.addEventListener('click', (e) => {
+      const btn = e.target.closest('button.chat-option-btn');
+      if (!btn) return;
+
+      const action = btn.getAttribute('data-action');
+
+      if (action === 'open_edital') {
+        const id = btn.getAttribute('data-edital-id');
+        const edital = editaisOriginais.find(ed => String(ed.id) === String(id));
+        if (edital) openModal(edital);
+        return;
+      }
+
+      if (action === 'view_all') {
+        chatState = null;
+        updateChatHeader();
+        const q = btn.getAttribute('data-query') || '';
+        if (searchInput) searchInput.value = q;
+        applyFiltersAndRender({ resetPage: true });
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        if (chatWrapper) chatWrapper.classList.remove('open');
+        return;
+      }
+
+      if (action === 'ask_new') {
+        chatState = null;
+        updateChatHeader();
+        if (chatInput) {
+          chatInput.value = '';
+          chatInput.focus();
+        }
+        addMessage('Me diga um tema (ex: inovação, saúde, educação, agricultura) ou uma instituição (ex: FAPEAL, FINEP).', 'bot');
+        return;
+      }
+    });
+  }
 }
 
 function openFiltersMobile() {
   if (!filtersPanel || !filtersBackdrop) return;
   filtersPanel.classList.add('open');
-  filtersBackdrop.hidden = false;
+  filtersBackdrop.classList.add('active');
+  filtersBackdrop.setAttribute('aria-hidden', 'false');
   document.body.style.overflow = 'hidden';
 }
 
 function closeFiltersMobile() {
   if (!filtersPanel || !filtersBackdrop) return;
   filtersPanel.classList.remove('open');
-  filtersBackdrop.hidden = true;
+  filtersBackdrop.classList.remove('active');
+  filtersBackdrop.setAttribute('aria-hidden', 'true');
   document.body.style.overflow = '';
 }
 
@@ -714,6 +813,16 @@ function openModal(edital) {
       ${edital.data_fechamento ? `<div><strong>Data final</strong><span>${escapeHtml(edital.data_fechamento)}</span></div>` : ''}
     </div>
 
+    <div class=\"edital-ai-cta\">
+      <div class=\"cta-text\">
+        <strong>Quer falar sobre este edital?</strong>
+        <span>Pergunte e eu busco nos documentos deste card.</span>
+      </div>
+      <button class=\"btn btn-primary\" type=\"button\" id=\"talkEditalBtn\">
+        <i class=\"fas fa-robot\"></i> Falar com a IA
+      </button>
+    </div>
+
     ${arquivosHtml}
   `;
 
@@ -742,6 +851,12 @@ function openModal(edital) {
     });
   }
 
+
+const talkBtn = modalContentContainer.querySelector('#talkEditalBtn');
+if (talkBtn) {
+  talkBtn.addEventListener('click', () => startEditalChat(edital));
+}
+
   modalOverlay.classList.add('open');
   modalOverlay.setAttribute('aria-hidden', 'false');
   document.body.style.overflow = 'hidden';
@@ -754,6 +869,53 @@ function closeModal() {
   document.body.style.overflow = '';
 }
 
+function updateChatHeader() {
+  if (!chatHeader) return;
+  const editalId = chatState?.edital_id ?? chatState?.editalId ?? null;
+  const titulo = chatState?.titulo ?? chatState?.edital_titulo ?? chatState?.editalTitulo ?? null;
+  if (editalId && titulo) {
+    chatHeader.textContent = `Athos • Edital: ${truncateText(titulo, 28)}`;
+  } else {
+    chatHeader.textContent = 'Athos • Assistente';
+  }
+}
+
+function startEditalChat(edital) {
+  if (!edital) return;
+  chatState = {
+    mode: 'edital',
+    edital_id: edital.id,
+    titulo: edital.titulo || 'Edital'
+  };
+
+  if (chatWrapper) chatWrapper.classList.add('open');
+  updateChatHeader();
+
+  addMessage(
+    `Fechado. Vamos falar do edital: "${edital.titulo || 'Sem título'}".\n` +
+    `Manda sua pergunta (ex: prazo, quem pode participar, valor, documentos, como enviar).`,
+    'bot'
+  );
+
+  closeModal();
+  try { chatInput?.focus(); } catch (_) {}
+}
+
+function stripHtmlPreserveBreaks(htmlStr) {
+  const s = String(htmlStr ?? '');
+  const withBreaks = s.replace(/<br\s*\/?\s*>/gi, '\n');
+  const tmp = document.createElement('div');
+  tmp.innerHTML = withBreaks;
+  return (tmp.textContent || tmp.innerText || '').trim();
+}
+
+function normalizeBotText(value) {
+  const s = String(value ?? '').trim();
+  if (!s) return '';
+  if (s.includes('<') && s.includes('>')) return stripHtmlPreserveBreaks(s);
+  return s;
+}
+
 // =========================
 // CHATBOT (mantido)
 // =========================
@@ -762,11 +924,17 @@ function scrollToBottom() {
   setTimeout(() => { messageContainer.scrollTop = messageContainer.scrollHeight; }, 50);
 }
 
-function addMessage(text, sender = 'bot', sources = null) {
-  if (!messageContainer) return;
+function addMessage(text, sender = 'bot', sources = null, opts = {}) {
+  if (!messageContainer) return null;
+
   const msg = document.createElement('div');
-  msg.className = `chat-message ${sender}`;
-  msg.innerHTML = `<div class="bubble">${escapeHtml(text)}</div>`;
+  msg.className = `chat-message ${sender}` + (opts.isTyping ? ' is-typing' : '');
+
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble';
+  bubble.textContent = String(text ?? '');
+  msg.appendChild(bubble);
+
   messageContainer.appendChild(msg);
 
   if (sources && Array.isArray(sources) && sources.length) {
@@ -775,15 +943,22 @@ function addMessage(text, sender = 'bot', sources = null) {
   }
 
   scrollToBottom();
+  return msg;
+}
+
+function setMessageText(msgEl, text) {
+  if (!msgEl) return;
+  const bubble = msgEl.querySelector('.bubble');
+  if (bubble) bubble.textContent = String(text ?? '');
+  msgEl.classList.remove('is-typing');
 }
 
 function buildSourcesDetails(sources) {
-  const ok = sources.filter(s => s && s.status === 'ok').length;
   const total = sources.length;
+  const ok = sources.filter(s => s && (s.status === 'ok' || s.ok === true || !('status' in s))).length;
 
   const details = document.createElement('details');
   details.className = 'chat-sources-details';
-  details.style.marginTop = '10px';
 
   const summary = document.createElement('summary');
   summary.textContent = `📎 Fontes consultadas (${ok}/${total})`;
@@ -796,12 +971,174 @@ function buildSourcesDetails(sources) {
     const li = document.createElement('li');
     const title = s?.title || s?.name || 'Fonte';
     const url = s?.url;
-    li.innerHTML = url ? `<a href="${escapeAttr(url)}" target="_blank" rel="noopener">${escapeHtml(title)}</a>` : escapeHtml(title);
+    li.innerHTML = url
+      ? `<a href="${escapeAttr(url)}" target="_blank" rel="noopener">${escapeHtml(title)}</a>`
+      : escapeHtml(title);
     ul.appendChild(li);
   });
 
   details.appendChild(ul);
   return details;
+}
+
+
+// =========================
+// CHAT — OPÇÕES (quick replies)
+// =========================
+function shouldOfferEditaisOptions(answerText) {
+  const t = String(answerText || '').toLowerCase();
+  if (!t) return false;
+  // cobre: "Encontrei estes editais", "Encontrei 3 edital(is)", "Encontrei esses editais"
+  return t.includes('encontrei') && (t.includes('edital') || t.includes('editais'));
+}
+
+function searchEditaisForChat(query) {
+  const q = String(query || '').trim();
+  if (!q || !editaisOriginais || editaisOriginais.length === 0) return [];
+
+  const qLower = q.toLowerCase();
+  let items = [];
+
+  if (fuseInstance && q.length >= 2) {
+    items = fuseInstance.search(q).map(r => r.item);
+  } else {
+    items = editaisOriginais.filter(e => {
+      const hay = [
+        e.titulo, e.descricao, e.instituicao, e.estado, e.area,
+        ...(Array.isArray(e.tags) ? e.tags : [])
+      ].map(x => String(x || '').toLowerCase());
+      return hay.some(x => x.includes(qLower));
+    });
+  }
+
+  // dedupe por id
+  const seen = new Set();
+  const out = [];
+  for (const e of items) {
+    const id = String(e?.id ?? '');
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push(e);
+  }
+  return out;
+}
+
+function truncateText(text, max = 80) {
+  const s = String(text || '').replaceAll('\n', ' ').trim();
+  if (s.length <= max) return s;
+  return s.slice(0, Math.max(0, max - 1)).trimEnd() + '…';
+}
+
+function attachEditaisOptions(msgEl, query) {
+  if (!msgEl) return;
+
+  const all = searchEditaisForChat(query);
+  if (!all.length) return;
+
+  const top = all.slice(0, 5);
+
+  const options = top.map((e) => {
+    const metaParts = [];
+    if (e.instituicao) metaParts.push(e.instituicao);
+    if (e.estado) metaParts.push(e.estado);
+    if (e.data_fechamento) metaParts.push('Até ' + e.data_fechamento);
+    const meta = metaParts.join(' • ');
+
+    return {
+      action: 'open_edital',
+      id: e.id,
+      title: e.titulo || 'Sem título',
+      meta: meta || null
+    };
+  });
+
+  if (all.length > top.length) {
+    options.push({
+      action: 'view_all',
+      query,
+      title: `Ver todos no painel (${all.length})`,
+      meta: 'Aplica a busca no Dashboard'
+    });
+  }
+
+  options.push({
+    action: 'ask_new',
+    title: 'Buscar outro tema',
+    meta: 'Trocar a palavra-chave'
+  });
+
+  const wrap = document.createElement('div');
+  wrap.className = 'chat-options';
+
+  for (const opt of options) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'chat-option-btn';
+    btn.setAttribute('data-action', opt.action);
+
+    if (opt.id != null) btn.setAttribute('data-edital-id', String(opt.id));
+    if (opt.query) btn.setAttribute('data-query', String(opt.query));
+
+    const title = truncateText(opt.title, 70);
+    const meta = opt.meta ? truncateText(opt.meta, 92) : '';
+
+    btn.innerHTML = `
+      <div class="chat-opt-title">${escapeHtml(title)}</div>
+      ${meta ? `<div class="chat-opt-meta">${escapeHtml(meta)}</div>` : ''}
+    `.trim();
+
+    wrap.appendChild(btn);
+  }
+
+  msgEl.appendChild(wrap);
+  scrollToBottom();
+}
+
+
+function localAssistantAnswer(question) {
+  const q = String(question || '').trim();
+  const qLower = q.toLowerCase();
+
+  // Conversa humana básica (porque sim, somos mamíferos sociais)
+  if (/^(oi|ol[áa]|eae|ea[íi]|bom dia|boa tarde|boa noite)\b/.test(qLower)) {
+    return 'Oi! Me manda um tema (ex: inovação, saúde, educação, agricultura) que eu te listo os editais mais próximos.';
+  }
+
+  if (!editaisOriginais || editaisOriginais.length === 0) {
+    return null;
+  }
+
+  let matches = [];
+  if (fuseInstance && q.length >= 2) {
+    matches = fuseInstance.search(q).map(r => r.item);
+  } else {
+    matches = editaisOriginais.filter(e => {
+      const hay = [
+        e.titulo, e.descricao, e.instituicao, e.estado, e.area,
+        ...(Array.isArray(e.tags) ? e.tags : [])
+      ].map(x => String(x || '').toLowerCase());
+      return hay.some(x => x.includes(qLower));
+    });
+  }
+
+  matches = matches.slice(0, 5);
+
+  if (matches.length === 0) {
+    return `Não achei editais parecidos com "${q}". Tenta outro termo (tema, instituição, estado) — tipo "inovação", "FAPESP", "SP".`;
+  }
+
+  const baseUrl = window.location.origin + window.location.pathname.split('?')[0];
+
+  const linhas = matches.map((e, idx) => {
+    const inst = e.instituicao || 'Instituição';
+    const estado = e.estado || '—';
+    const prazo = e.data_fechamento || 'não informado';
+    const linkParam = e.slug ? `edital=${encodeURIComponent(e.slug)}` : `id=${encodeURIComponent(e.id)}`;
+    const link = `${baseUrl}?${linkParam}`;
+    return `${idx + 1}) ${e.titulo || 'Sem título'}\n   ${inst} • ${estado} • Data final: ${prazo}\n   ${link}`;
+  });
+
+  return `Encontrei ${matches.length} edital(is) que batem com "${q}":\n\n${linhas.join('\n\n')}`;
 }
 
 async function handleChatSend() {
@@ -814,80 +1151,70 @@ async function handleChatSend() {
   addMessage(question, 'user');
 
   botIsTyping = true;
-  addMessage('digitando...', 'bot');
-
-  const lastBotBubble = messageContainer?.querySelector('.chat-message.bot:last-child .bubble');
-  const lastBotMsg = lastBotBubble?.closest('.chat-message.bot');
+  const typingMsg = addMessage('digitando...', 'bot', null, { isTyping: true });
 
   try {
-    // Compat: backend aceita {message} e/ou {question}
-    const res = await fetch(`${API_BASE}/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: question, question, state: chatState }),
-      credentials: 'include'
-    });
+    const editalId = chatState?.edital_id ?? chatState?.editalId ?? null;
+const endpoint = editalId ? `/chat/edital/${encodeURIComponent(editalId)}` : '/chat';
 
-    const data = await res.json();
+const { res, data } = await apiFetchJson(endpoint, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  // manda "message" (backend) e "question" (compat)
+  body: JSON.stringify({ message: question, question, state: chatState }),
+});
+
+    if (!res.ok) {
+      // fallback local (não deixa o usuário no vácuo)
+      const local = localAssistantAnswer(question);
+      setMessageText(typingMsg, local || 'O chat está indisponível no momento. Tenta de novo em alguns instantes.');
+      if (shouldOfferEditaisOptions(local)) {
+        attachEditaisOptions(typingMsg, question);
+      }
+      return;
+    }
+
     chatState = data?.state ?? chatState;
 
-    const replyText = data?.reply || data?.answer || 'Não consegui responder agora.';
-    if (lastBotBubble) lastBotBubble.textContent = replyText;
+    // tolera nomes diferentes de campo
+    const answer =
+      data?.answer ??
+      data?.reply ??
+      data?.resposta ??
+      data?.message ??
+      data?.text ??
+      data?._rawText ??
+      null;
 
-    // Opções de editais (cards clicáveis)
-    if (lastBotMsg) {
-      // remove opções antigas deste bubble, se existirem
-      lastBotMsg.querySelectorAll('.chat-options').forEach(el => el.remove());
-      if (Array.isArray(data?.options) && data.options.length) {
-        renderChatOptions(lastBotMsg, data.options);
-      }
+    const sources = data?.sources || data?.fontes || data?.refs || null;
+
+    // Se o backend vier vazio, responde localmente.
+    const finalText = (answer && String(answer).trim()) ? normalizeBotText(answer) : (localAssistantAnswer(question) || 'Não consegui responder agora.');
+    setMessageText(typingMsg, finalText);
+
+    // Se o bot disser que encontrou editais, mostra opções clicáveis (sem depender do backend)
+    if (shouldOfferEditaisOptions(finalText)) {
+      attachEditaisOptions(typingMsg, question);
+    }
+
+    if (sources && Array.isArray(sources) && sources.length) {
+      const details = buildSourcesDetails(sources);
+      if (details) typingMsg?.appendChild(details);
     }
   } catch (e) {
     console.error('Erro no chat:', e);
-    if (lastBotBubble) lastBotBubble.textContent = 'Deu ruim aqui do meu lado. Tenta de novo em alguns segundos.';
+    const local = localAssistantAnswer(question);
+    setMessageText(typingMsg, local || 'Deu ruim aqui do meu lado. Tenta de novo em alguns segundos.');
+    if (shouldOfferEditaisOptions(local)) {
+      attachEditaisOptions(typingMsg, question);
+    }
   } finally {
     botIsTyping = false;
     scrollToBottom();
   }
 }
 
-function renderChatOptions(parentMsgEl, options) {
-  if (!parentMsgEl || !Array.isArray(options) || options.length === 0) return;
 
-  const wrap = document.createElement('div');
-  wrap.className = 'chat-options';
-
-  options.slice(0, 8).forEach(opt => {
-    const id = opt?.id;
-    const titulo = opt?.titulo || 'Abrir edital';
-
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'chat-option-btn';
-    btn.textContent = titulo;
-
-    btn.addEventListener('click', () => {
-      // tenta abrir o modal do edital (se estivermos no dashboard)
-      try {
-        const target = editaisOriginais?.find(e => String(e.id) === String(id));
-        if (target) {
-          openModal(target);
-          return;
-        }
-      } catch (_) {}
-
-      // fallback: tenta navegar por querystring ?id=
-      if (id) {
-        const baseUrl = window.location.origin + window.location.pathname.split('?')[0];
-        window.location.href = `${baseUrl}?id=${encodeURIComponent(id)}`;
-      }
-    });
-
-    wrap.appendChild(btn);
-  });
-
-  parentMsgEl.appendChild(wrap);
-}
 
 // =========================
 // SANITIZE
@@ -904,3 +1231,4 @@ function escapeHtml(str) {
 function escapeAttr(str) {
   return escapeHtml(str).replaceAll('`', '');
 }
+
