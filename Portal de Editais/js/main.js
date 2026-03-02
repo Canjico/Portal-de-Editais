@@ -34,6 +34,13 @@ let applied = {
   instituicao: [],
 };
 
+
+// =========================
+// SALVOS (FAVORITOS)
+// =========================
+let favoritosSet = new Set();   // ids como string
+let onlyFavoritos = false;
+
 // =========================
 // ELEMENTOS DOM (novo layout)
 // =========================
@@ -68,6 +75,10 @@ const userMenuBtn = document.getElementById('userMenuBtn');
 const logoutIconBtn = document.getElementById('logoutIconBtn');
 const logoutBtn = document.getElementById('logoutBtn');
 
+// Salvos
+const savedToggleBtn = document.getElementById('savedToggleBtn');
+const savedBadge = document.getElementById('savedBadge');
+
 // Modal
 const modalOverlay = document.getElementById('modal-overlay');
 const modalContentContainer = document.getElementById('modal-content-container');
@@ -95,6 +106,7 @@ async function init() {
   if (!isLogged) return;
 
   await loadEditais();
+  await loadFavoritos();
   buildFuseIndex();
   generateDynamicFilters();
   setupUIEvents();
@@ -203,6 +215,101 @@ async function loadEditais() {
   }
 }
 
+// =========================
+// FAVORITOS (carrega / salva / remove)
+// =========================
+async function loadFavoritos() {
+  // Se o endpoint ainda não existir no backend, a UI segue normalmente.
+  favoritosSet = new Set();
+  try {
+    const { res, data } = await apiFetchJson('/cliente/favoritos', { method: 'GET' });
+    if (res.ok) {
+      const ids = Array.isArray(data) ? data : (Array.isArray(data?.ids) ? data.ids : []);
+      favoritosSet = new Set((ids || []).map(v => String(v)));
+    }
+  } catch (_) {
+    // silencioso de propósito (não quebra a listagem)
+  }
+
+  // marca nos objetos (render usa isso)
+  for (const e of editaisOriginais) {
+    e.is_favorite = favoritosSet.has(String(e.id));
+  }
+
+  syncSavedBadge();
+  syncSavedToggleUI();
+}
+
+function syncSavedBadge() {
+  if (!savedBadge) return;
+  const n = favoritosSet.size;
+  if (n > 0) {
+    savedBadge.hidden = false;
+    savedBadge.textContent = String(n);
+  } else {
+    savedBadge.hidden = true;
+    savedBadge.textContent = '0';
+  }
+}
+
+function syncSavedToggleUI() {
+  if (!savedToggleBtn) return;
+  savedToggleBtn.classList.toggle('is-active', !!onlyFavoritos);
+  const icon = savedToggleBtn.querySelector('i');
+  if (icon) {
+    icon.classList.toggle('fas', !!onlyFavoritos);
+    icon.classList.toggle('far', !onlyFavoritos);
+  }
+}
+
+async function salvarOuRemoverFavorito(editalId, salvar) {
+  const idStr = String(editalId);
+  const url = salvar ? '/cliente/favoritos' : `/cliente/favoritos/${encodeURIComponent(idStr)}`;
+  const opt = salvar
+    ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ edital_id: Number(editalId) }) }
+    : { method: 'DELETE' };
+
+  const { res, data } = await apiFetchJson(url, opt);
+  if (!res.ok) {
+    const msg = (data && (data.detail || data.msg)) ? (data.detail || data.msg) : 'Não foi possível atualizar os salvos.';
+    throw new Error(msg);
+  }
+  return data;
+}
+
+
+async function toggleFavorito(editalId) {
+  const idStr = String(editalId);
+  const edital = editaisOriginais.find(e => String(e.id) === idStr);
+  if (!edital) return { ok: false };
+
+  const estavaSalvo = !!edital.is_favorite;
+
+  await salvarOuRemoverFavorito(editalId, !estavaSalvo);
+
+  edital.is_favorite = !estavaSalvo;
+  if (edital.is_favorite) favoritosSet.add(idStr);
+  else favoritosSet.delete(idStr);
+
+  syncSavedBadge();
+
+  return { ok: true, is_favorite: edital.is_favorite, edital };
+}
+
+function updateSaveButtonUI(btn, isSaved) {
+  if (!btn) return;
+  btn.classList.toggle('is-saved', !!isSaved);
+  btn.setAttribute('title', isSaved ? 'Remover dos salvos' : 'Salvar edital');
+
+  const icon = btn.querySelector('i');
+  if (icon) {
+    icon.classList.toggle('fas', !!isSaved);
+    icon.classList.toggle('far', !isSaved);
+  }
+}
+
+
+
 
 function normalizeEdital(api) {
   const data = typeof api?.json_data === 'string' ? safeJsonParse(api.json_data, {}) : (api?.json_data || {});
@@ -224,8 +331,8 @@ function normalizeEdital(api) {
     valor_total: data.valor_total || '',
     data_fechamento: api?.data_final_submissao || data.data_final_submissao || null,
     data_abertura: data.data_abertura || null,
-    tags: data.tags || [],
-    arquivos,
+    tags: data.tags || [],    arquivos,
+    is_favorite: false,
     share_link: api?.share_link || ''
   };
 }
@@ -369,6 +476,9 @@ function applyFiltersAndRender({ resetPage } = { resetPage: false }) {
   if (applied.apoio.length) filtered = filtered.filter(e => applied.apoio.includes(e.apoio));
   if (applied.instituicao.length) filtered = filtered.filter(e => applied.instituicao.includes(e.instituicao));
 
+  // 2.5) Só salvos
+  if (onlyFavoritos) filtered = filtered.filter(e => !!e.is_favorite);
+
   // 3) Ordenação
   const sort = (sortSelect?.value || 'prazo').toLowerCase();
 
@@ -406,7 +516,8 @@ function applyFiltersAndRender({ resetPage } = { resetPage: false }) {
   if (resultsMeta) {
     const a = total === 0 ? 0 : startIdx + 1;
     const b = endIdx;
-    resultsMeta.textContent = `Mostrando ${a}-${b} de ${total} editais`;
+    const label = onlyFavoritos ? 'salvos' : 'editais';
+    resultsMeta.textContent = `Mostrando ${a}-${b} de ${total} ${label}`;
   }
 
   updateHeroStats(filtered);
@@ -611,6 +722,15 @@ function setupUIEvents() {
     sortSelect.addEventListener('change', () => applyFiltersAndRender({ resetPage: true }));
   }
 
+  // ver salvos (bookmark ao lado das notificações)
+  if (savedToggleBtn) {
+    savedToggleBtn.addEventListener('click', () => {
+      onlyFavoritos = !onlyFavoritos;
+      syncSavedToggleUI();
+      applyFiltersAndRender({ resetPage: true });
+    });
+  }
+
   // aplicar / limpar filtros
   if (applyFiltersBtn) {
     applyFiltersBtn.addEventListener('click', () => {
@@ -662,9 +782,38 @@ function setupUIEvents() {
     });
   }
 
-  // abrir edital (apenas pelo botão)
+  // abrir edital (apenas pelo botão) + salvar (estrela)
   if (container) {
-    container.addEventListener('click', (e) => {
+    container.addEventListener('click', async (e) => {
+      const saveBtn = e.target.closest('.save-btn');
+      if (saveBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+
+        const id = saveBtn.getAttribute('data-id');
+        if (!id) return;
+
+        // otimista: desabilita rapidinho pra evitar double click
+        const prevDisabled = saveBtn.disabled;
+        saveBtn.disabled = true;
+
+        try {
+          const r = await toggleFavorito(id);
+          if (r?.ok) {
+            updateSaveButtonUI(saveBtn, r.is_favorite);
+            // Se estiver vendo só salvos e removeu, some do grid
+            if (onlyFavoritos && !r.is_favorite) {
+              applyFiltersAndRender({ resetPage: true });
+            }
+          }
+        } catch (err) {
+          alert(err?.message || 'Não foi possível salvar este edital.');
+        } finally {
+          saveBtn.disabled = prevDisabled;
+        }
+        return;
+      }
+
       const btn = e.target.closest('.open-edital-btn');
       if (!btn) return;
       const id = btn.getAttribute('data-id');
@@ -770,8 +919,11 @@ function openModal(edital) {
   if (Array.isArray(edital.arquivos) && edital.arquivos.length > 0) {
     arquivosHtml = `
       <div class="attachments-section">
-        <div class="attachments-summary">
-          <h3>Recursos e Documentos</h3>
+        <div class="attachments-summary" role="button" tabindex="0" aria-label="Abrir recursos e documentos">
+          <div class="attachments-label">
+            <h3>Recursos e Documentos</h3>
+            <span class="attachments-hint">clique para ver</span>
+          </div>
           <i class="fas fa-chevron-right"></i>
         </div>
         <div class="attachments-wrapper">
@@ -796,11 +948,20 @@ function openModal(edital) {
   const localShareLink = `${baseUrl}?${linkParam}`;
 
   modalContentContainer.innerHTML = `
-    <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px;">
-      ${edital.icone ? `<img src="${escapeAttr(edital.icone)}" alt="${escapeHtml(edital.instituicao || '')}" style="max-height:70px; margin-bottom:10px;">` : '<div></div>'}
-      <button class="modal-share-btn" type="button" id="modalCopyLinkBtn">
-        <i class="fas fa-link"></i> Copiar link
-      </button>
+    <div class="modal-topbar">
+      <div class="modal-top-left">
+        ${edital.icone ? `<img src="${escapeAttr(edital.icone)}" alt="${escapeHtml(edital.instituicao || '')}" class="modal-logo">` : '<div></div>'}
+      </div>
+
+      <div class="modal-top-actions">
+        <button class="modal-share-btn" type="button" id="modalCopyLinkBtn">
+          <i class="fas fa-link"></i> Copiar link
+        </button>
+
+        <button class="modal-save-btn" type="button" id="modalSaveBtn" title="${edital.is_favorite ? 'Remover dos salvos' : 'Salvar edital'}">
+          <i class="${edital.is_favorite ? 'fas' : 'far'} fa-star"></i> ${edital.is_favorite ? 'Salvo' : 'Salvar'}
+        </button>
+      </div>
     </div>
 
     <h2>${escapeHtml(edital.titulo)}</h2>
@@ -835,9 +996,44 @@ function openModal(edital) {
     });
   }
 
+  const modalSaveBtn = modalContentContainer.querySelector('#modalSaveBtn');
+  if (modalSaveBtn) {
+    modalSaveBtn.addEventListener('click', async () => {
+      const prev = modalSaveBtn.disabled;
+      modalSaveBtn.disabled = true;
+      try {
+        const r = await toggleFavorito(edital.id);
+        if (r?.ok) {
+          // atualiza texto/ícone do modal
+          const icon = modalSaveBtn.querySelector('i');
+          if (icon) {
+            icon.classList.toggle('fas', !!r.is_favorite);
+            icon.classList.toggle('far', !r.is_favorite);
+          }
+          modalSaveBtn.innerHTML = `<i class="${r.is_favorite ? 'fas' : 'far'} fa-star"></i> ${r.is_favorite ? 'Salvo' : 'Salvar'}`;
+          modalSaveBtn.setAttribute('title', r.is_favorite ? 'Remover dos salvos' : 'Salvar edital');
+
+          // atualiza também o card (se estiver na página)
+          const cardBtn = document.querySelector(`.save-btn[data-id="${String(edital.id)}"]`);
+          if (cardBtn) updateSaveButtonUI(cardBtn, r.is_favorite);
+
+          // Se estiver vendo só salvos e removeu, deixa o modal aberto,
+          // mas atualiza o grid por trás.
+          if (onlyFavoritos && !r.is_favorite) {
+            applyFiltersAndRender({ resetPage: true });
+          }
+        }
+      } catch (err) {
+        alert(err?.message || 'Não foi possível atualizar os salvos.');
+      } finally {
+        modalSaveBtn.disabled = prev;
+      }
+    });
+  }
+
   const summary = modalContentContainer.querySelector('.attachments-summary');
   if (summary) {
-    summary.addEventListener('click', () => {
+    const toggle = () => {
       const wrapper = summary.nextElementSibling;
       const icon = summary.querySelector('i');
       wrapper.classList.toggle('open');
@@ -847,6 +1043,14 @@ function openModal(edital) {
       } else {
         icon.classList.remove('fa-chevron-down');
         icon.classList.add('fa-chevron-right');
+      }
+    };
+
+    summary.addEventListener('click', toggle);
+    summary.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter' || ev.key === ' ') {
+        ev.preventDefault();
+        toggle();
       }
     });
   }
