@@ -51,6 +51,10 @@ export function renderEditais(container, editais) {
           <button class="card-icon-btn share-btn" type="button" title="Copiar link" aria-label="Copiar link" data-share="${escapeAttr(localShareLink)}">
             <i class="fas fa-link"></i>
           </button>
+
+          <button class="card-icon-btn save-btn ${edital.is_favorite ? 'is-saved' : ''}" type="button" title="${edital.is_favorite ? 'Remover dos salvos' : 'Salvar edital'}" aria-label="Salvar edital" data-id="${escapeAttr(edital.id)}">
+            <i class="${edital.is_favorite ? 'fas' : 'far'} fa-star"></i>
+          </button>
         </div>
       </div>
 
