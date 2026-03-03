@@ -1120,6 +1120,13 @@ function normalizeBotText(value) {
   return s;
 }
 
+function renderSimpleMarkdown(text) {
+  // Escapa HTML e depois aplica apenas negrito com **texto**.
+  const safe = escapeHtml(String(text ?? ''));
+  const withBold = safe.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  return withBold.replace(/\n/g, '<br>');
+}
+
 // =========================
 // CHATBOT (mantido)
 // =========================
@@ -1136,15 +1143,14 @@ function addMessage(text, sender = 'bot', sources = null, opts = {}) {
 
   const bubble = document.createElement('div');
   bubble.className = 'bubble';
-  bubble.textContent = String(text ?? '');
+  if (sender === 'bot') {
+    bubble.innerHTML = renderSimpleMarkdown(text);
+  } else {
+    bubble.textContent = String(text ?? '');
+  }
   msg.appendChild(bubble);
 
   messageContainer.appendChild(msg);
-
-  if (sources && Array.isArray(sources) && sources.length) {
-    const details = buildSourcesDetails(sources);
-    if (details) msg.appendChild(details);
-  }
 
   scrollToBottom();
   return msg;
@@ -1153,7 +1159,7 @@ function addMessage(text, sender = 'bot', sources = null, opts = {}) {
 function setMessageText(msgEl, text) {
   if (!msgEl) return;
   const bubble = msgEl.querySelector('.bubble');
-  if (bubble) bubble.textContent = String(text ?? '');
+  if (bubble) bubble.innerHTML = renderSimpleMarkdown(text);
   msgEl.classList.remove('is-typing');
 }
 
@@ -1390,8 +1396,6 @@ const { res, data } = await apiFetchJson(endpoint, {
       data?._rawText ??
       null;
 
-    const sources = data?.sources || data?.fontes || data?.refs || null;
-
     // Se o backend vier vazio, responde localmente.
     const finalText = (answer && String(answer).trim()) ? normalizeBotText(answer) : (localAssistantAnswer(question) || 'Não consegui responder agora.');
     setMessageText(typingMsg, finalText);
@@ -1401,10 +1405,6 @@ const { res, data } = await apiFetchJson(endpoint, {
       attachEditaisOptions(typingMsg, question);
     }
 
-    if (sources && Array.isArray(sources) && sources.length) {
-      const details = buildSourcesDetails(sources);
-      if (details) typingMsg?.appendChild(details);
-    }
   } catch (e) {
     console.error('Erro no chat:', e);
     const local = localAssistantAnswer(question);
