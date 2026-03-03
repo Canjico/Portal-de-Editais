@@ -1,11 +1,11 @@
-/* =========================================================
-   Athos / Atimus — Editais (UX/UI novo + filtros + paginação)
+﻿/* =========================================================
+   Athos / Atimus â€” Editais (UX/UI novo + filtros + paginaÃ§Ã£o)
    ========================================================= */
 
 import { renderEditais } from './render.js';
 
 // =========================
-// CONFIGURAÇÕES & SEGURANÇA
+// CONFIGURAÃ‡Ã•ES & SEGURANÃ‡A
 // =========================
 import {
   API_BASE,
@@ -27,12 +27,31 @@ const PAGE_SIZE = 15;
 let currentPage = 1;
 let lastFiltered = [];
 
-// Filtros aplicados (só mudam quando clicar em "Aplicar filtros")
+// Filtros aplicados (sÃ³ mudam quando clicar em "Aplicar filtros")
 let applied = {
   estado: [],
   apoio: [],
   instituicao: [],
+  area: [],
 };
+
+const CATEGORY_OPTIONS = [
+  { value: 'Governo e Politicas Publicas', label: 'Governo & PolÃ­ticas PÃºblicas' },
+  { value: 'Administracao e Gestao', label: 'AdministraÃ§Ã£o & GestÃ£o' },
+  { value: 'Tecnologia e Inovacao', label: 'Tecnologia & InovaÃ§Ã£o' },
+  { value: 'Educacao e Capacitacao', label: 'EducaÃ§Ã£o & CapacitaÃ§Ã£o' },
+  { value: 'Saude e Bem-Estar', label: 'SaÃºde & Bem-Estar' },
+  { value: 'Meio Ambiente e Sustentabilidade', label: 'Meio Ambiente & Sustentabilidade' },
+  { value: 'Agricultura e Desenvolvimento Rural', label: 'Agricultura & Desenvolvimento Rural' },
+  { value: 'Infraestrutura, Obras e Engenharia', label: 'Infraestrutura, Obras & Engenharia' },
+  { value: 'Logistica, Suprimentos e Operacoes', label: 'LogÃ­stica, Suprimentos & OperaÃ§Ãµes' },
+  { value: 'Economia, Financas e Licitacoes', label: 'Economia, FinanÃ§as & LicitaÃ§Ãµes' },
+  { value: 'Ciencia, Pesquisa e Desenvolvimento', label: 'CiÃªncia, Pesquisa & Desenvolvimento' },
+  { value: 'Social, Direitos e Comunidade', label: 'Social, Direitos & Comunidade' },
+  { value: 'Cultura, Arte e Patrimonio', label: 'Cultura, Arte & PatrimÃ´nio' },
+  { value: 'Esporte, Lazer e Qualidade de Vida', label: 'Esporte, Lazer & Qualidade de Vida' },
+  { value: 'Cooperacao e Relacoes Internacionais', label: 'CooperaÃ§Ã£o & RelaÃ§Ãµes Internacionais' },
+];
 
 
 // =========================
@@ -66,6 +85,7 @@ const filtersCloseBtn = document.getElementById('filtersCloseBtn');
 const filterSearchEstado = document.getElementById('filterSearchEstado');
 const filterSearchApoio = document.getElementById('filterSearchApoio');
 const filterSearchInstituicao = document.getElementById('filterSearchInstituicao');
+const filterSearchArea = document.getElementById('filterSearchArea');
 
 // Sidebar + topbar
 const sidebarToggle = document.getElementById('sidebarToggle');
@@ -133,17 +153,17 @@ async function checkAuth() {
   try {
     const { res, data } = await apiFetchJson('/cliente/me', { method: 'GET' });
 
-    // Se a API respondeu "não autorizado", aí sim é login obrigatório.
+    // Se a API respondeu "nÃ£o autorizado", aÃ­ sim Ã© login obrigatÃ³rio.
     if (!res.ok) {
       if (res.status === 401 || res.status === 403) {
         window.location.href = buildLoginUrlWithNext();
         return false;
       }
-      // Outros erros: não mata a página (pode ser CORS/instabilidade). Deixa o loadEditais decidir.
+      // Outros erros: nÃ£o mata a pÃ¡gina (pode ser CORS/instabilidade). Deixa o loadEditais decidir.
       return true;
     }
 
-    // Alguns backends devolvem {logado:true/false}; outros devolvem o usuário direto.
+    // Alguns backends devolvem {logado:true/false}; outros devolvem o usuÃ¡rio direto.
     if (data && typeof data === 'object' && 'logado' in data && !data.logado) {
       window.location.href = buildLoginUrlWithNext();
       return false;
@@ -151,9 +171,9 @@ async function checkAuth() {
 
     return true;
   } catch (e) {
-    console.error('Erro na verificação de autenticação:', e);
+    console.error('Erro na verificaÃ§Ã£o de autenticaÃ§Ã£o:', e);
 
-    // Se for erro de rede/CORS, não entra em loop de login. Tenta seguir.
+    // Se for erro de rede/CORS, nÃ£o entra em loop de login. Tenta seguir.
     if (e instanceof TypeError) return true;
 
     window.location.href = buildLoginUrlWithNext();
@@ -179,12 +199,12 @@ async function loadEditais() {
     const { res, data } = await apiFetchJson('/editais', { method: 'GET' });
 
     if (!res.ok) {
-      // Se não estiver logado, manda pro login.
+      // Se nÃ£o estiver logado, manda pro login.
       if (res.status === 401 || res.status === 403) {
         container.innerHTML = `
           <div style="grid-column: 1/-1; text-align:center; padding:2rem; color:#ef4444;">
             <i class="fas fa-lock fa-2x"></i>
-            <p>Sessão expirada. Faça login para ver os editais.</p>
+            <p>SessÃ£o expirada. FaÃ§a login para ver os editais.</p>
             <br>
             <a class="btn btn-primary" href="${buildLoginUrlWithNext()}">Ir para o login</a>
           </div>
@@ -206,7 +226,7 @@ async function loadEditais() {
     container.innerHTML = `
       <div style="grid-column: 1/-1; text-align:center; padding:2rem; color:#ef4444;">
         <i class="fas fa-exclamation-triangle fa-2x"></i>
-        <p>Não foi possível carregar os editais.</p>
+        <p>NÃ£o foi possÃ­vel carregar os editais.</p>
         <small>${escapeHtml(e?.message || String(e))}</small>
         <br><br>
         <button onclick="location.reload()" class="btn btn-primary">Tentar novamente</button>
@@ -219,7 +239,7 @@ async function loadEditais() {
 // FAVORITOS (carrega / salva / remove)
 // =========================
 async function loadFavoritos() {
-  // Se o endpoint ainda não existir no backend, a UI segue normalmente.
+  // Se o endpoint ainda nÃ£o existir no backend, a UI segue normalmente.
   favoritosSet = new Set();
   try {
     const { res, data } = await apiFetchJson('/cliente/favoritos', { method: 'GET' });
@@ -228,7 +248,7 @@ async function loadFavoritos() {
       favoritosSet = new Set((ids || []).map(v => String(v)));
     }
   } catch (_) {
-    // silencioso de propósito (não quebra a listagem)
+    // silencioso de propÃ³sito (nÃ£o quebra a listagem)
   }
 
   // marca nos objetos (render usa isso)
@@ -271,7 +291,7 @@ async function salvarOuRemoverFavorito(editalId, salvar) {
 
   const { res, data } = await apiFetchJson(url, opt);
   if (!res.ok) {
-    const msg = (data && (data.detail || data.msg)) ? (data.detail || data.msg) : 'Não foi possível atualizar os salvos.';
+    const msg = (data && (data.detail || data.msg)) ? (data.detail || data.msg) : 'NÃ£o foi possÃ­vel atualizar os salvos.';
     throw new Error(msg);
   }
   return data;
@@ -314,20 +334,21 @@ function updateSaveButtonUI(btn, isSaved) {
 function normalizeEdital(api) {
   const data = typeof api?.json_data === 'string' ? safeJsonParse(api.json_data, {}) : (api?.json_data || {});
   const arquivos = typeof api?.arquivos_json === 'string' ? safeJsonParse(api.arquivos_json, []) : (api?.arquivos_json || []);
-  const titulo = data.titulo || api?.titulo || 'Sem título';
+  const rawArea = data.area || (Array.isArray(data.tags) && data.tags.length ? data.tags[0] : 'Geral');
+  const titulo = data.titulo || api?.titulo || 'Sem tÃ­tulo';
 
   return {
     id: api?.id,
     titulo,
     slug: generateSlug(titulo),
-    descricao: data.objetivo || data.descricao || 'Sem descrição',
+    descricao: data.objetivo || data.descricao || 'Sem descriÃ§Ã£o',
     publico_alvo: data.publico_alvo || '',
     icone: data.icone_instituicao || null,
     instituicao: data.instituicao || '',
     estado: data.estado || 'BR',
-    area: data.area || (Array.isArray(data.tags) && data.tags.length ? data.tags[0] : 'Geral'),
-    apoio: data.apoio || 'Não informado', // Instrumento
-    tipo: data.tipo || 'Não informado',
+    area: String(rawArea || 'Geral'),
+    apoio: data.apoio || 'NÃ£o informado', // Instrumento
+    tipo: data.tipo || 'NÃ£o informado',
     valor_total: data.valor_total || '',
     data_fechamento: api?.data_final_submissao || data.data_final_submissao || null,
     data_abertura: data.data_abertura || null,
@@ -350,8 +371,30 @@ function generateSlug(text) {
     .replace(/^-+|-+$/g, '');
 }
 
+function normalizeCategoryKey(value) {
+  return String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/&/g, ' e ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+const CATEGORY_KEY_MAP = new Map(
+  CATEGORY_OPTIONS.map(item => [normalizeCategoryKey(item.value), item.value])
+);
+
+function toCanonicalCategory(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return 'Geral';
+  const key = normalizeCategoryKey(raw);
+  return CATEGORY_KEY_MAP.get(key) || raw;
+}
+
 // =========================
-// FUSE (relevância)
+// FUSE (relevÃ¢ncia)
 // =========================
 function buildFuseIndex() {
   if (typeof Fuse === 'undefined') return;
@@ -364,7 +407,7 @@ function buildFuseIndex() {
 }
 
 // =========================
-// FILTROS (gera opções)
+// FILTROS (gera opÃ§Ãµes)
 // =========================
 function generateDynamicFilters() {
   const types = [
@@ -387,7 +430,7 @@ function generateDynamicFilters() {
     const values = Array.from(counts.keys()).sort((a, b) => a.localeCompare(b, 'pt-BR'));
     box.innerHTML = '';
     if (values.length === 0) {
-      box.innerHTML = '<div style="font-size:12px; color:#9CA3AF; padding:6px;">Nenhuma opção</div>';
+      box.innerHTML = '<div style="font-size:12px; color:#9CA3AF; padding:6px;">Nenhuma opÃ§Ã£o</div>';
       return;
     }
 
@@ -422,18 +465,65 @@ function generateDynamicFilters() {
     }
   });
 
+  generateCategoryFilters();
+
   wireFilterSearch(filterSearchEstado, document.querySelector('.filter-options[data-filter-type="estado"]'));
   wireFilterSearch(filterSearchApoio, document.querySelector('.filter-options[data-filter-type="apoio"]'));
   wireFilterSearch(filterSearchInstituicao, document.querySelector('.filter-options[data-filter-type="instituicao"]'));
+  wireFilterSearch(filterSearchArea, document.querySelector('.filter-options[data-filter-type="area"]'));
+}
+
+function generateCategoryFilters() {
+  const box = document.querySelector('.filter-options[data-filter-type="area"]');
+  if (!box) return;
+
+  const counts = new Map();
+  for (const e of editaisOriginais) {
+    const cat = toCanonicalCategory(e?.area);
+    if (!cat) continue;
+    counts.set(cat, (counts.get(cat) || 0) + 1);
+  }
+
+  box.innerHTML = '';
+  for (const category of CATEGORY_OPTIONS) {
+    const label = document.createElement('label');
+    label.setAttribute('data-label', normalizeCategoryKey(`${category.label} ${category.value}`));
+
+    const left = document.createElement('span');
+    left.className = 'label-left';
+
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.value = category.value;
+
+    const text = document.createElement('span');
+    text.textContent = category.label;
+    text.style.minWidth = '0';
+    text.style.overflow = 'hidden';
+    text.style.textOverflow = 'ellipsis';
+    text.style.whiteSpace = 'nowrap';
+
+    left.appendChild(input);
+    left.appendChild(text);
+
+    const count = document.createElement('span');
+    count.className = 'filter-count';
+    count.textContent = counts.get(category.value) || 0;
+
+    label.appendChild(left);
+    label.appendChild(count);
+    box.appendChild(label);
+  }
 }
 
 function wireFilterSearch(inputEl, optionsEl) {
   if (!inputEl || !optionsEl) return;
   inputEl.addEventListener('input', () => {
-    const q = inputEl.value.trim().toLowerCase();
+    const q = normalizeCategoryKey(inputEl.value);
     optionsEl.querySelectorAll('label').forEach(label => {
       const key = label.getAttribute('data-label') || '';
-      label.style.display = (!q || key.includes(q)) ? 'flex' : 'none';
+      const keyNorm = normalizeCategoryKey(key);
+      label.style.display = (!q || keyNorm.includes(q)) ? 'flex' : 'none';
     });
   });
 }
@@ -445,7 +535,7 @@ function readSelected(type) {
 }
 
 // =========================
-// APLICAÇÃO DE FILTROS
+// APLICAÃ‡ÃƒO DE FILTROS
 // =========================
 function applyFiltersAndRender({ resetPage } = { resetPage: false }) {
   if (resetPage) currentPage = 1;
@@ -453,7 +543,7 @@ function applyFiltersAndRender({ resetPage } = { resetPage: false }) {
   const termo = (searchInput?.value || '').trim();
   const termoLower = termo.toLowerCase();
 
-  // 1) Base por relevância (Fuse) quando existir busca
+  // 1) Base por relevÃ¢ncia (Fuse) quando existir busca
   let base = [...editaisOriginais];
   let fromFuse = false;
 
@@ -475,11 +565,12 @@ function applyFiltersAndRender({ resetPage } = { resetPage: false }) {
   if (applied.estado.length) filtered = filtered.filter(e => applied.estado.includes(e.estado));
   if (applied.apoio.length) filtered = filtered.filter(e => applied.apoio.includes(e.apoio));
   if (applied.instituicao.length) filtered = filtered.filter(e => applied.instituicao.includes(e.instituicao));
+  if (applied.area.length) filtered = filtered.filter(e => applied.area.includes(toCanonicalCategory(e.area)));
 
-  // 2.5) Só salvos
+  // 2.5) SÃ³ salvos
   if (onlyFavoritos) filtered = filtered.filter(e => !!e.is_favorite);
 
-  // 3) Ordenação
+  // 3) OrdenaÃ§Ã£o
   const sort = (sortSelect?.value || 'prazo').toLowerCase();
 
   const collate = (a, b) => String(a || '').localeCompare(String(b || ''), 'pt-BR', { sensitivity: 'base' });
@@ -495,7 +586,7 @@ function applyFiltersAndRender({ resetPage } = { resetPage: false }) {
   } else if (sort === 'estado') {
     filtered = [...filtered].sort((a, b) => collate(a.estado, b.estado));
   } else if (sort === 'relevancia') {
-    // se veio do Fuse, mantém a ordem do Fuse; se não, mantém a ordem do backend
+    // se veio do Fuse, mantÃ©m a ordem do Fuse; se nÃ£o, mantÃ©m a ordem do backend
     filtered = filtered;
   } else {
     // fallback
@@ -504,7 +595,7 @@ function applyFiltersAndRender({ resetPage } = { resetPage: false }) {
 
   lastFiltered = filtered;
 
-  // 4) Paginação + render
+  // 4) PaginaÃ§Ã£o + render
   const total = filtered.length;
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   if (currentPage > totalPages) currentPage = totalPages;
@@ -560,7 +651,7 @@ function updateHeroStats(filtered) {
 
   for (const e of filtered) {
     const t = parseAnyDateToTime(e.data_fechamento);
-    // Sem data final: considera como aberto (melhor UX do que sumir com números)
+    // Sem data final: considera como aberto (melhor UX do que sumir com nÃºmeros)
     if (t === null) {
       abertos++;
       continue;
@@ -595,7 +686,7 @@ function formatBRL(n) {
 }
 
 // =========================
-// PAGINAÇÃO (UI)
+// PAGINAÃ‡ÃƒO (UI)
 // =========================
 function renderPagination(totalPages) {
   if (!paginationEl) return;
@@ -619,10 +710,10 @@ function renderPagination(totalPages) {
 
   const pages = getPageWindow(currentPage, totalPages, 7);
   for (const p of pages) {
-    if (p === '…') {
+    if (p === 'â€¦') {
       const span = document.createElement('span');
       span.className = 'page-ellipsis';
-      span.textContent = '…';
+      span.textContent = 'â€¦';
       paginationEl.appendChild(span);
       continue;
     }
@@ -655,9 +746,9 @@ function getPageWindow(page, totalPages, maxButtons) {
   }
 
   out.push(1);
-  if (start > 2) out.push('…');
+  if (start > 2) out.push('â€¦');
   for (let i = start; i <= end; i++) out.push(i);
-  if (end < totalPages - 1) out.push('…');
+  if (end < totalPages - 1) out.push('â€¦');
   out.push(totalPages);
   return out;
 }
@@ -681,7 +772,7 @@ function setupUIEvents() {
     });
   }
 
-  // logout (tenta encerrar sessão no back; se não existir endpoint, cai no redirect)
+  // logout (tenta encerrar sessÃ£o no back; se nÃ£o existir endpoint, cai no redirect)
   const doLogout = async () => {
     const endpoints = [
       { url: API_BASE + "/logout", method: "POST" },
@@ -701,18 +792,19 @@ function setupUIEvents() {
         try {
           const r = await fetch(ep.url, { method: ep.method, credentials: "include" });
           if (r.ok) break;
-        } catch (_) { /* tenta o próximo */ }
+        } catch (_) { /* tenta o prÃ³ximo */ }
       }
     } finally {
-      try { localStorage.clear(); } catch (_) {}
-      try { sessionStorage.clear(); } catch (_) {}
-      window.location.href = LOGIN_URL;
+      try { localStorage.removeItem('cliente_token'); } catch (_) {}
+      try { sessionStorage.removeItem('cliente_token'); } catch (_) {}
+      const sep = LOGIN_URL.includes('?') ? '&' : '?';
+      window.location.href = `${LOGIN_URL}${sep}logged_out=1`;
     }
   };
   if (logoutIconBtn) logoutIconBtn.addEventListener('click', doLogout);
   if (logoutBtn) logoutBtn.addEventListener('click', doLogout);
 
-  // busca global (aplica instantâneo)
+  // busca global (aplica instantÃ¢neo)
   if (searchInput) {
     searchInput.addEventListener('input', () => applyFiltersAndRender({ resetPage: true }));
   }
@@ -722,7 +814,7 @@ function setupUIEvents() {
     sortSelect.addEventListener('change', () => applyFiltersAndRender({ resetPage: true }));
   }
 
-  // ver salvos (bookmark ao lado das notificações)
+  // ver salvos (bookmark ao lado das notificaÃ§Ãµes)
   if (savedToggleBtn) {
     savedToggleBtn.addEventListener('click', () => {
       onlyFavoritos = !onlyFavoritos;
@@ -738,6 +830,7 @@ function setupUIEvents() {
         estado: readSelected('estado'),
         apoio: readSelected('apoio'),
         instituicao: readSelected('instituicao'),
+        area: readSelected('area'),
       };
       closeFiltersMobile();
       applyFiltersAndRender({ resetPage: true });
@@ -750,9 +843,10 @@ function setupUIEvents() {
       if (filterSearchEstado) filterSearchEstado.value = '';
       if (filterSearchApoio) filterSearchApoio.value = '';
       if (filterSearchInstituicao) filterSearchInstituicao.value = '';
+      if (filterSearchArea) filterSearchArea.value = '';
       document.querySelectorAll('.filter-options label').forEach(l => l.style.display = 'flex');
 
-      applied = { estado: [], apoio: [], instituicao: [] };
+      applied = { estado: [], apoio: [], instituicao: [], area: [] };
       closeFiltersMobile();
       applyFiltersAndRender({ resetPage: true });
     });
@@ -769,7 +863,7 @@ function setupUIEvents() {
     filtersBackdrop.addEventListener('click', () => closeFiltersMobile());
   }
 
-  // paginação click
+  // paginaÃ§Ã£o click
   if (paginationEl) {
     paginationEl.addEventListener('click', (e) => {
       const btn = e.target.closest('button[data-page]');
@@ -782,7 +876,7 @@ function setupUIEvents() {
     });
   }
 
-  // abrir edital (apenas pelo botão) + salvar (estrela)
+  // abrir edital (apenas pelo botÃ£o) + salvar (estrela)
   if (container) {
     container.addEventListener('click', async (e) => {
       const saveBtn = e.target.closest('.save-btn');
@@ -801,13 +895,13 @@ function setupUIEvents() {
           const r = await toggleFavorito(id);
           if (r?.ok) {
             updateSaveButtonUI(saveBtn, r.is_favorite);
-            // Se estiver vendo só salvos e removeu, some do grid
+            // Se estiver vendo sÃ³ salvos e removeu, some do grid
             if (onlyFavoritos && !r.is_favorite) {
               applyFiltersAndRender({ resetPage: true });
             }
           }
         } catch (err) {
-          alert(err?.message || 'Não foi possível salvar este edital.');
+          alert(err?.message || 'NÃ£o foi possÃ­vel salvar este edital.');
         } finally {
           saveBtn.disabled = prevDisabled;
         }
@@ -837,7 +931,7 @@ function setupUIEvents() {
       updateChatHeader();
       scrollToBottom();
       if (messageContainer?.children.length === 0) {
-        addMessage('Olá! Busque por um tema (ex: inovação) e eu listarei os editais disponíveis.', 'bot');
+        addMessage('OlÃ¡! Busque por um tema (ex: inovaÃ§Ã£o) e eu listarei os editais disponÃ­veis.', 'bot');
       }
     });
   }
@@ -853,7 +947,7 @@ function setupUIEvents() {
   }
 
 
-  // opções clicáveis do chat (ex: lista de editais)
+  // opÃ§Ãµes clicÃ¡veis do chat (ex: lista de editais)
   if (messageContainer) {
     messageContainer.addEventListener('click', (e) => {
       const btn = e.target.closest('button.chat-option-btn');
@@ -886,7 +980,7 @@ function setupUIEvents() {
           chatInput.value = '';
           chatInput.focus();
         }
-        addMessage('Me diga um tema (ex: inovação, saúde, educação, agricultura) ou uma instituição (ex: FAPEAL, FINEP).', 'bot');
+        addMessage('Me diga um tema (ex: inovaÃ§Ã£o, saÃºde, educaÃ§Ã£o, agricultura) ou uma instituiÃ§Ã£o (ex: FAPEAL, FINEP).', 'bot');
         return;
       }
     });
@@ -910,7 +1004,7 @@ function closeFiltersMobile() {
 }
 
 // =========================
-// MODAL (mantém links de documentos)
+// MODAL (mantÃ©m links de documentos)
 // =========================
 function openModal(edital) {
   if (!modalOverlay || !modalContentContainer) return;
@@ -946,6 +1040,20 @@ function openModal(edital) {
   const baseUrl = window.location.origin + window.location.pathname.split('?')[0];
   const linkParam = edital.slug ? `edital=${encodeURIComponent(edital.slug)}` : `id=${encodeURIComponent(edital.id)}`;
   const localShareLink = `${baseUrl}?${linkParam}`;
+  const uniqueTags = [];
+  const seenTags = new Set();
+  const rawTags = [edital.area, ...(Array.isArray(edital.tags) ? edital.tags : [])];
+  for (const t of rawTags) {
+    const clean = String(t || '').trim();
+    if (!clean || clean.toLowerCase() === 'geral') continue;
+    const key = clean.toLowerCase();
+    if (seenTags.has(key)) continue;
+    seenTags.add(key);
+    uniqueTags.push(clean);
+  }
+  const tagsHtml = uniqueTags.length
+    ? `<div class="modal-tags">${uniqueTags.map(t => `<span class="pill">${escapeHtml(t)}</span>`).join('')}</div>`
+    : '';
 
   modalContentContainer.innerHTML = `
     <div class="modal-topbar">
@@ -968,11 +1076,13 @@ function openModal(edital) {
     <p>${escapeHtml(edital.descricao)}</p>
 
     <div class="modal-details">
-      <div><strong>Instituição</strong><span>${escapeHtml(edital.instituicao || 'Não informada')}</span></div>
-      <div><strong>Estado</strong><span>${escapeHtml(edital.estado || '—')}</span></div>
-      <div><strong>Instrumento</strong><span>${escapeHtml(edital.apoio || '—')}</span></div>
-      ${edital.data_fechamento ? `<div><strong>Data final</strong><span>${escapeHtml(edital.data_fechamento)}</span></div>` : ''}
+      <div class="modal-detail-row"><strong>Instituição:</strong> <span>${escapeHtml(edital.instituicao || 'Não informada')}</span></div>
+      <div class="modal-detail-row"><strong>Estado:</strong> <span>${escapeHtml(edital.estado || '—')}</span></div>
+      <div class="modal-detail-row"><strong>Instrumento:</strong> <span>${escapeHtml(edital.apoio || '—')}</span></div>
+      ${edital.data_fechamento ? `<div class="modal-detail-row"><strong>Data final:</strong> <span>${escapeHtml(edital.data_fechamento)}</span></div>` : ''}
     </div>
+
+    ${tagsHtml}
 
     <div class=\"edital-ai-cta\">
       <div class=\"cta-text\">
@@ -992,7 +1102,7 @@ function openModal(edital) {
     copyBtn.addEventListener('click', () => {
       navigator.clipboard.writeText(localShareLink)
         .then(() => alert('Link copiado!'))
-        .catch(() => alert('Não foi possível copiar o link.'));
+        .catch(() => alert('NÃ£o foi possÃ­vel copiar o link.'));
     });
   }
 
@@ -1004,7 +1114,7 @@ function openModal(edital) {
       try {
         const r = await toggleFavorito(edital.id);
         if (r?.ok) {
-          // atualiza texto/ícone do modal
+          // atualiza texto/Ã­cone do modal
           const icon = modalSaveBtn.querySelector('i');
           if (icon) {
             icon.classList.toggle('fas', !!r.is_favorite);
@@ -1013,18 +1123,18 @@ function openModal(edital) {
           modalSaveBtn.innerHTML = `<i class="${r.is_favorite ? 'fas' : 'far'} fa-star"></i> ${r.is_favorite ? 'Salvo' : 'Salvar'}`;
           modalSaveBtn.setAttribute('title', r.is_favorite ? 'Remover dos salvos' : 'Salvar edital');
 
-          // atualiza também o card (se estiver na página)
+          // atualiza tambÃ©m o card (se estiver na pÃ¡gina)
           const cardBtn = document.querySelector(`.save-btn[data-id="${String(edital.id)}"]`);
           if (cardBtn) updateSaveButtonUI(cardBtn, r.is_favorite);
 
-          // Se estiver vendo só salvos e removeu, deixa o modal aberto,
-          // mas atualiza o grid por trás.
+          // Se estiver vendo sÃ³ salvos e removeu, deixa o modal aberto,
+          // mas atualiza o grid por trÃ¡s.
           if (onlyFavoritos && !r.is_favorite) {
             applyFiltersAndRender({ resetPage: true });
           }
         }
       } catch (err) {
-        alert(err?.message || 'Não foi possível atualizar os salvos.');
+        alert(err?.message || 'NÃ£o foi possÃ­vel atualizar os salvos.');
       } finally {
         modalSaveBtn.disabled = prev;
       }
@@ -1036,8 +1146,9 @@ function openModal(edital) {
     const toggle = () => {
       const wrapper = summary.nextElementSibling;
       const icon = summary.querySelector('i');
-      wrapper.classList.toggle('open');
-      if (wrapper.classList.contains('open')) {
+      const isOpen = wrapper.classList.toggle('open');
+      summary.classList.toggle('open', isOpen);
+      if (isOpen) {
         icon.classList.remove('fa-chevron-right');
         icon.classList.add('fa-chevron-down');
       } else {
@@ -1078,9 +1189,9 @@ function updateChatHeader() {
   const editalId = chatState?.edital_id ?? chatState?.editalId ?? null;
   const titulo = chatState?.titulo ?? chatState?.edital_titulo ?? chatState?.editalTitulo ?? null;
   if (editalId && titulo) {
-    chatHeader.textContent = `Athos • Edital: ${truncateText(titulo, 28)}`;
+    chatHeader.textContent = `Athos â€¢ Edital: ${truncateText(titulo, 28)}`;
   } else {
-    chatHeader.textContent = 'Athos • Assistente';
+    chatHeader.textContent = 'Athos â€¢ Assistente';
   }
 }
 
@@ -1096,7 +1207,7 @@ function startEditalChat(edital) {
   updateChatHeader();
 
   addMessage(
-    `Fechado. Vamos falar do edital: "${edital.titulo || 'Sem título'}".\n` +
+    `Fechado. Vamos falar do edital: "${edital.titulo || 'Sem tÃ­tulo'}".\n` +
     `Manda sua pergunta (ex: prazo, quem pode participar, valor, documentos, como enviar).`,
     'bot'
   );
@@ -1171,7 +1282,7 @@ function buildSourcesDetails(sources) {
   details.className = 'chat-sources-details';
 
   const summary = document.createElement('summary');
-  summary.textContent = `📎 Fontes consultadas (${ok}/${total})`;
+  summary.textContent = `ðŸ“Ž Fontes consultadas (${ok}/${total})`;
   details.appendChild(summary);
 
   const ul = document.createElement('ul');
@@ -1193,7 +1304,7 @@ function buildSourcesDetails(sources) {
 
 
 // =========================
-// CHAT — OPÇÕES (quick replies)
+// CHAT â€” OPÃ‡Ã•ES (quick replies)
 // =========================
 function shouldOfferEditaisOptions(answerText) {
   const t = String(answerText || '').toLowerCase();
@@ -1236,7 +1347,7 @@ function searchEditaisForChat(query) {
 function truncateText(text, max = 80) {
   const s = String(text || '').replaceAll('\n', ' ').trim();
   if (s.length <= max) return s;
-  return s.slice(0, Math.max(0, max - 1)).trimEnd() + '…';
+  return s.slice(0, Math.max(0, max - 1)).trimEnd() + 'â€¦';
 }
 
 function attachEditaisOptions(msgEl, query) {
@@ -1251,13 +1362,13 @@ function attachEditaisOptions(msgEl, query) {
     const metaParts = [];
     if (e.instituicao) metaParts.push(e.instituicao);
     if (e.estado) metaParts.push(e.estado);
-    if (e.data_fechamento) metaParts.push('Até ' + e.data_fechamento);
-    const meta = metaParts.join(' • ');
+    if (e.data_fechamento) metaParts.push('AtÃ© ' + e.data_fechamento);
+    const meta = metaParts.join(' â€¢ ');
 
     return {
       action: 'open_edital',
       id: e.id,
-      title: e.titulo || 'Sem título',
+      title: e.titulo || 'Sem tÃ­tulo',
       meta: meta || null
     };
   });
@@ -1309,9 +1420,9 @@ function localAssistantAnswer(question) {
   const q = String(question || '').trim();
   const qLower = q.toLowerCase();
 
-  // Conversa humana básica (porque sim, somos mamíferos sociais)
-  if (/^(oi|ol[áa]|eae|ea[íi]|bom dia|boa tarde|boa noite)\b/.test(qLower)) {
-    return 'Oi! Me manda um tema (ex: inovação, saúde, educação, agricultura) que eu te listo os editais mais próximos.';
+  // Conversa humana bÃ¡sica (porque sim, somos mamÃ­feros sociais)
+  if (/^(oi|ol[Ã¡a]|eae|ea[Ã­i]|bom dia|boa tarde|boa noite)\b/.test(qLower)) {
+    return 'Oi! Me manda um tema (ex: inovaÃ§Ã£o, saÃºde, educaÃ§Ã£o, agricultura) que eu te listo os editais mais prÃ³ximos.';
   }
 
   if (!editaisOriginais || editaisOriginais.length === 0) {
@@ -1334,18 +1445,18 @@ function localAssistantAnswer(question) {
   matches = matches.slice(0, 5);
 
   if (matches.length === 0) {
-    return `Não achei editais parecidos com "${q}". Tenta outro termo (tema, instituição, estado) — tipo "inovação", "FAPESP", "SP".`;
+    return `NÃ£o achei editais parecidos com "${q}". Tenta outro termo (tema, instituiÃ§Ã£o, estado) â€” tipo "inovaÃ§Ã£o", "FAPESP", "SP".`;
   }
 
   const baseUrl = window.location.origin + window.location.pathname.split('?')[0];
 
   const linhas = matches.map((e, idx) => {
-    const inst = e.instituicao || 'Instituição';
-    const estado = e.estado || '—';
-    const prazo = e.data_fechamento || 'não informado';
+    const inst = e.instituicao || 'InstituiÃ§Ã£o';
+    const estado = e.estado || 'â€”';
+    const prazo = e.data_fechamento || 'nÃ£o informado';
     const linkParam = e.slug ? `edital=${encodeURIComponent(e.slug)}` : `id=${encodeURIComponent(e.id)}`;
     const link = `${baseUrl}?${linkParam}`;
-    return `${idx + 1}) ${e.titulo || 'Sem título'}\n   ${inst} • ${estado} • Data final: ${prazo}\n   ${link}`;
+    return `${idx + 1}) ${e.titulo || 'Sem tÃ­tulo'}\n   ${inst} â€¢ ${estado} â€¢ Data final: ${prazo}\n   ${link}`;
   });
 
   return `Encontrei ${matches.length} edital(is) que batem com "${q}":\n\n${linhas.join('\n\n')}`;
@@ -1375,9 +1486,9 @@ const { res, data } = await apiFetchJson(endpoint, {
 });
 
     if (!res.ok) {
-      // fallback local (não deixa o usuário no vácuo)
+      // fallback local (nÃ£o deixa o usuÃ¡rio no vÃ¡cuo)
       const local = localAssistantAnswer(question);
-      setMessageText(typingMsg, local || 'O chat está indisponível no momento. Tenta de novo em alguns instantes.');
+      setMessageText(typingMsg, local || 'O chat estÃ¡ indisponÃ­vel no momento. Tenta de novo em alguns instantes.');
       if (shouldOfferEditaisOptions(local)) {
         attachEditaisOptions(typingMsg, question);
       }
@@ -1397,10 +1508,10 @@ const { res, data } = await apiFetchJson(endpoint, {
       null;
 
     // Se o backend vier vazio, responde localmente.
-    const finalText = (answer && String(answer).trim()) ? normalizeBotText(answer) : (localAssistantAnswer(question) || 'Não consegui responder agora.');
+    const finalText = (answer && String(answer).trim()) ? normalizeBotText(answer) : (localAssistantAnswer(question) || 'NÃ£o consegui responder agora.');
     setMessageText(typingMsg, finalText);
 
-    // Se o bot disser que encontrou editais, mostra opções clicáveis (sem depender do backend)
+    // Se o bot disser que encontrou editais, mostra opÃ§Ãµes clicÃ¡veis (sem depender do backend)
     if (shouldOfferEditaisOptions(finalText)) {
       attachEditaisOptions(typingMsg, question);
     }
