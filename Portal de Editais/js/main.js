@@ -1238,12 +1238,106 @@ function renderSimpleMarkdown(text) {
   return withBold.replace(/\n/g, '<br>');
 }
 
+function extractEmbeddedSources(text) {
+  const raw = String(text ?? '').replace(/\r\n/g, '\n').trim();
+  if (!raw) return { text: '', names: [] };
+
+  const lines = raw.split('\n');
+  let headerIdx = -1;
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const normalizedLine = lines[i].replace(/\*/g, '').trim().toLowerCase();
+    if (/^fontes?\s*:?\s*$/.test(normalizedLine)) {
+      headerIdx = i;
+      break;
+    }
+  }
+
+  if (headerIdx < 0 || headerIdx >= lines.length - 1) {
+    return { text: raw, names: [] };
+  }
+
+  const names = [];
+  for (const line of lines.slice(headerIdx + 1)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    const bulletMatch = trimmed.match(/^[-*]\s*(.+)$/);
+    const numberedMatch = trimmed.match(/^\d+[.)]\s*(.+)$/);
+    const value = (bulletMatch?.[1] || numberedMatch?.[1] || trimmed).trim();
+    if (value) names.push(value);
+  }
+
+  if (!names.length) {
+    return { text: raw, names: [] };
+  }
+
+  const cleanText = lines.slice(0, headerIdx).join('\n').trim();
+  return { text: cleanText || raw, names };
+}
+
+function normalizeSources(rawSources, fallbackNames = []) {
+  const normalized = [];
+  const seen = new Set();
+
+  const addSource = (titleRaw, urlRaw = '', status = 'ok') => {
+    const title = String(titleRaw ?? '').trim();
+    const url = String(urlRaw ?? '').trim();
+    if (!title && !url) return;
+
+    const safeTitle = title || url || 'Fonte';
+    const key = `${safeTitle.toLowerCase()}::${url.toLowerCase()}`;
+    if (seen.has(key)) return;
+
+    seen.add(key);
+    normalized.push({ title: safeTitle, url, status });
+  };
+
+  if (Array.isArray(rawSources)) {
+    rawSources.forEach((s, idx) => {
+      if (!s || typeof s !== 'object') return;
+
+      const title = s.title || s.name || s.nome || `Fonte ${idx + 1}`;
+      const url = s.url || s.link || '';
+      const status = s.status || (s.ok === false ? 'error' : 'ok');
+      const isOk = status === 'ok' || s.ok === true || !('status' in s);
+
+      if (!isOk && !url) return;
+      addSource(title, url, isOk ? 'ok' : status);
+    });
+  }
+
+  if (Array.isArray(fallbackNames)) {
+    fallbackNames.forEach((name) => {
+      const label = String(name ?? '').trim();
+      if (!label) return;
+
+      const url = /^https?:\/\//i.test(label) ? label : '';
+      addSource(label, url, 'ok');
+    });
+  }
+
+  return normalized;
+}
+
 // =========================
 // CHATBOT (mantido)
 // =========================
 function scrollToBottom() {
   if (!messageContainer) return;
   setTimeout(() => { messageContainer.scrollTop = messageContainer.scrollHeight; }, 50);
+}
+
+function applySourcesDetails(msgEl, sources) {
+  if (!msgEl) return;
+
+  const oldDetails = msgEl.querySelector('.chat-sources-details');
+  if (oldDetails) oldDetails.remove();
+
+  const normalized = normalizeSources(sources);
+  if (!normalized.length) return;
+
+  msgEl.appendChild(buildSourcesDetails(normalized));
 }
 
 function addMessage(text, sender = 'bot', sources = null, opts = {}) {
@@ -1260,6 +1354,7 @@ function addMessage(text, sender = 'bot', sources = null, opts = {}) {
     bubble.textContent = String(text ?? '');
   }
   msg.appendChild(bubble);
+  if (sender === 'bot') applySourcesDetails(msg, sources);
 
   messageContainer.appendChild(msg);
 
@@ -1267,10 +1362,13 @@ function addMessage(text, sender = 'bot', sources = null, opts = {}) {
   return msg;
 }
 
-function setMessageText(msgEl, text) {
+function setMessageText(msgEl, text, sources = null) {
   if (!msgEl) return;
   const bubble = msgEl.querySelector('.bubble');
   if (bubble) bubble.innerHTML = renderSimpleMarkdown(text);
+  if (msgEl.classList.contains('bot')) {
+    applySourcesDetails(msgEl, sources);
+  }
   msgEl.classList.remove('is-typing');
 }
 
@@ -1282,19 +1380,38 @@ function buildSourcesDetails(sources) {
   details.className = 'chat-sources-details';
 
   const summary = document.createElement('summary');
-  summary.textContent = `ðŸ“Ž Fontes consultadas (${ok}/${total})`;
+  const icon = document.createElement('i');
+  icon.className = 'fas fa-file-lines';
+  icon.setAttribute('aria-hidden', 'true');
+  const label = document.createElement('span');
+  label.textContent = `Fontes consultadas (${ok}/${total})`;
+  summary.appendChild(icon);
+  summary.appendChild(label);
   details.appendChild(summary);
 
   const ul = document.createElement('ul');
-  ul.style.margin = '8px 0 0 18px';
+  ul.className = 'chat-sources-list';
 
   sources.forEach((s) => {
     const li = document.createElement('li');
-    const title = s?.title || s?.name || 'Fonte';
-    const url = s?.url;
-    li.innerHTML = url
-      ? `<a href="${escapeAttr(url)}" target="_blank" rel="noopener">${escapeHtml(title)}</a>`
-      : escapeHtml(title);
+    li.className = 'chat-source-item';
+
+    const title = String(s?.title || s?.name || s?.nome || 'Fonte').trim();
+    const url = String(s?.url || '').trim();
+
+    if (url) {
+      const a = document.createElement('a');
+      a.href = url;
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      a.textContent = title;
+      li.appendChild(a);
+    } else {
+      const span = document.createElement('span');
+      span.textContent = title;
+      li.appendChild(span);
+    }
+
     ul.appendChild(li);
   });
 
@@ -1508,8 +1625,11 @@ const { res, data } = await apiFetchJson(endpoint, {
       null;
 
     // Se o backend vier vazio, responde localmente.
-    const finalText = (answer && String(answer).trim()) ? normalizeBotText(answer) : (localAssistantAnswer(question) || 'Não consegui responder agora.');
-    setMessageText(typingMsg, finalText);
+    const rawText = (answer && String(answer).trim()) ? normalizeBotText(answer) : (localAssistantAnswer(question) || 'Não consegui responder agora.');
+    const extracted = extractEmbeddedSources(rawText);
+    const finalText = extracted.text || rawText;
+    const finalSources = normalizeSources(data?.sources, extracted.names);
+    setMessageText(typingMsg, finalText, finalSources);
 
     // Se o bot disser que encontrou editais, mostra opções clicáveis (sem depender do backend)
     if (shouldOfferEditaisOptions(finalText)) {
