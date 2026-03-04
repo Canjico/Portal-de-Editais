@@ -136,6 +136,23 @@
     ui.manager.hidden = !show;
   }
 
+  function getManagerSlot() {
+    return document.querySelector('[data-cookie-manager-slot]');
+  }
+
+  function placeManagerButton() {
+    if (!ui || !ui.manager) return;
+
+    const slot = getManagerSlot();
+    if (slot) {
+      ui.manager.classList.add('cookie-consent-manager--inline');
+      slot.appendChild(ui.manager);
+      return;
+    }
+
+    ui.manager.classList.remove('cookie-consent-manager--inline');
+  }
+
   function openPanel() {
     if (!ui || !ui.panel) return;
     if (ui.analytics) ui.analytics.checked = Boolean(consent.analytics);
@@ -166,9 +183,10 @@
     if (!ui) return;
 
     const decisionDone = hasDecision();
+    const managerSlotExists = Boolean(getManagerSlot());
     ui.backdrop.hidden = decisionDone;
     setBannerVisible(!decisionDone);
-    setManagerVisible(decisionDone);
+    setManagerVisible(decisionDone && managerSlotExists);
     updateBodyLock();
 
     if (!decisionDone) {
@@ -407,6 +425,7 @@
 
   function boot() {
     ui = buildUi();
+    placeManagerButton();
     bindEvents();
     refreshUi();
     activateDeferredScripts();

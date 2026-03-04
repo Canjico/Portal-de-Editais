@@ -1275,6 +1275,19 @@ body.cookie-consent-required{
   background:rgba(47,143,131,0.08);
 }
 
+.cookie-consent-manager.cookie-consent-manager--inline{
+  position:static;
+  left:auto;
+  bottom:auto;
+  z-index:auto;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  gap:6px;
+  box-shadow:none;
+  margin-top:8px;
+}
+
 .cookie-consent-panel{
   position:fixed;
   inset:0;
@@ -1706,6 +1719,25 @@ body.cookie-consent-required{
   display:block;
   color:var(--muted);
   margin-top:4px;
+}
+
+.cookie-prefs-card{
+  margin-top:14px;
+  border:1px solid var(--border);
+  border-radius:14px;
+  padding:12px;
+  background:#F9FAFB;
+}
+
+.cookie-prefs-card strong{
+  display:block;
+  color:var(--night);
+}
+
+.cookie-prefs-card small{
+  display:block;
+  margin-top:4px;
+  color:var(--muted);
 }
 
 .security-box{
