@@ -53,6 +53,15 @@ const CATEGORY_OPTIONS = [
   { value: 'Cooperacao e Relacoes Internacionais', label: 'Cooperação & Relações Internacionais' },
 ];
 
+const INSTRUMENT_OPTIONS = [
+  'Financiamento não reembolsável',
+  'Bolsa para pesquisadores',
+  'Prêmios de Inovação',
+  'Financiamento reembolsável',
+  'Edital privado',
+  'Fundo de Investimento',
+];
+
 
 // =========================
 // SALVOS (FAVORITOS)
@@ -347,7 +356,7 @@ function normalizeEdital(api) {
     instituicao: data.instituicao || '',
     estado: data.estado || 'BR',
     area: String(rawArea || 'Geral'),
-    instrumento: data.instrumento || data.apoio || 'Não informado',
+    instrumento: toCanonicalInstrument(data.instrumento || data.apoio || 'Não informado'),
     tipo: data.tipo || 'Não informado',
     valor_total: data.valor_total || '',
     data_fechamento: api?.data_final_submissao || data.data_final_submissao || null,
@@ -386,11 +395,22 @@ const CATEGORY_KEY_MAP = new Map(
   CATEGORY_OPTIONS.map(item => [normalizeCategoryKey(item.value), item.value])
 );
 
+const INSTRUMENT_KEY_MAP = new Map(
+  INSTRUMENT_OPTIONS.map(item => [normalizeCategoryKey(item), item])
+);
+
 function toCanonicalCategory(value) {
   const raw = String(value || '').trim();
   if (!raw) return 'Geral';
   const key = normalizeCategoryKey(raw);
   return CATEGORY_KEY_MAP.get(key) || raw;
+}
+
+function toCanonicalInstrument(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return 'Não informado';
+  const key = normalizeCategoryKey(raw);
+  return INSTRUMENT_KEY_MAP.get(key) || raw;
 }
 
 // =========================
@@ -422,12 +442,17 @@ function generateDynamicFilters() {
 
     const counts = new Map();
     for (const e of editaisOriginais) {
-      const raw = (e?.[key] ?? '').toString().trim();
+      const raw = type === 'instrumento'
+        ? toCanonicalInstrument(e?.[key])
+        : (e?.[key] ?? '').toString().trim();
       if (!raw) continue;
       counts.set(raw, (counts.get(raw) || 0) + 1);
     }
 
-    const values = Array.from(counts.keys()).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+    const values = type === 'instrumento'
+      ? INSTRUMENT_OPTIONS.slice()
+      : Array.from(counts.keys()).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+
     box.innerHTML = '';
     if (values.length === 0) {
       box.innerHTML = '<div style="font-size:12px; color:#9CA3AF; padding:6px;">Nenhuma opção</div>';
@@ -457,7 +482,7 @@ function generateDynamicFilters() {
 
       const count = document.createElement('span');
       count.className = 'filter-count';
-      count.textContent = counts.get(val);
+      count.textContent = counts.get(val) || 0;
 
       label.appendChild(left);
       label.appendChild(count);
