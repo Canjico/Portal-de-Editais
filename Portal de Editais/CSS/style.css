@@ -1703,6 +1703,11 @@ body.cookie-consent-required{
 
 .checks{ display:flex; flex-direction:column; gap:12px; }
 
+#saveEmpresaBtn,
+#savePrefsBtn{
+  margin-top:14px;
+}
+
 .check{
   display:flex;
   gap:12px;
