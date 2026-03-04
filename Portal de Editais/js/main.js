@@ -1277,8 +1277,8 @@ function extractEmbeddedSources(text) {
 }
 
 function normalizeSources(rawSources, fallbackNames = []) {
-  const normalized = [];
-  const seen = new Set();
+  const byTitle = new Map();
+  const seenUrls = new Set();
 
   const addSource = (titleRaw, urlRaw = '', status = 'ok') => {
     const title = String(titleRaw ?? '').trim();
@@ -1286,11 +1286,26 @@ function normalizeSources(rawSources, fallbackNames = []) {
     if (!title && !url) return;
 
     const safeTitle = title || url || 'Fonte';
-    const key = `${safeTitle.toLowerCase()}::${url.toLowerCase()}`;
-    if (seen.has(key)) return;
+    const titleKey = safeTitle.toLowerCase().replace(/\s+/g, ' ').trim();
+    const urlKey = url.toLowerCase();
+    const existing = byTitle.get(titleKey);
 
-    seen.add(key);
-    normalized.push({ title: safeTitle, url, status });
+    if (urlKey && seenUrls.has(urlKey)) return;
+
+    if (!existing) {
+      byTitle.set(titleKey, { title: safeTitle, url, status });
+      if (urlKey) seenUrls.add(urlKey);
+      return;
+    }
+
+    const existingHasUrl = Boolean(existing.url);
+    const incomingHasUrl = Boolean(url);
+
+    // Se já existe item com o mesmo nome, mantém a versão clicável.
+    if (!existingHasUrl && incomingHasUrl) {
+      byTitle.set(titleKey, { title: safeTitle, url, status });
+      seenUrls.add(urlKey);
+    }
   };
 
   if (Array.isArray(rawSources)) {
@@ -1317,7 +1332,7 @@ function normalizeSources(rawSources, fallbackNames = []) {
     });
   }
 
-  return normalized;
+  return Array.from(byTitle.values());
 }
 
 // =========================
