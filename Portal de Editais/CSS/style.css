@@ -1,5 +1,5 @@
 ﻿/* =========================================================
-   Athos UI â€” layout, cards, filtros, paginaÃ§Ã£o, modal, chat
+   Athos UI — layout, cards, filtros, paginação, modal, chat
    ========================================================= */
 
 :root{
@@ -667,7 +667,7 @@ a{color:inherit;}
   justify-content:space-between;
   gap:12px;
   flex-wrap:wrap;
-  padding-right:96px; /* espaÃ§o pro X nÃ£o encostar */
+  padding-right:96px; /* espaço pro X não encostar */
 }
 
 .modal-top-actions{
@@ -984,9 +984,9 @@ a{color:inherit;}
   background:#f9fafb;
 }
 
-/* A estrutura real do DOM Ã©:
+/* A estrutura real do DOM é:
    <div class="chat-message bot|user"><div class="bubble">...</div></div>
-   EntÃ£o estilizamos .chat-message + .bubble.
+   Então estilizamos .chat-message + .bubble.
    Mantemos .message como alias (caso algum trecho antigo use). */
 
 .chat-message{
