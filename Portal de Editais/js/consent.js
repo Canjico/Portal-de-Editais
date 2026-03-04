@@ -143,15 +143,23 @@
     ui.panel.hidden = false;
     ui.panel.classList.add('open');
     ui.panel.setAttribute('aria-hidden', 'false');
+    // Enquanto o painel estiver aberto, não mostra o banner por trás.
+    setBannerVisible(false);
+    if (ui.backdrop) ui.backdrop.hidden = true;
     if (ui.closePanelBtn) ui.closePanelBtn.focus();
   }
 
   function closePanel(force = false) {
     if (!ui || !ui.panel) return;
-    if (!force && !hasDecision()) return;
     ui.panel.classList.remove('open');
     ui.panel.setAttribute('aria-hidden', 'true');
     ui.panel.hidden = true;
+
+    // Se ainda não houve decisão final, volta para o banner principal.
+    if (!force && !hasDecision()) {
+      setBannerVisible(true);
+      if (ui.backdrop) ui.backdrop.hidden = false;
+    }
   }
 
   function refreshUi() {

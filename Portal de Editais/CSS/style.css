@@ -1160,6 +1160,10 @@ body.cookie-consent-required{
   overflow:hidden;
 }
 
+#cookieConsentRoot [hidden]{
+  display:none !important;
+}
+
 .cookie-consent-backdrop{
   position:fixed;
   inset:0;
@@ -1275,11 +1279,15 @@ body.cookie-consent-required{
   position:fixed;
   inset:0;
   z-index:12002;
-  display:flex;
+  display:none;
   align-items:center;
   justify-content:center;
   padding:18px;
   background:rgba(17,24,39,0.45);
+}
+
+.cookie-consent-panel.open{
+  display:flex;
 }
 
 .cookie-consent-panel__card{
