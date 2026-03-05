@@ -30,7 +30,7 @@ let lastFiltered = [];
 // Filtros aplicados (só mudam quando clicar em "Aplicar filtros")
 let applied = {
   estado: [],
-  apoio: [],
+  instrumento: [],
   instituicao: [],
   area: [],
 };
@@ -51,6 +51,15 @@ const CATEGORY_OPTIONS = [
   { value: 'Cultura, Arte e Patrimonio', label: 'Cultura, Arte & Patrimônio' },
   { value: 'Esporte, Lazer e Qualidade de Vida', label: 'Esporte, Lazer & Qualidade de Vida' },
   { value: 'Cooperacao e Relacoes Internacionais', label: 'Cooperação & Relações Internacionais' },
+];
+
+const INSTRUMENT_OPTIONS = [
+  'Financiamento não reembolsável',
+  'Bolsa para pesquisadores',
+  'Prêmios de Inovação',
+  'Financiamento reembolsável',
+  'Edital privado',
+  'Fundo de Investimento',
 ];
 
 
@@ -83,9 +92,12 @@ const filtersBackdrop = document.getElementById('filtersBackdrop');
 const filtersCloseBtn = document.getElementById('filtersCloseBtn');
 
 const filterSearchEstado = document.getElementById('filterSearchEstado');
-const filterSearchApoio = document.getElementById('filterSearchApoio');
+const filterSearchInstrumento = document.getElementById('filterSearchInstrumento');
 const filterSearchInstituicao = document.getElementById('filterSearchInstituicao');
 const filterSearchArea = document.getElementById('filterSearchArea');
+const sidebarAvatar = document.getElementById('sidebarAvatar');
+const sidebarUserName = document.getElementById('sidebarUserName');
+const sidebarUserEmail = document.getElementById('sidebarUserEmail');
 
 // Sidebar + topbar
 const sidebarToggle = document.getElementById('sidebarToggle');
@@ -122,27 +134,33 @@ document.addEventListener('DOMContentLoaded', init);
 
 async function init() {
   bootstrapAuthFromUrl();
-  const isLogged = await checkAuth();
-  if (!isLogged) return;
+  const me = await checkAuth();
+  if (!me) return;
 
-  await loadEditais();
-  await loadFavoritos();
-  buildFuseIndex();
-  generateDynamicFilters();
-  setupUIEvents();
-  applyFiltersAndRender({ resetPage: true });
+  hydrateSidebarUser(me);
 
-  // deep link (?edital=slug ou ?id=)
-  const urlParams = new URLSearchParams(window.location.search);
-  const editalSlug = urlParams.get('edital');
-  const editalId = urlParams.get('id');
+  try {
+    await loadEditais();
+    await loadFavoritos();
+    buildFuseIndex();
+    generateDynamicFilters();
+    setupUIEvents();
+    applyFiltersAndRender({ resetPage: true });
 
-  if (editalSlug) {
-    const target = editaisOriginais.find(e => e.slug === editalSlug);
-    if (target) openModal(target);
-  } else if (editalId) {
-    const target = editaisOriginais.find(e => String(e.id) === String(editalId));
-    if (target) openModal(target);
+    // deep link (?edital=slug ou ?id=)
+    const urlParams = new URLSearchParams(window.location.search);
+    const editalSlug = urlParams.get('edital');
+    const editalId = urlParams.get('id');
+
+    if (editalSlug) {
+      const target = editaisOriginais.find(e => e.slug === editalSlug);
+      if (target) openModal(target);
+    } else if (editalId) {
+      const target = editaisOriginais.find(e => String(e.id) === String(editalId));
+      if (target) openModal(target);
+    }
+  } finally {
+    markAppReady();
   }
 }
 
@@ -153,32 +171,49 @@ async function checkAuth() {
   try {
     const { res, data } = await apiFetchJson('/cliente/me', { method: 'GET' });
 
-    // Se a API respondeu "não autorizado", aí sim é login obrigatório.
     if (!res.ok) {
       if (res.status === 401 || res.status === 403) {
         window.location.href = buildLoginUrlWithNext();
-        return false;
+        return null;
       }
-      // Outros erros: não mata a página (pode ser CORS/instabilidade). Deixa o loadEditais decidir.
-      return true;
+      return {};
     }
 
-    // Alguns backends devolvem {logado:true/false}; outros devolvem o usuário direto.
     if (data && typeof data === 'object' && 'logado' in data && !data.logado) {
       window.location.href = buildLoginUrlWithNext();
-      return false;
+      return null;
     }
 
-    return true;
+    return data && typeof data === 'object' ? data : {};
   } catch (e) {
     console.error('Erro na verificação de autenticação:', e);
 
-    // Se for erro de rede/CORS, não entra em loop de login. Tenta seguir.
-    if (e instanceof TypeError) return true;
+    if (e instanceof TypeError) return {};
 
     window.location.href = buildLoginUrlWithNext();
-    return false;
+    return null;
   }
+}
+
+function hydrateSidebarUser(me) {
+  const nome = me?.nome || '';
+  const email = me?.email || '';
+
+  if (sidebarUserName) sidebarUserName.textContent = nome;
+  if (sidebarUserEmail) sidebarUserEmail.textContent = email;
+  setInitials(sidebarAvatar, nome || email || 'U');
+}
+
+function setInitials(el, name) {
+  if (!el) return;
+  const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+  const a = parts[0]?.[0] || 'U';
+  const b = parts.length > 1 ? parts[parts.length - 1][0] : '';
+  el.textContent = (a + b).toUpperCase();
+}
+
+function markAppReady() {
+  document.body.classList.remove('app-loading');
 }
 
 
@@ -347,7 +382,7 @@ function normalizeEdital(api) {
     instituicao: data.instituicao || '',
     estado: data.estado || 'BR',
     area: String(rawArea || 'Geral'),
-    apoio: data.apoio || 'Não informado', // Instrumento
+    instrumento: toCanonicalInstrument(data.instrumento || data.apoio || 'Não informado'),
     tipo: data.tipo || 'Não informado',
     valor_total: data.valor_total || '',
     data_fechamento: api?.data_final_submissao || data.data_final_submissao || null,
@@ -386,11 +421,22 @@ const CATEGORY_KEY_MAP = new Map(
   CATEGORY_OPTIONS.map(item => [normalizeCategoryKey(item.value), item.value])
 );
 
+const INSTRUMENT_KEY_MAP = new Map(
+  INSTRUMENT_OPTIONS.map(item => [normalizeCategoryKey(item), item])
+);
+
 function toCanonicalCategory(value) {
   const raw = String(value || '').trim();
   if (!raw) return 'Geral';
   const key = normalizeCategoryKey(raw);
   return CATEGORY_KEY_MAP.get(key) || raw;
+}
+
+function toCanonicalInstrument(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return 'Não informado';
+  const key = normalizeCategoryKey(raw);
+  return INSTRUMENT_KEY_MAP.get(key) || raw;
 }
 
 // =========================
@@ -412,7 +458,7 @@ function buildFuseIndex() {
 function generateDynamicFilters() {
   const types = [
     { key: 'estado', type: 'estado' },
-    { key: 'apoio', type: 'apoio' },
+    { key: 'instrumento', type: 'instrumento' },
     { key: 'instituicao', type: 'instituicao' },
   ];
 
@@ -422,12 +468,17 @@ function generateDynamicFilters() {
 
     const counts = new Map();
     for (const e of editaisOriginais) {
-      const raw = (e?.[key] ?? '').toString().trim();
+      const raw = type === 'instrumento'
+        ? toCanonicalInstrument(e?.[key])
+        : (e?.[key] ?? '').toString().trim();
       if (!raw) continue;
       counts.set(raw, (counts.get(raw) || 0) + 1);
     }
 
-    const values = Array.from(counts.keys()).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+    const values = type === 'instrumento'
+      ? INSTRUMENT_OPTIONS.slice()
+      : Array.from(counts.keys()).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+
     box.innerHTML = '';
     if (values.length === 0) {
       box.innerHTML = '<div style="font-size:12px; color:#9CA3AF; padding:6px;">Nenhuma opção</div>';
@@ -457,7 +508,7 @@ function generateDynamicFilters() {
 
       const count = document.createElement('span');
       count.className = 'filter-count';
-      count.textContent = counts.get(val);
+      count.textContent = counts.get(val) || 0;
 
       label.appendChild(left);
       label.appendChild(count);
@@ -468,7 +519,7 @@ function generateDynamicFilters() {
   generateCategoryFilters();
 
   wireFilterSearch(filterSearchEstado, document.querySelector('.filter-options[data-filter-type="estado"]'));
-  wireFilterSearch(filterSearchApoio, document.querySelector('.filter-options[data-filter-type="apoio"]'));
+  wireFilterSearch(filterSearchInstrumento, document.querySelector('.filter-options[data-filter-type="instrumento"]'));
   wireFilterSearch(filterSearchInstituicao, document.querySelector('.filter-options[data-filter-type="instituicao"]'));
   wireFilterSearch(filterSearchArea, document.querySelector('.filter-options[data-filter-type="area"]'));
 }
@@ -563,7 +614,7 @@ function applyFiltersAndRender({ resetPage } = { resetPage: false }) {
   // 2) Filtros aplicados (checkboxes)
   let filtered = base;
   if (applied.estado.length) filtered = filtered.filter(e => applied.estado.includes(e.estado));
-  if (applied.apoio.length) filtered = filtered.filter(e => applied.apoio.includes(e.apoio));
+  if (applied.instrumento.length) filtered = filtered.filter(e => applied.instrumento.includes(e.instrumento));
   if (applied.instituicao.length) filtered = filtered.filter(e => applied.instituicao.includes(e.instituicao));
   if (applied.area.length) filtered = filtered.filter(e => applied.area.includes(toCanonicalCategory(e.area)));
 
@@ -828,7 +879,7 @@ function setupUIEvents() {
     applyFiltersBtn.addEventListener('click', () => {
       applied = {
         estado: readSelected('estado'),
-        apoio: readSelected('apoio'),
+        instrumento: readSelected('instrumento'),
         instituicao: readSelected('instituicao'),
         area: readSelected('area'),
       };
@@ -841,12 +892,12 @@ function setupUIEvents() {
     clearFiltersBtn.addEventListener('click', () => {
       document.querySelectorAll('.filter-options input[type="checkbox"]').forEach(cb => { cb.checked = false; });
       if (filterSearchEstado) filterSearchEstado.value = '';
-      if (filterSearchApoio) filterSearchApoio.value = '';
+      if (filterSearchInstrumento) filterSearchInstrumento.value = '';
       if (filterSearchInstituicao) filterSearchInstituicao.value = '';
       if (filterSearchArea) filterSearchArea.value = '';
       document.querySelectorAll('.filter-options label').forEach(l => l.style.display = 'flex');
 
-      applied = { estado: [], apoio: [], instituicao: [], area: [] };
+      applied = { estado: [], instrumento: [], instituicao: [], area: [] };
       closeFiltersMobile();
       applyFiltersAndRender({ resetPage: true });
     });
@@ -1078,7 +1129,7 @@ function openModal(edital) {
     <div class="modal-details">
       <div class="modal-detail-row"><strong>Instituição:</strong> <span>${escapeHtml(edital.instituicao || 'Não informada')}</span></div>
       <div class="modal-detail-row"><strong>Estado:</strong> <span>${escapeHtml(edital.estado || '—')}</span></div>
-      <div class="modal-detail-row"><strong>Instrumento:</strong> <span>${escapeHtml(edital.apoio || '—')}</span></div>
+      <div class="modal-detail-row"><strong>Instrumento:</strong> <span>${escapeHtml(edital.instrumento || '—')}</span></div>
       ${edital.data_fechamento ? `<div class="modal-detail-row"><strong>Data final:</strong> <span>${escapeHtml(edital.data_fechamento)}</span></div>` : ''}
     </div>
 
