@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8" />
@@ -13,7 +13,7 @@
   <link rel="stylesheet" href="./css/style.css" />
 </head>
 
-<body>
+<body class="app-loading">
   <div class="app">
 
     <aside class="app-sidebar" id="appSidebar">
@@ -40,10 +40,10 @@
       </nav>
 
       <div class="sidebar-user">
-        <div class="avatar" id="sidebarAvatar">JD</div>
+        <div class="avatar" id="sidebarAvatar">--</div>
         <div class="user-meta">
-          <div class="user-name" id="sidebarUserName">João da Silva</div>
-          <div class="user-email" id="sidebarUserEmail">joao.silva@empresa.com.br</div>
+          <div class="user-name" id="sidebarUserName"></div>
+          <div class="user-email" id="sidebarUserEmail"></div>
         </div>
       </div>
     </aside>
@@ -60,7 +60,6 @@
             <i class="fas fa-sliders"></i>
           </button>
 
-          <!-- Salvos -->
           <button class="icon-btn" id="savedToggleBtn" type="button" title="Ver salvos" aria-label="Ver editais salvos">
             <i class="far fa-star"></i>
             <span class="badge" id="savedBadge" hidden>0</span>
@@ -111,7 +110,6 @@
         </section>
 
         <div class="page-grid" style="margin-top:16px;">
-          <!-- filtros -->
           <div class="filters-panel" id="filtersPanel" aria-label="Filtros">
             <div class="filters-header">
               <h2>Filtros</h2>
@@ -150,7 +148,6 @@
             </div>
           </div>
 
-          <!-- resultados -->
           <section>
             <div class="results-toolbar">
               <div class="results-meta" id="resultsMeta">0 resultados</div>
@@ -172,7 +169,7 @@
 
             <div class="pagination" id="pagination"></div>
 
-            <footer class="app-footer">© 2026 – desenvolvido pela Atimus</footer>
+            <footer class="app-footer">© 2026 - desenvolvido pela Atimus</footer>
           </section>
         </div>
 
@@ -180,10 +177,8 @@
     </div>
   </div>
 
-  <!-- backdrop mobile filtros -->
   <div class="filters-backdrop" id="filtersBackdrop" aria-hidden="true"></div>
 
-  <!-- modal edital -->
   <div class="modal-overlay" id="modal-overlay" role="dialog" aria-modal="true" aria-label="Detalhes do edital">
     <div class="edital-modal">
       <button class="modal-close-btn" id="close-modal-btn" type="button" aria-label="Fechar">×</button>
@@ -191,7 +186,6 @@
     </div>
   </div>
 
-  <!-- chat -->
   <div class="e-contact-buttons__chat-button-container">
     <button class="e-contact-buttons__chat-button" type="button" aria-label="Abrir chat">
       <img src="./assets/img/icons/Atimus5.png" alt="Chat" class="chat-mascote-icon" />
