@@ -21,11 +21,15 @@ document.addEventListener('DOMContentLoaded', init);
 
 async function init(){
   bootstrapAuthFromUrl();
-  const isLogged = await checkAuth();
-  if(!isLogged) return;
+  try{
+    const isLogged = await checkAuth();
+    if(!isLogged) return;
 
-  setupUI();
-  loadLocalPrefs();
+    setupUI();
+    loadLocalPrefs();
+  } finally{
+    markAppReady();
+  }
 }
 
 async function checkAuth(){
@@ -72,6 +76,10 @@ async function checkAuth(){
     window.location.href = buildLoginUrlWithNext();
     return false;
   }
+}
+
+function markAppReady(){
+  document.body.classList.remove('app-loading');
 }
 
 
