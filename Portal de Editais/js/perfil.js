@@ -20,14 +20,14 @@ const logoutIconBtn = document.getElementById('logoutIconBtn');
 document.addEventListener('DOMContentLoaded', init);
 
 async function init(){
-  bootstrapAuthFromUrl();
   try{
+    bootstrapAuthFromUrl();
     const isLogged = await checkAuth();
     if(!isLogged) return;
 
     setupUI();
     loadLocalPrefs();
-  } finally{
+  }finally{
     markAppReady();
   }
 }
@@ -76,10 +76,6 @@ async function checkAuth(){
     window.location.href = buildLoginUrlWithNext();
     return false;
   }
-}
-
-function markAppReady(){
-  document.body.classList.remove('app-loading');
 }
 
 
@@ -174,6 +170,10 @@ function setupUI(){
   if(saveDadosBtn) saveDadosBtn.addEventListener('click', ()=> save('athos_profile'));
   if(saveEmpresaBtn) saveEmpresaBtn.addEventListener('click', ()=> save('athos_profile'));
   if(savePrefsBtn) savePrefsBtn.addEventListener('click', ()=> save('athos_profile'));
+}
+
+function markAppReady(){
+  document.body.classList.remove('app-loading');
 }
 
 function collectForm(){
