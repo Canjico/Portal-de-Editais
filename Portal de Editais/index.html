@@ -153,8 +153,21 @@
               <div class="results-meta" id="resultsMeta">0 resultados</div>
               <div class="results-actions">
                 <div class="sort-wrapper">
-                  <span>Ordenar</span>
-                  <select id="sortSelect" aria-label="Ordenar resultados">
+                  <span class="sort-label">Ordenar por</span>
+                  <div class="sort-chips" id="sortChips" role="group" aria-label="Campos de ordenação">
+                    <button class="sort-chip is-active" type="button" data-sort="prazo">Prazo</button>
+                    <button class="sort-chip" type="button" data-sort="titulo">Título</button>
+                    <button class="sort-chip" type="button" data-sort="instituicao">Instituição</button>
+                    <button class="sort-chip" type="button" data-sort="estado">Estado</button>
+                    <button class="sort-chip" type="button" data-sort="atualizado">Atualizado</button>
+                  </div>
+
+                  <button class="sort-direction-btn" id="sortDirectionBtn" type="button" aria-label="Direção da ordenação" title="Direção: crescente">
+                    <i class="fas fa-arrow-up-wide-short" id="sortDirectionIcon" aria-hidden="true"></i>
+                    <span id="sortDirectionText">Crescente</span>
+                  </button>
+
+                  <select id="sortSelect" aria-label="Ordenar resultados" hidden>
                     <option value="prazo">Prazo</option>
                     <option value="titulo">Título</option>
                     <option value="instituicao">Instituição</option>

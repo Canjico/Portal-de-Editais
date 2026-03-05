@@ -75,8 +75,15 @@ let onlyFavoritos = false;
 const container = document.getElementById('editais-container');
 const searchInput = document.getElementById('search');
 const sortSelect = document.getElementById('sortSelect');
+const sortChips = document.getElementById('sortChips');
+const sortDirectionBtn = document.getElementById('sortDirectionBtn');
+const sortDirectionIcon = document.getElementById('sortDirectionIcon');
+const sortDirectionText = document.getElementById('sortDirectionText');
 const resultsMeta = document.getElementById('resultsMeta');
 const paginationEl = document.getElementById('pagination');
+
+let sortField = normalizeSortValue(sortSelect?.value || 'prazo');
+let sortDirection = getDefaultSortDirection(sortField);
 
 // Hero stats
 const statTotal = document.getElementById('statTotal');
@@ -585,6 +592,65 @@ function readSelected(type) {
   return Array.from(root.querySelectorAll('input[type="checkbox"]:checked')).map(cb => cb.value);
 }
 
+function normalizeSortValue(value) {
+  const v = String(value || '').toLowerCase();
+  if (v === 'atualizacao') return 'atualizado';
+  if (v === 'prazo' || v === 'titulo' || v === 'instituicao' || v === 'estado' || v === 'atualizado' || v === 'relevancia') {
+    return v;
+  }
+  return 'prazo';
+}
+
+function getDefaultSortDirection(sort) {
+  const s = normalizeSortValue(sort);
+  return s === 'atualizado' ? 'desc' : 'asc';
+}
+
+function syncSortControls() {
+  const normalized = normalizeSortValue(sortField);
+  sortField = normalized;
+
+  if (sortSelect) sortSelect.value = normalized;
+
+  if (sortChips) {
+    sortChips.querySelectorAll('.sort-chip[data-sort]').forEach((btn) => {
+      const chipSort = normalizeSortValue(btn.getAttribute('data-sort'));
+      btn.classList.toggle('is-active', chipSort === normalized);
+      btn.setAttribute('aria-pressed', chipSort === normalized ? 'true' : 'false');
+    });
+  }
+
+  if (sortDirectionBtn) {
+    const isDesc = sortDirection === 'desc';
+    sortDirectionBtn.classList.toggle('is-desc', isDesc);
+    sortDirectionBtn.setAttribute('title', `Direção: ${isDesc ? 'decrescente' : 'crescente'}`);
+    sortDirectionBtn.setAttribute('aria-label', `Direção da ordenação: ${isDesc ? 'decrescente' : 'crescente'}`);
+  }
+
+  if (sortDirectionText) {
+    sortDirectionText.textContent = sortDirection === 'desc' ? 'Decrescente' : 'Crescente';
+  }
+
+  if (sortDirectionIcon) {
+    const isDesc = sortDirection === 'desc';
+    sortDirectionIcon.classList.toggle('fa-arrow-down-wide-short', isDesc);
+    sortDirectionIcon.classList.toggle('fa-arrow-up-wide-short', !isDesc);
+  }
+}
+
+function setSortField(value, { resetDirection = false } = {}) {
+  sortField = normalizeSortValue(value);
+  if (resetDirection) {
+    sortDirection = getDefaultSortDirection(sortField);
+  }
+  syncSortControls();
+}
+
+function toggleSortDirection() {
+  sortDirection = sortDirection === 'desc' ? 'asc' : 'desc';
+  syncSortControls();
+}
+
 // =========================
 // APLICAÇÃO DE FILTROS
 // =========================
@@ -622,23 +688,24 @@ function applyFiltersAndRender({ resetPage } = { resetPage: false }) {
   if (onlyFavoritos) filtered = filtered.filter(e => !!e.is_favorite);
 
   // 3) Ordenação
-  const sort = (sortSelect?.value || 'prazo').toLowerCase();
+  const sort = normalizeSortValue(sortField || sortSelect?.value || 'prazo');
+  const directionFactor = sortDirection === 'desc' ? -1 : 1;
 
   const collate = (a, b) => String(a || '').localeCompare(String(b || ''), 'pt-BR', { sensitivity: 'base' });
 
   if (sort === 'prazo') {
-    filtered = [...filtered].sort((a, b) => compareIsoDate(a.data_fechamento, b.data_fechamento));
+    filtered = [...filtered].sort((a, b) => compareIsoDate(a.data_fechamento, b.data_fechamento) * directionFactor);
   } else if (sort === 'atualizado' || sort === 'atualizacao') {
-    filtered = [...filtered].sort((a, b) => -compareIsoDate(a.data_abertura, b.data_abertura));
+    filtered = [...filtered].sort((a, b) => compareIsoDate(a.data_abertura, b.data_abertura) * directionFactor);
   } else if (sort === 'titulo') {
-    filtered = [...filtered].sort((a, b) => collate(a.titulo, b.titulo));
+    filtered = [...filtered].sort((a, b) => collate(a.titulo, b.titulo) * directionFactor);
   } else if (sort === 'instituicao') {
-    filtered = [...filtered].sort((a, b) => collate(a.instituicao, b.instituicao));
+    filtered = [...filtered].sort((a, b) => collate(a.instituicao, b.instituicao) * directionFactor);
   } else if (sort === 'estado') {
-    filtered = [...filtered].sort((a, b) => collate(a.estado, b.estado));
+    filtered = [...filtered].sort((a, b) => collate(a.estado, b.estado) * directionFactor);
   } else if (sort === 'relevancia') {
     // se veio do Fuse, mantém a ordem do Fuse; se não, mantém a ordem do backend
-    filtered = filtered;
+    filtered = sortDirection === 'asc' ? [...filtered].reverse() : filtered;
   } else {
     // fallback
     filtered = filtered;
@@ -855,6 +922,8 @@ function setupUIEvents() {
   if (logoutIconBtn) logoutIconBtn.addEventListener('click', doLogout);
   if (logoutBtn) logoutBtn.addEventListener('click', doLogout);
 
+  syncSortControls();
+
   // busca global (aplica instantâneo)
   if (searchInput) {
     searchInput.addEventListener('input', () => applyFiltersAndRender({ resetPage: true }));
@@ -862,7 +931,32 @@ function setupUIEvents() {
 
   // ordenar
   if (sortSelect) {
-    sortSelect.addEventListener('change', () => applyFiltersAndRender({ resetPage: true }));
+    sortSelect.addEventListener('change', () => {
+      setSortField(sortSelect.value, { resetDirection: true });
+      applyFiltersAndRender({ resetPage: true });
+    });
+  }
+
+  if (sortChips) {
+    sortChips.addEventListener('click', (e) => {
+      const chip = e.target.closest('.sort-chip[data-sort]');
+      if (!chip) return;
+
+      const nextSort = normalizeSortValue(chip.getAttribute('data-sort'));
+      if (nextSort === sortField) {
+        toggleSortDirection();
+      } else {
+        setSortField(nextSort, { resetDirection: true });
+      }
+      applyFiltersAndRender({ resetPage: true });
+    });
+  }
+
+  if (sortDirectionBtn) {
+    sortDirectionBtn.addEventListener('click', () => {
+      toggleSortDirection();
+      applyFiltersAndRender({ resetPage: true });
+    });
   }
 
   // ver salvos (bookmark ao lado das notificações)
