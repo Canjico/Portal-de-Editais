@@ -40,10 +40,10 @@
       </nav>
 
       <div class="sidebar-user">
-        <div class="avatar" id="sidebarAvatar">JD</div>
+        <div class="avatar" id="sidebarAvatar"></div>
         <div class="user-meta">
-          <div class="user-name" id="sidebarUserName">João da Silva</div>
-          <div class="user-email" id="sidebarUserEmail">joao.silva@empresa.com.br</div>
+          <div class="user-name" id="sidebarUserName"></div>
+          <div class="user-email" id="sidebarUserEmail"></div>
         </div>
       </div>
     </aside>
@@ -69,9 +69,9 @@
 
           <aside class="profile-left">
             <div class="profile-card">
-              <div class="profile-avatar" id="profileAvatar">JD</div>
-              <div class="profile-name" id="profileName">João da Silva</div>
-              <div class="profile-email" id="profileEmail">joao.silva@empresa.com.br</div>
+              <div class="profile-avatar" id="profileAvatar"></div>
+              <div class="profile-name" id="profileName"></div>
+              <div class="profile-email" id="profileEmail"></div>
 
               <div class="profile-nav" role="tablist" aria-label="Seções do perfil">
                 <button class="profile-nav-item is-active" data-target="pane-dados" role="tab" aria-selected="true">Dados Pessoais</button>
@@ -90,19 +90,19 @@
               <div class="form-grid">
                 <div class="field">
                   <label for="nomeCompleto">Nome completo</label>
-                  <input id="nomeCompleto" type="text" value="João da Silva" />
+                  <input id="nomeCompleto" type="text" />
                 </div>
                 <div class="field">
                   <label for="email">E-mail</label>
-                  <input id="email" type="email" value="joao.silva@empresa.com.br" />
+                  <input id="email" type="email" />
                 </div>
                 <div class="field">
                   <label for="telefone">Telefone</label>
-                  <input id="telefone" type="tel" value="(11) 98755-5757" />
+                  <input id="telefone" type="tel" />
                 </div>
                 <div class="field">
                   <label for="cargo">Cargo</label>
-                  <input id="cargo" type="text" value="Gestor de Inovação" />
+                  <input id="cargo" type="text" />
                 </div>
               </div>
               <button class="btn btn-primary" id="saveDadosBtn" type="button">Salvar alterações</button>
@@ -114,16 +114,17 @@
               <div class="form-grid">
                 <div class="field">
                   <label for="nomeEmpresa">Nome da empresa</label>
-                  <input id="nomeEmpresa" type="text" value="Empresa Inovadora LTDA" />
+                  <input id="nomeEmpresa" type="text" />
                 </div>
                 <div class="field">
                   <label for="cnpj">CNPJ</label>
-                  <input id="cnpj" type="text" value="12.345.678/0001-90" />
+                  <input id="cnpj" type="text" />
                 </div>
                 <div class="field">
                   <label for="setorEmpresa">Setor da empresa</label>
                   <select id="setorEmpresa">
-                    <option selected>Tecnologia da Informação</option>
+                    <option value="" selected disabled>Selecione</option>
+                    <option>Tecnologia da Informação</option>
                     <option>Indústria</option>
                     <option>Saúde</option>
                     <option>Educação</option>
@@ -132,7 +133,8 @@
                 <div class="field">
                   <label for="setorAtuacao">Setor de atuação</label>
                   <select id="setorAtuacao">
-                    <option selected>Software</option>
+                    <option value="" selected disabled>Selecione</option>
+                    <option>Software</option>
                     <option>Hardware</option>
                     <option>Serviços</option>
                     <option>Pesquisa</option>
@@ -143,8 +145,6 @@
               <div class="field" style="margin-top:14px;">
                 <label>Área de Interesse</label>
                 <div class="chips" id="areasInteresse">
-                  <span class="chip">Educação &amp; Capacitação <button type="button" class="chip-x" aria-label="Remover">×</button></span>
-                  <span class="chip">Tecnologia da Informação <button type="button" class="chip-x" aria-label="Remover">×</button></span>
                   <button class="chip chip-add" id="addAreaBtn" type="button">Adicionar área +</button>
                 </div>
               </div>
@@ -158,7 +158,7 @@
 
               <div class="checks">
                 <label class="check">
-                  <input type="checkbox" id="prefEditais" checked />
+                  <input type="checkbox" id="prefEditais" />
                   <span>
                     <strong>Receber editais relevantes</strong>
                     <small>Receba notificações quando novos editais forem publicados e forem relevantes para sua área de interesse.</small>
@@ -166,7 +166,7 @@
                 </label>
 
                 <label class="check">
-                  <input type="checkbox" id="prefPrazo" checked />
+                  <input type="checkbox" id="prefPrazo" />
                   <span>
                     <strong>Alertas de prazo</strong>
                     <small>Seja alertado quando um edital de interesse estiver próximo ao encerramento de inscrição.</small>
@@ -182,7 +182,7 @@
                 </label>
 
                 <label class="check">
-                  <input type="checkbox" id="prefSistema" checked />
+                  <input type="checkbox" id="prefSistema" />
                   <span>
                     <strong>Atualizações do sistema</strong>
                     <small>Receba notificações sobre novas funcionalidades, correções e atualizações da plataforma.</small>
