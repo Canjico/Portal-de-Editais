@@ -40,10 +40,10 @@
       </nav>
 
       <div class="sidebar-user">
-        <div class="avatar">JD</div>
+        <div class="avatar" id="sidebarAvatar">JD</div>
         <div class="user-meta">
-          <div class="user-name">João da Silva</div>
-          <div class="user-email">joao.silva@empresa.com.br</div>
+          <div class="user-name" id="sidebarUserName">João da Silva</div>
+          <div class="user-email" id="sidebarUserEmail">joao.silva@empresa.com.br</div>
         </div>
       </div>
     </aside>
@@ -222,6 +222,37 @@
         return `${LOGIN_URL}${sep}next=${next}`;
       }
 
+      function setInitials(el, name) {
+        if (!el) return;
+        const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+        const a = parts[0]?.[0] || 'U';
+        const b = parts.length > 1 ? parts[parts.length - 1][0] : '';
+        el.textContent = (a + b).toUpperCase();
+      }
+
+      function hydrateSidebarUser(me) {
+        const nome =
+          me?.nome ||
+          me?.nome_completo ||
+          me?.nomeCompleto ||
+          me?.user?.nome ||
+          me?.usuario?.nome ||
+          '';
+        const email =
+          me?.email ||
+          me?.user?.email ||
+          me?.usuario?.email ||
+          '';
+
+        const sidebarAvatar = document.getElementById('sidebarAvatar');
+        const sidebarUserName = document.getElementById('sidebarUserName');
+        const sidebarUserEmail = document.getElementById('sidebarUserEmail');
+
+        if (sidebarUserName && nome) sidebarUserName.textContent = nome;
+        if (sidebarUserEmail && email) sidebarUserEmail.textContent = email;
+        setInitials(sidebarAvatar, nome || email || sidebarAvatar?.textContent || 'U');
+      }
+
       async function checkAuth(){
         try{
           const res = await fetch(`${API_BASE}/cliente/me`, { credentials: 'include', headers: authHeaders() });
@@ -231,7 +262,7 @@
             window.location.href = buildLoginUrlWithNext();
             return false;
           }
-          return true;
+          return data;
         }catch(e){
           console.error('Erro na verificação de autenticação:', e);
           window.location.href = buildLoginUrlWithNext();
@@ -246,8 +277,10 @@
       const init = async () => {
         try {
           bootstrapAuthFromUrl();
-          const ok = await checkAuth();
-          if(!ok) return;
+          const me = await checkAuth();
+          if(!me) return;
+
+          hydrateSidebarUser(me);
 
           const doLogout = async () => {
         const endpoints = [
