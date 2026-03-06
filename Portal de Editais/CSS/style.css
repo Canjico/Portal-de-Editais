@@ -632,9 +632,9 @@ a{color:inherit;}
 }
 
 .status-chip--deadline{
-  background:var(--status-chip-color, #2F8F83);
-  color:#fff;
-  border-color:transparent;
+  background:var(--status-chip-bg, rgba(22,163,74,0.14));
+  color:var(--status-chip-text, #166534);
+  border-color:var(--status-chip-border, rgba(22,163,74,0.35));
 }
 
 .card-actions{display:flex; align-items:center; gap:10px;}

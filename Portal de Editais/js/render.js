@@ -137,6 +137,7 @@ function shortCode(text) {
 }
 
 function buildStatusBadges(dataFechamento) {
+  const COUNTDOWN_WINDOW_DAYS = 30;
   const t = parseAnyDateToTime(dataFechamento);
 
   if (t === null) {
@@ -152,12 +153,20 @@ function buildStatusBadges(dataFechamento) {
   }
 
   const badges = [{ label: 'Aberto', className: 'status-chip status-chip--open' }];
+  if (diffDays > COUNTDOWN_WINDOW_DAYS) return badges;
+
+  const urgencyTone = buildUrgencyTone(diffDays, COUNTDOWN_WINDOW_DAYS);
+  const urgencyStyle = [
+    `--status-chip-bg:${urgencyTone.bg}`,
+    `--status-chip-border:${urgencyTone.border}`,
+    `--status-chip-text:${urgencyTone.text}`,
+  ].join(';');
 
   if (diffDays === 0) {
     badges.push({
       label: 'Fecha hoje',
       className: 'status-chip status-chip--deadline',
-      style: `--status-chip-color:${buildUrgencyColor(diffDays)};`,
+      style: urgencyStyle,
     });
     return badges;
   }
@@ -166,7 +175,7 @@ function buildStatusBadges(dataFechamento) {
     badges.push({
       label: 'Fecha amanhã',
       className: 'status-chip status-chip--deadline',
-      style: `--status-chip-color:${buildUrgencyColor(diffDays)};`,
+      style: urgencyStyle,
     });
     return badges;
   }
@@ -174,14 +183,13 @@ function buildStatusBadges(dataFechamento) {
   badges.push({
     label: `Fecha em ${diffDays} dias`,
     className: 'status-chip status-chip--deadline',
-    style: `--status-chip-color:${buildUrgencyColor(diffDays)};`,
+    style: urgencyStyle,
   });
 
   return badges;
 }
 
-function buildUrgencyColor(daysLeft) {
-  const maxWindow = 30;
+function buildUrgencyTone(daysLeft, maxWindow = 30) {
   const clamped = Math.max(0, Math.min(maxWindow, Number(daysLeft) || 0));
   const ratio = clamped / maxWindow;
 
@@ -196,7 +204,15 @@ function buildUrgencyColor(daysLeft) {
   const g = Math.round(greenA + (greenB - greenA) * ratio);
   const b = Math.round(blueA + (blueB - blueA) * ratio);
 
-  return `rgb(${r},${g},${b})`;
+  let text = '#166534';
+  if (clamped <= 7) text = '#991B1B';
+  else if (clamped <= 15) text = '#92400E';
+
+  return {
+    bg: `rgba(${r},${g},${b},0.14)`,
+    border: `rgba(${r},${g},${b},0.35)`,
+    text,
+  };
 }
 
 function toStartOfDayTime(timeMs) {
