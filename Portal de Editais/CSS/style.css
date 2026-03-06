@@ -570,7 +570,7 @@ a{color:inherit;}
 
 .card-top{display:flex; align-items:flex-start; justify-content:space-between; gap:12px;}
 
-.card-brand{display:flex; gap:10px; align-items:flex-start; min-width:0;}
+.card-brand{display:flex; gap:10px; align-items:flex-start; min-width:0; flex:1;}
 
 .card-logo{
   width:36px;
@@ -588,6 +588,54 @@ a{color:inherit;}
 .card-logo img{max-width:100%; max-height:100%; object-fit:contain;}
 
 .card-org{font-size:11px; font-weight:900; color:var(--muted); margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:160px;}
+
+.card-top-right{
+  display:flex;
+  align-items:flex-start;
+  gap:8px;
+  margin-left:auto;
+  flex-shrink:0;
+}
+
+.card-status-list{
+  display:flex;
+  align-items:center;
+  gap:6px;
+  flex-wrap:wrap;
+  justify-content:flex-end;
+  max-width:210px;
+}
+
+.status-chip{
+  display:inline-flex;
+  align-items:center;
+  border-radius:999px;
+  padding:4px 9px;
+  font-size:10px;
+  font-weight:1000;
+  line-height:1.2;
+  letter-spacing:0.01em;
+  white-space:nowrap;
+  border:1px solid transparent;
+}
+
+.status-chip--open{
+  background:rgba(22,163,74,0.14);
+  color:#166534;
+  border-color:rgba(22,163,74,0.35);
+}
+
+.status-chip--closed{
+  background:rgba(220,38,38,0.14);
+  color:#991B1B;
+  border-color:rgba(220,38,38,0.35);
+}
+
+.status-chip--deadline{
+  background:var(--status-chip-color, #2F8F83);
+  color:#fff;
+  border-color:transparent;
+}
 
 .card-actions{display:flex; align-items:center; gap:10px;}
 
@@ -630,6 +678,38 @@ a{color:inherit;}
   -webkit-line-clamp:4;
   -webkit-box-orient:vertical;
   overflow:hidden;
+}
+
+.card-context{
+  margin-top:10px;
+  border:1px solid var(--border);
+  border-radius:12px;
+  background:#F9FAFB;
+  padding:9px 10px;
+  display:flex;
+  flex-direction:column;
+  gap:7px;
+}
+
+.card-context-item{
+  display:flex;
+  align-items:flex-start;
+  gap:8px;
+  font-size:12px;
+  line-height:1.35;
+  color:var(--muted);
+}
+
+.card-context-item i{
+  margin-top:2px;
+  color:var(--athos-teal);
+  width:14px;
+  text-align:center;
+  flex-shrink:0;
+}
+
+.card-context-item strong{
+  color:var(--night);
 }
 
 .card-tags{display:flex; flex-wrap:wrap; gap:6px; margin-top:12px;}
