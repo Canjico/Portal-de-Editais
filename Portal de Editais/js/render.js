@@ -108,7 +108,7 @@ export function renderEditais(container, editais) {
         <span><strong>Data final</strong> ${escapeHtml(dataFinal)}</span>
       </div>
 
-      <button class="open-edital-btn" type="button" data-id="${escapeAttr(edital.id)}">saiba mais...</button>
+      <button class="open-edital-btn" type="button" data-id="${escapeAttr(edital.id)}">Ver detalhes...</button>
     `;
 
     container.appendChild(card);
@@ -244,8 +244,6 @@ function formatFundingValue(value) {
   const raw = String(value).trim();
   if (!raw) return '';
 
-  if (/^r\$/i.test(raw)) return raw;
-
   const maybeNumber = Number(
     raw
       .replace(/[^\d,.-]/g, '')
@@ -253,6 +251,8 @@ function formatFundingValue(value) {
       .replace(',', '.')
   );
 
+  if (Number.isFinite(maybeNumber) && maybeNumber === 0) return '';
+  if (/^r\$/i.test(raw)) return raw;
   if (!Number.isFinite(maybeNumber)) return raw;
 
   try {
