@@ -177,6 +177,30 @@ a{color:inherit;}
   z-index:50;
 }
 
+.topbar-mobile-brand{
+  display:none;
+  align-items:center;
+  gap:10px;
+  min-width:0;
+}
+
+.topbar-mobile-logo{
+  width:34px;
+  height:34px;
+  border-radius:10px;
+  border:1px solid var(--border);
+  background:#fff;
+  object-fit:cover;
+  flex-shrink:0;
+}
+
+.topbar-mobile-title{
+  font-size:14px;
+  font-weight:900;
+  color:var(--night);
+  letter-spacing:0.01em;
+}
+
 .search-wrapper{
   flex:1;
   max-width:560px;
@@ -1703,18 +1727,133 @@ body.cookie-consent-required{
   z-index:190; display:none;
 }
 
+.mobile-sidebar-backdrop{
+  position:fixed;
+  inset:0;
+  background:rgba(17,24,39,0.52);
+  z-index:230;
+  display:none;
+}
+
 @media (max-width: 1200px){
   .cards-grid{grid-template-columns:repeat(2, minmax(0, 1fr));}
   .page-grid{grid-template-columns:300px 1fr;}
 }
 
 @media (max-width: 980px){
-  .app-sidebar{display:none;}
+  .app-sidebar{
+    display:flex;
+    position:fixed;
+    left:0;
+    top:0;
+    height:100vh;
+    width:min(320px, 88vw);
+    z-index:240;
+    transform:translateX(-108%);
+    transition:transform .25s ease;
+    box-shadow:0 26px 42px rgba(17,24,39,0.24);
+  }
+  .app-sidebar.mobile-open{transform:translateX(0);}
+  .app-sidebar.collapsed{width:min(320px, 88vw);}
+  .app-sidebar.collapsed .sidebar-logo{display:block;}
+  .app-sidebar.collapsed .nav-text{display:inline;}
+  .app-sidebar.collapsed .sidebar-user .user-meta{display:block;}
+
+  .mobile-sidebar-backdrop.active{display:block;}
+
+  .topbar{
+    padding:10px 12px;
+    gap:10px;
+    flex-wrap:wrap;
+  }
+  .topbar-mobile-brand{
+    display:flex;
+    flex:1 1 auto;
+  }
+  .search-wrapper{
+    order:3;
+    flex:1 1 100%;
+    max-width:none;
+  }
+  .topbar-actions{
+    margin-left:auto;
+    gap:8px;
+  }
+  .topbar-actions .icon-btn{
+    width:36px;
+    height:36px;
+    border-radius:11px;
+  }
+  .topbar-actions > .icon-btn[aria-label="Notificações"],
+  #logoutIconBtn{
+    display:none;
+  }
+
+  .content{padding:12px;}
+  .hero-banner{
+    padding:14px;
+    border-radius:16px;
+  }
+  .hero-banner h1{font-size:15px;}
+  .hero-banner p{
+    font-size:12px;
+    line-height:1.4;
+  }
+  .hero-stats{
+    gap:8px;
+    margin-top:10px;
+  }
+  .hero-stat{
+    background:rgba(255,255,255,0.14);
+    border:1px solid rgba(255,255,255,0.20);
+    border-radius:10px;
+    padding:7px 9px;
+    min-width:84px;
+  }
+
   .page-grid{grid-template-columns:1fr;}
   .cards-grid{grid-template-columns:1fr;}
   .results-toolbar{flex-direction:column; align-items:stretch; gap:10px;}
-  .results-actions{justify-content:flex-start;}
-  .sort-wrapper{width:100%;}
+  .results-actions{justify-content:flex-start; gap:8px;}
+  .sort-wrapper{
+    width:100%;
+    padding:9px;
+    border-radius:14px;
+    box-shadow:none;
+  }
+  .sort-label{width:100%;}
+  .sort-chips{
+    width:100%;
+    flex-wrap:nowrap;
+    overflow-x:auto;
+    padding-bottom:2px;
+    scrollbar-width:thin;
+  }
+  .sort-chips::-webkit-scrollbar{height:4px;}
+  .sort-chips::-webkit-scrollbar-thumb{
+    background:rgba(17,24,39,0.18);
+    border-radius:999px;
+  }
+  .sort-chip{
+    flex:0 0 auto;
+    white-space:nowrap;
+    padding:7px 11px;
+  }
+  .sort-direction-btn{margin-left:auto;}
+
+  .edital-card{
+    border-radius:16px;
+    padding:14px;
+    min-height:0;
+  }
+  .card-status-list{max-width:160px;}
+  .card-desc{-webkit-line-clamp:5;}
+  .card-context{padding:8px 9px;}
+  .open-edital-btn{
+    min-height:44px;
+    border-radius:14px;
+    text-transform:none;
+  }
 
   .filters-panel{
     position:fixed;
@@ -1726,6 +1865,7 @@ body.cookie-consent-required{
     transform:translateX(-110%);
     transition:transform .25s ease;
     z-index:200;
+    border-radius:0 14px 14px 0;
   }
 
   .filters-panel.open{transform:translateX(0);}
@@ -1740,8 +1880,22 @@ body.cookie-consent-required{
 }
 
 @media (max-width: 640px){
+  .content{padding:10px;}
+  .topbar-mobile-logo{
+    width:30px;
+    height:30px;
+  }
+  .topbar-mobile-title{font-size:13px;}
+
   .sort-direction-btn{
     width:100%;
+    margin-left:0;
+    justify-content:center;
+  }
+
+  .filters-panel{
+    width:100vw;
+    border-radius:0;
   }
 }
 

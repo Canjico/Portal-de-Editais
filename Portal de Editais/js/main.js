@@ -97,6 +97,8 @@ const clearFiltersBtn = document.getElementById('clearFiltersBtn');
 const mobileFiltersBtn = document.getElementById('mobileFiltersBtn');
 const filtersBackdrop = document.getElementById('filtersBackdrop');
 const filtersCloseBtn = document.getElementById('filtersCloseBtn');
+const mobileSidebarBtn = document.getElementById('mobileSidebarBtn');
+const mobileSidebarBackdrop = document.getElementById('mobileSidebarBackdrop');
 
 const filterSearchEstado = document.getElementById('filterSearchEstado');
 const filterSearchInstrumento = document.getElementById('filterSearchInstrumento');
@@ -887,8 +889,42 @@ function getPageWindow(page, totalPages, maxButtons) {
 // =========================
 function setupUIEvents() {
   if (sidebarToggle && appSidebar) {
-    sidebarToggle.addEventListener('click', () => appSidebar.classList.toggle('collapsed'));
+    sidebarToggle.addEventListener('click', () => {
+      if (window.matchMedia('(max-width: 980px)').matches) {
+        closeSidebarMobile();
+        return;
+      }
+      appSidebar.classList.toggle('collapsed');
+    });
   }
+
+  if (mobileSidebarBtn && appSidebar) {
+    mobileSidebarBtn.addEventListener('click', () => {
+      if (appSidebar.classList.contains('mobile-open')) {
+        closeSidebarMobile();
+      } else {
+        openSidebarMobile();
+      }
+    });
+  }
+
+  if (mobileSidebarBackdrop) {
+    mobileSidebarBackdrop.addEventListener('click', () => closeSidebarMobile());
+  }
+
+  if (appSidebar) {
+    appSidebar.querySelectorAll('.sidebar-nav a').forEach((link) => {
+      link.addEventListener('click', () => {
+        if (window.matchMedia('(max-width: 980px)').matches) {
+          closeSidebarMobile();
+        }
+      });
+    });
+  }
+
+  window.addEventListener('resize', () => {
+    if (window.innerWidth > 980) closeSidebarMobile();
+  });
 
   // user dropdown
   if (userMenuBtn && userMenu) {
@@ -1010,7 +1046,10 @@ function setupUIEvents() {
 
   // mobile filters open/close
   if (mobileFiltersBtn && filtersPanel) {
-    mobileFiltersBtn.addEventListener('click', () => openFiltersMobile());
+    mobileFiltersBtn.addEventListener('click', () => {
+      closeSidebarMobile();
+      openFiltersMobile();
+    });
   }
   if (filtersCloseBtn) {
     filtersCloseBtn.addEventListener('click', () => closeFiltersMobile());
@@ -1157,6 +1196,20 @@ function closeFiltersMobile() {
   filtersBackdrop.classList.remove('active');
   filtersBackdrop.setAttribute('aria-hidden', 'true');
   document.body.style.overflow = '';
+}
+
+function openSidebarMobile() {
+  if (!appSidebar || !mobileSidebarBackdrop) return;
+  appSidebar.classList.add('mobile-open');
+  mobileSidebarBackdrop.classList.add('active');
+  mobileSidebarBackdrop.setAttribute('aria-hidden', 'false');
+}
+
+function closeSidebarMobile() {
+  if (!appSidebar || !mobileSidebarBackdrop) return;
+  appSidebar.classList.remove('mobile-open');
+  mobileSidebarBackdrop.classList.remove('active');
+  mobileSidebarBackdrop.setAttribute('aria-hidden', 'true');
 }
 
 // =========================

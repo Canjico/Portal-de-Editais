@@ -50,6 +50,14 @@
 
     <div class="app-main">
       <header class="topbar">
+        <div class="topbar-mobile-brand" aria-label="Athos">
+          <button class="icon-btn mobile-only mobile-sidebar-btn" id="mobileSidebarBtn" type="button" title="Menu" aria-label="Abrir menu">
+            <i class="fas fa-bars"></i>
+          </button>
+          <img src="./assets/img/icons/Atimus5.png" alt="Athos" class="topbar-mobile-logo" />
+          <span class="topbar-mobile-title">Athos</span>
+        </div>
+
         <div class="search-wrapper">
           <i class="fas fa-search"></i>
           <input type="text" id="search" placeholder="Pesquisar edital..." autocomplete="off" />
@@ -191,6 +199,7 @@
   </div>
 
   <div class="filters-backdrop" id="filtersBackdrop" aria-hidden="true"></div>
+  <div class="mobile-sidebar-backdrop" id="mobileSidebarBackdrop" aria-hidden="true"></div>
 
   <div class="modal-overlay" id="modal-overlay" role="dialog" aria-modal="true" aria-label="Detalhes do edital">
     <div class="edital-modal">
