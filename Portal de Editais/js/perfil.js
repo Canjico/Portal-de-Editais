@@ -21,6 +21,17 @@ let customSelectGlobalHandlersBound = false;
 
 document.addEventListener('DOMContentLoaded', init);
 
+function clearTransientSelection(triggerEl = null) {
+  try {
+    const sel = window.getSelection && window.getSelection();
+    if (sel && sel.rangeCount) sel.removeAllRanges();
+  } catch (_) {}
+
+  if (window.matchMedia('(pointer: coarse)').matches) {
+    try { triggerEl?.blur?.(); } catch (_) {}
+  }
+}
+
 async function init() {
   try {
     bootstrapAuthFromUrl();
@@ -115,6 +126,7 @@ function setupUI() {
   if (appSidebar) {
     appSidebar.querySelectorAll('.sidebar-nav a').forEach((link) => {
       link.addEventListener('click', () => {
+        clearTransientSelection(link);
         if (window.matchMedia('(max-width: 980px)').matches) {
           closeSidebarMobile();
         }
@@ -164,6 +176,7 @@ function setupUI() {
   // Navegacao interna do perfil (tabs)
   document.querySelectorAll('.profile-nav-item').forEach((btn) => {
     btn.addEventListener('click', () => {
+      clearTransientSelection(btn);
       const target = btn.getAttribute('data-target');
       document.querySelectorAll('.profile-nav-item').forEach((b) => b.classList.remove('is-active'));
       btn.classList.add('is-active');
