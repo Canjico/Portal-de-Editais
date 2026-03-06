@@ -50,6 +50,12 @@
 
     <div class="app-main">
       <header class="topbar">
+        <div class="topbar-mobile-brand" aria-label="Menu mobile">
+          <button class="icon-btn mobile-only mobile-sidebar-btn" id="mobileSidebarBtn" type="button" title="Menu" aria-label="Abrir menu">
+            <i class="fas fa-bars"></i>
+          </button>
+        </div>
+
         <div class="search-wrapper">
           <i class="fas fa-search"></i>
           <input type="text" id="helpSearch" placeholder="Buscar na central de ajuda..." autocomplete="off" />
@@ -172,6 +178,8 @@
       </main>
     </div>
   </div>
+
+  <div class="mobile-sidebar-backdrop" id="mobileSidebarBackdrop" aria-hidden="true"></div>
 
   <script src="./js/consent.js"></script>
 
@@ -326,9 +334,60 @@
 
           const toggle = document.getElementById('sidebarToggle');
           const sidebar = document.getElementById('appSidebar');
-          if(toggle && sidebar){
-            toggle.addEventListener('click', ()=> sidebar.classList.toggle('collapsed'));
+          const mobileSidebarBtn = document.getElementById('mobileSidebarBtn');
+          const mobileSidebarBackdrop = document.getElementById('mobileSidebarBackdrop');
+
+          const openSidebarMobile = () => {
+            if (!sidebar || !mobileSidebarBackdrop) return;
+            sidebar.classList.add('mobile-open');
+            mobileSidebarBackdrop.classList.add('active');
+            mobileSidebarBackdrop.setAttribute('aria-hidden', 'false');
+          };
+
+          const closeSidebarMobile = () => {
+            if (!sidebar || !mobileSidebarBackdrop) return;
+            sidebar.classList.remove('mobile-open');
+            mobileSidebarBackdrop.classList.remove('active');
+            mobileSidebarBackdrop.setAttribute('aria-hidden', 'true');
+          };
+
+          if (toggle && sidebar) {
+            toggle.addEventListener('click', () => {
+              if (window.matchMedia('(max-width: 980px)').matches) {
+                closeSidebarMobile();
+                return;
+              }
+              sidebar.classList.toggle('collapsed');
+            });
           }
+
+          if (mobileSidebarBtn && sidebar) {
+            mobileSidebarBtn.addEventListener('click', () => {
+              if (sidebar.classList.contains('mobile-open')) {
+                closeSidebarMobile();
+              } else {
+                openSidebarMobile();
+              }
+            });
+          }
+
+          if (mobileSidebarBackdrop) {
+            mobileSidebarBackdrop.addEventListener('click', () => closeSidebarMobile());
+          }
+
+          if (sidebar) {
+            sidebar.querySelectorAll('.sidebar-nav a').forEach((link) => {
+              link.addEventListener('click', () => {
+                if (window.matchMedia('(max-width: 980px)').matches) {
+                  closeSidebarMobile();
+                }
+              });
+            });
+          }
+
+          window.addEventListener('resize', () => {
+            if (window.innerWidth > 980) closeSidebarMobile();
+          });
         } finally {
           markAppReady();
         }

@@ -50,7 +50,11 @@
 
     <div class="app-main">
       <header class="topbar topbar--compact">
-        <div></div>
+        <div class="topbar-mobile-brand" aria-label="Menu mobile">
+          <button class="icon-btn mobile-only mobile-sidebar-btn" id="mobileSidebarBtn" type="button" title="Menu" aria-label="Abrir menu">
+            <i class="fas fa-bars"></i>
+          </button>
+        </div>
         <div class="topbar-actions">
           <button class="icon-btn" type="button" aria-label="Notificações">
             <i class="far fa-bell"></i>
@@ -219,6 +223,8 @@
       </main>
     </div>
   </div>
+
+  <div class="mobile-sidebar-backdrop" id="mobileSidebarBackdrop" aria-hidden="true"></div>
 
   <script src="./js/consent.js"></script>
   <script type="module" src="./js/perfil.js"></script>

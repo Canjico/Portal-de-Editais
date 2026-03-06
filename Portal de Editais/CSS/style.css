@@ -1761,6 +1761,27 @@ body.cookie-consent-required{
 
   .mobile-sidebar-backdrop.active{display:block;}
 
+  html, body{overflow-x:hidden;}
+  .app,
+  .app-main,
+  .content,
+  .page-grid,
+  .results-toolbar,
+  .results-actions,
+  .sort-wrapper,
+  .sort-chips,
+  .cards-grid,
+  .edital-card,
+  .help-grid,
+  .help-main,
+  .help-side,
+  .profile-grid,
+  .profile-left,
+  .profile-right,
+  .panel{
+    min-width:0;
+  }
+
   .topbar{
     padding:10px 12px;
     gap:10px;
@@ -1768,7 +1789,12 @@ body.cookie-consent-required{
   }
   .topbar-mobile-brand{
     display:flex;
-    flex:1 1 auto;
+    flex:0 0 auto;
+    gap:0;
+  }
+  .topbar-mobile-logo,
+  .topbar-mobile-title{
+    display:none;
   }
   .search-wrapper{
     order:3;
@@ -1784,8 +1810,7 @@ body.cookie-consent-required{
     height:36px;
     border-radius:11px;
   }
-  .topbar-actions > .icon-btn[aria-label="Notificações"],
-  #logoutIconBtn{
+  .topbar-actions > .icon-btn[aria-label="Notificações"]{
     display:none;
   }
 
@@ -1849,6 +1874,17 @@ body.cookie-consent-required{
   .card-status-list{max-width:160px;}
   .card-desc{-webkit-line-clamp:5;}
   .card-context{padding:8px 9px;}
+  .card-context-item span{
+    min-width:0;
+    overflow-wrap:anywhere;
+  }
+  .card-tags .pill{
+    display:inline-block;
+    max-width:100%;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+  }
   .open-edital-btn{
     min-height:44px;
     border-radius:14px;

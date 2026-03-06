@@ -14,6 +14,8 @@ import {
 const sidebarToggle = document.getElementById('sidebarToggle');
 const appSidebar = document.getElementById('appSidebar');
 const logoutIconBtn = document.getElementById('logoutIconBtn');
+const mobileSidebarBtn = document.getElementById('mobileSidebarBtn');
+const mobileSidebarBackdrop = document.getElementById('mobileSidebarBackdrop');
 const customSelectModels = [];
 let customSelectGlobalHandlersBound = false;
 
@@ -82,8 +84,42 @@ async function checkAuth() {
 
 function setupUI() {
   if (sidebarToggle && appSidebar) {
-    sidebarToggle.addEventListener('click', () => appSidebar.classList.toggle('collapsed'));
+    sidebarToggle.addEventListener('click', () => {
+      if (window.matchMedia('(max-width: 980px)').matches) {
+        closeSidebarMobile();
+        return;
+      }
+      appSidebar.classList.toggle('collapsed');
+    });
   }
+
+  if (mobileSidebarBtn && appSidebar) {
+    mobileSidebarBtn.addEventListener('click', () => {
+      if (appSidebar.classList.contains('mobile-open')) {
+        closeSidebarMobile();
+      } else {
+        openSidebarMobile();
+      }
+    });
+  }
+
+  if (mobileSidebarBackdrop) {
+    mobileSidebarBackdrop.addEventListener('click', () => closeSidebarMobile());
+  }
+
+  if (appSidebar) {
+    appSidebar.querySelectorAll('.sidebar-nav a').forEach((link) => {
+      link.addEventListener('click', () => {
+        if (window.matchMedia('(max-width: 980px)').matches) {
+          closeSidebarMobile();
+        }
+      });
+    });
+  }
+
+  window.addEventListener('resize', () => {
+    if (window.innerWidth > 980) closeSidebarMobile();
+  });
 
   setupCustomSelects();
 
@@ -202,6 +238,20 @@ function setupUI() {
   if (saveDadosBtn) saveDadosBtn.addEventListener('click', () => save(saveDadosBtn));
   if (saveEmpresaBtn) saveEmpresaBtn.addEventListener('click', () => save(saveEmpresaBtn));
   if (savePrefsBtn) savePrefsBtn.addEventListener('click', () => save(savePrefsBtn));
+}
+
+function openSidebarMobile() {
+  if (!appSidebar || !mobileSidebarBackdrop) return;
+  appSidebar.classList.add('mobile-open');
+  mobileSidebarBackdrop.classList.add('active');
+  mobileSidebarBackdrop.setAttribute('aria-hidden', 'false');
+}
+
+function closeSidebarMobile() {
+  if (!appSidebar || !mobileSidebarBackdrop) return;
+  appSidebar.classList.remove('mobile-open');
+  mobileSidebarBackdrop.classList.remove('active');
+  mobileSidebarBackdrop.setAttribute('aria-hidden', 'true');
 }
 
 function setupCustomSelects() {
