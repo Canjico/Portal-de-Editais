@@ -14,6 +14,8 @@ import {
 const sidebarToggle = document.getElementById('sidebarToggle');
 const appSidebar = document.getElementById('appSidebar');
 const logoutIconBtn = document.getElementById('logoutIconBtn');
+const customSelectModels = [];
+let customSelectGlobalHandlersBound = false;
 
 document.addEventListener('DOMContentLoaded', init);
 
@@ -83,6 +85,8 @@ function setupUI() {
     sidebarToggle.addEventListener('click', () => appSidebar.classList.toggle('collapsed'));
   }
 
+  setupCustomSelects();
+
   const doLogout = async () => {
     const endpoints = [
       { url: API_BASE + '/logout', method: 'POST' },
@@ -124,6 +128,8 @@ function setupUI() {
         const isTarget = p.id === target;
         p.toggleAttribute('hidden', !isTarget);
       });
+
+      closeAllCustomSelects();
 
       document.querySelectorAll('.profile-nav-item').forEach((b) => {
         b.setAttribute('aria-selected', b === btn ? 'true' : 'false');
@@ -196,6 +202,140 @@ function setupUI() {
   if (saveDadosBtn) saveDadosBtn.addEventListener('click', () => save(saveDadosBtn));
   if (saveEmpresaBtn) saveEmpresaBtn.addEventListener('click', () => save(saveEmpresaBtn));
   if (savePrefsBtn) savePrefsBtn.addEventListener('click', () => save(savePrefsBtn));
+}
+
+function setupCustomSelects() {
+  const selects = Array.from(document.querySelectorAll('.profile-right .field select'));
+
+  selects.forEach((select) => {
+    if (select.dataset.customSelectReady === '1') {
+      updateCustomSelectUI(select);
+      return;
+    }
+    createCustomSelect(select);
+  });
+
+  if (!customSelectGlobalHandlersBound) {
+    document.addEventListener('click', onDocumentClickForCustomSelects);
+    document.addEventListener('keydown', onDocumentKeydownForCustomSelects);
+    customSelectGlobalHandlersBound = true;
+  }
+}
+
+function createCustomSelect(select) {
+  const field = select.closest('.field');
+  if (!field) return;
+
+  field.classList.add('field--with-custom-select');
+  select.classList.add('select-native-hidden');
+  select.dataset.customSelectReady = '1';
+  select.setAttribute('tabindex', '-1');
+  select.setAttribute('aria-hidden', 'true');
+
+  const root = document.createElement('div');
+  root.className = 'custom-select';
+
+  const trigger = document.createElement('button');
+  trigger.type = 'button';
+  trigger.className = 'custom-select__trigger';
+  trigger.setAttribute('aria-haspopup', 'listbox');
+  trigger.setAttribute('aria-expanded', 'false');
+
+  const valueEl = document.createElement('span');
+  valueEl.className = 'custom-select__value';
+  valueEl.textContent = 'Selecione';
+
+  const icon = document.createElement('i');
+  icon.className = 'fas fa-chevron-down custom-select__icon';
+  icon.setAttribute('aria-hidden', 'true');
+
+  trigger.appendChild(valueEl);
+  trigger.appendChild(icon);
+
+  const menu = document.createElement('div');
+  menu.className = 'custom-select__menu';
+  menu.setAttribute('role', 'listbox');
+
+  const optionButtons = [];
+  Array.from(select.options).forEach((option) => {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'custom-select__option';
+    item.setAttribute('role', 'option');
+    item.textContent = String(option.textContent || '').trim();
+    item.dataset.value = option.value;
+    item.disabled = !!option.disabled;
+
+    if (option.disabled && !option.value) {
+      item.classList.add('is-placeholder');
+    }
+
+    item.addEventListener('click', () => {
+      if (item.disabled) return;
+      select.value = item.dataset.value || '';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      closeAllCustomSelects();
+      trigger.focus();
+    });
+
+    optionButtons.push(item);
+    menu.appendChild(item);
+  });
+
+  trigger.addEventListener('click', () => {
+    const isOpen = root.classList.contains('open');
+    closeAllCustomSelects(isOpen ? null : root);
+    if (!isOpen) {
+      root.classList.add('open');
+      trigger.setAttribute('aria-expanded', 'true');
+    }
+  });
+
+  root.appendChild(trigger);
+  root.appendChild(menu);
+  select.insertAdjacentElement('afterend', root);
+
+  customSelectModels.push({ select, root, trigger, valueEl, optionButtons });
+
+  select.addEventListener('change', () => updateCustomSelectUI(select));
+  updateCustomSelectUI(select);
+}
+
+function updateCustomSelectUI(select) {
+  const model = customSelectModels.find((item) => item.select === select);
+  if (!model) return;
+
+  const currentValue = select.value || '';
+  const selectedOption = select.options[select.selectedIndex];
+  const label = selectedOption ? String(selectedOption.textContent || '').trim() : 'Selecione';
+  const placeholder = !currentValue;
+
+  model.valueEl.textContent = label || 'Selecione';
+  model.valueEl.classList.toggle('is-placeholder', placeholder);
+  model.trigger.classList.toggle('is-empty', placeholder);
+
+  model.optionButtons.forEach((btn) => {
+    const isSelected = btn.dataset.value === currentValue;
+    btn.classList.toggle('is-selected', isSelected);
+    btn.setAttribute('aria-selected', isSelected ? 'true' : 'false');
+  });
+}
+
+function closeAllCustomSelects(exceptRoot = null) {
+  customSelectModels.forEach((model) => {
+    if (exceptRoot && model.root === exceptRoot) return;
+    model.root.classList.remove('open');
+    model.trigger.setAttribute('aria-expanded', 'false');
+  });
+}
+
+function onDocumentClickForCustomSelects(ev) {
+  if (ev.target.closest('.custom-select')) return;
+  closeAllCustomSelects();
+}
+
+function onDocumentKeydownForCustomSelects(ev) {
+  if (ev.key === 'Escape') closeAllCustomSelects();
 }
 
 function markAppReady() {
@@ -321,7 +461,11 @@ function setText(id, value) {
 
 function setValue(id, value) {
   const el = document.getElementById(id);
-  if (el) el.value = value;
+  if (!el) return;
+  el.value = value;
+  if (el.tagName === 'SELECT') {
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  }
 }
 
 function getValue(id) {
