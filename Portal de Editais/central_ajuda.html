@@ -261,18 +261,32 @@
         setInitials(sidebarAvatar, nome || email || sidebarAvatar?.textContent || 'U');
       }
 
-      async function checkAuth(){
+async function checkAuth(){
         try{
           const res = await fetch(`${API_BASE}/cliente/me`, { credentials: 'include', headers: authHeaders() });
-          if(!res.ok) throw new Error('Sessão inválida');
-          const data = await res.json();
-          if(!data.logado){
+          if (!res.ok) {
+            if (res.status === 401 || res.status === 403) {
+              window.location.href = buildLoginUrlWithNext();
+              return false;
+            }
+            return {};
+          }
+
+          let data = {};
+          try {
+            data = await res.json();
+          } catch (_) {
+            data = {};
+          }
+
+          if (data && typeof data === 'object' && ('logado' in data) && !data.logado){
             window.location.href = buildLoginUrlWithNext();
             return false;
           }
-          return data;
+          return data && typeof data === 'object' ? data : {};
         }catch(e){
           console.error('Erro na verificação de autenticação:', e);
+          if (e instanceof TypeError) return {};
           window.location.href = buildLoginUrlWithNext();
           return false;
         }
@@ -337,11 +351,18 @@
           const mobileSidebarBtn = document.getElementById('mobileSidebarBtn');
           const mobileSidebarBackdrop = document.getElementById('mobileSidebarBackdrop');
 
+          if (sidebar && window.matchMedia('(max-width: 980px)').matches) {
+            sidebar.classList.remove('mobile-open');
+            sidebar.classList.remove('collapsed');
+          }
+
           const openSidebarMobile = () => {
             if (!sidebar || !mobileSidebarBackdrop) return;
+            sidebar.classList.remove('collapsed');
             sidebar.classList.add('mobile-open');
             mobileSidebarBackdrop.classList.add('active');
             mobileSidebarBackdrop.setAttribute('aria-hidden', 'false');
+            document.body.style.overflow = 'hidden';
           };
 
           const closeSidebarMobile = () => {
@@ -349,6 +370,7 @@
             sidebar.classList.remove('mobile-open');
             mobileSidebarBackdrop.classList.remove('active');
             mobileSidebarBackdrop.setAttribute('aria-hidden', 'true');
+            document.body.style.overflow = '';
           };
 
           if (toggle && sidebar) {
@@ -386,7 +408,10 @@
           }
 
           window.addEventListener('resize', () => {
-            if (window.innerWidth > 980) closeSidebarMobile();
+            if (window.innerWidth > 980) {
+              closeSidebarMobile();
+              sidebar?.classList.remove('mobile-open');
+            }
           });
         } finally {
           markAppReady();

@@ -83,6 +83,11 @@ async function checkAuth() {
 }
 
 function setupUI() {
+  if (appSidebar && window.matchMedia('(max-width: 980px)').matches) {
+    appSidebar.classList.remove('mobile-open');
+    appSidebar.classList.remove('collapsed');
+  }
+
   if (sidebarToggle && appSidebar) {
     sidebarToggle.addEventListener('click', () => {
       if (window.matchMedia('(max-width: 980px)').matches) {
@@ -118,7 +123,10 @@ function setupUI() {
   }
 
   window.addEventListener('resize', () => {
-    if (window.innerWidth > 980) closeSidebarMobile();
+    if (window.innerWidth > 980) {
+      closeSidebarMobile();
+      appSidebar?.classList.remove('mobile-open');
+    }
   });
 
   setupCustomSelects();
@@ -242,9 +250,11 @@ function setupUI() {
 
 function openSidebarMobile() {
   if (!appSidebar || !mobileSidebarBackdrop) return;
+  appSidebar.classList.remove('collapsed');
   appSidebar.classList.add('mobile-open');
   mobileSidebarBackdrop.classList.add('active');
   mobileSidebarBackdrop.setAttribute('aria-hidden', 'false');
+  document.body.style.overflow = 'hidden';
 }
 
 function closeSidebarMobile() {
@@ -252,6 +262,7 @@ function closeSidebarMobile() {
   appSidebar.classList.remove('mobile-open');
   mobileSidebarBackdrop.classList.remove('active');
   mobileSidebarBackdrop.setAttribute('aria-hidden', 'true');
+  document.body.style.overflow = '';
 }
 
 function setupCustomSelects() {
@@ -422,7 +433,7 @@ async function loadProfileFromApi() {
     const { res, data } = await apiFetchJson('/cliente/perfil', { method: 'GET' });
     if (!res.ok) {
       if (res.status === 401 || res.status === 403) {
-        window.location.href = buildLoginUrlWithNext();
+        // Mantém a tela usando os dados básicos já carregados em /cliente/me.
         return;
       }
       const msg = (data && typeof data === 'object' && (data.detail || data.msg))

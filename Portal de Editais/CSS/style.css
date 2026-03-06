@@ -70,6 +70,8 @@ a{color:inherit;}
 .app{
   display:flex;
   min-height:100vh;
+  width:100%;
+  overflow-x:hidden;
 }
 
 .app-sidebar{
@@ -1750,10 +1752,19 @@ body.cookie-consent-required{
     width:min(320px, 88vw);
     z-index:240;
     transform:translateX(-108%);
-    transition:transform .25s ease;
+    transition:transform .25s ease, opacity .2s ease;
+    opacity:0;
+    visibility:hidden;
+    pointer-events:none;
     box-shadow:0 26px 42px rgba(17,24,39,0.24);
+    will-change:transform;
   }
-  .app-sidebar.mobile-open{transform:translateX(0);}
+  .app-sidebar.mobile-open{
+    transform:translateX(0);
+    opacity:1;
+    visibility:visible;
+    pointer-events:auto;
+  }
   .app-sidebar.collapsed{width:min(320px, 88vw);}
   .app-sidebar.collapsed .sidebar-logo{display:block;}
   .app-sidebar.collapsed .nav-text{display:inline;}
@@ -1804,11 +1815,15 @@ body.cookie-consent-required{
   .topbar-actions{
     margin-left:auto;
     gap:8px;
+    min-width:0;
+    flex-wrap:wrap;
+    justify-content:flex-end;
   }
   .topbar-actions .icon-btn{
     width:36px;
     height:36px;
     border-radius:11px;
+    flex:0 0 auto;
   }
   .topbar-actions > .icon-btn[aria-label="Notificações"]{
     display:none;
@@ -1872,6 +1887,11 @@ body.cookie-consent-required{
     min-height:0;
   }
   .card-status-list{max-width:160px;}
+  .card-title,
+  .card-org,
+  .card-desc{
+    overflow-wrap:anywhere;
+  }
   .card-desc{-webkit-line-clamp:5;}
   .card-context{padding:8px 9px;}
   .card-context-item span{
@@ -1917,11 +1937,26 @@ body.cookie-consent-required{
 
 @media (max-width: 640px){
   .content{padding:10px;}
+  .topbar{padding:8px 10px;}
+  .topbar-actions{gap:6px;}
+  .topbar-actions .icon-btn{
+    width:34px;
+    height:34px;
+  }
   .topbar-mobile-logo{
     width:30px;
     height:30px;
   }
   .topbar-mobile-title{font-size:13px;}
+  .hero-banner{padding:12px;}
+  .hero-stats{gap:6px;}
+  .hero-stat{
+    min-width:0;
+    flex:1 1 calc(33.333% - 6px);
+  }
+  .profile-card,
+  .panel,
+  .help-card{padding:14px;}
 
   .sort-direction-btn{
     width:100%;
@@ -1932,6 +1967,26 @@ body.cookie-consent-required{
   .filters-panel{
     width:100vw;
     border-radius:0;
+  }
+}
+
+@media (max-width: 420px){
+  .content{padding:8px;}
+  .topbar{padding:8px;}
+  .hero-banner h1{font-size:14px;}
+  .hero-banner p{font-size:11.5px;}
+  .sort-wrapper{padding:8px;}
+  .sort-chip{
+    padding:6px 10px;
+    font-size:11px;
+  }
+  .edital-card{padding:12px;}
+  .card-title{font-size:14px;}
+  .card-desc{font-size:12px;}
+  .card-context-item{font-size:11.5px;}
+  .open-edital-btn{
+    padding:11px 12px;
+    font-size:15px;
   }
 }
 
