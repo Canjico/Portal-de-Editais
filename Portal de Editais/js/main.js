@@ -482,9 +482,14 @@ function generateDynamicFilters() {
       counts.set(raw, (counts.get(raw) || 0) + 1);
     }
 
-    const values = type === 'instrumento'
+    const values = (type === 'instrumento'
       ? INSTRUMENT_OPTIONS.slice()
-      : Array.from(counts.keys()).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+      : Array.from(counts.keys()))
+      .sort((a, b) => {
+        const diff = (counts.get(b) || 0) - (counts.get(a) || 0);
+        if (diff !== 0) return diff;
+        return a.localeCompare(b, 'pt-BR');
+      });
 
     box.innerHTML = '';
     if (values.length === 0) {
@@ -542,8 +547,14 @@ function generateCategoryFilters() {
     counts.set(cat, (counts.get(cat) || 0) + 1);
   }
 
+  const orderedCategories = CATEGORY_OPTIONS.slice().sort((a, b) => {
+    const diff = (counts.get(b.value) || 0) - (counts.get(a.value) || 0);
+    if (diff !== 0) return diff;
+    return a.label.localeCompare(b.label, 'pt-BR');
+  });
+
   box.innerHTML = '';
-  for (const category of CATEGORY_OPTIONS) {
+  for (const category of orderedCategories) {
     const label = document.createElement('label');
     label.setAttribute('data-label', normalizeCategoryKey(`${category.label} ${category.value}`));
 
@@ -603,7 +614,7 @@ function normalizeSortValue(value) {
 
 function getDefaultSortDirection(sort) {
   const s = normalizeSortValue(sort);
-  return s === 'atualizado' ? 'desc' : 'asc';
+  return (s === 'atualizado' || s === 'prazo') ? 'desc' : 'asc';
 }
 
 function syncSortControls() {
