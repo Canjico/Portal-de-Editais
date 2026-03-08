@@ -34,6 +34,7 @@ export function renderEditais(container, editais) {
     const localShareLink = `${baseUrl}?${linkParam}`;
 
     const instituicao = edital.instituicao || 'Instituição';
+    const logoSrc = resolveLogoSrc(edital.icone);
     const dataFinal = edital.data_fechamento || 'Não informada';
     const statusBadges = buildStatusBadges(edital.data_fechamento);
     const statusHtml = statusBadges
@@ -73,7 +74,7 @@ export function renderEditais(container, editais) {
       <div class="card-top">
         <div class="card-brand">
           <div class="card-logo">
-            ${edital.icone ? `<img src="${edital.icone}" alt="${escapeHtml(instituicao)}">` : `<span style="font-weight:1000; color:#9CA3AF; font-size:12px;">${escapeHtml(shortCode(instituicao))}</span>`}
+            ${logoSrc ? `<img src="${escapeAttr(logoSrc)}" alt="${escapeHtml(instituicao)}">` : `<span style="font-weight:1000; color:#9CA3AF; font-size:12px;">${escapeHtml(shortCode(instituicao))}</span>`}
           </div>
           <div style="min-width:0;">
             <div class="card-org" title="${escapeHtml(instituicao)}">${escapeHtml(instituicao)}</div>
@@ -134,6 +135,31 @@ function shortCode(text) {
   const parts = s.split(/\s+/).slice(0, 2);
   const letters = parts.map(p => p[0]).join('');
   return letters.toUpperCase();
+}
+
+function resolveLogoSrc(value) {
+  if (value === null || value === undefined) return '';
+
+  const raw = String(value).trim().replace(/\\/g, '/');
+  if (!raw) return '';
+
+  if (/^(?:https?:|data:|blob:)/i.test(raw)) return raw;
+  if (raw.startsWith('//')) return `${window.location.protocol}${raw}`;
+
+  const normalized = raw
+    .replace(/^\.?\//, '')
+    .replace(/^\/+/, '');
+
+  const isProjectIconPath =
+    normalized.toLowerCase().startsWith('icons/') ||
+    normalized.toLowerCase().startsWith('assets/img/icons/');
+
+  const isBareImageFilename = /^[^/]+\.(?:png|jpe?g|gif|webp|svg|avif)$/i.test(normalized);
+
+  if (isProjectIconPath) return new URL(normalized, document.baseURI).href;
+  if (isBareImageFilename) return new URL(`icons/${normalized}`, document.baseURI).href;
+
+  return raw;
 }
 
 function buildStatusBadges(dataFechamento) {

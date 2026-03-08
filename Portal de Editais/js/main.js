@@ -1,8 +1,8 @@
-﻿/* =========================================================
+/* =========================================================
    Athos / Atimus — Editais (UX/UI novo + filtros + paginação)
    ========================================================= */
 
-import { renderEditais } from './render.js';
+import { renderEditais } from './render.js?v=20260306.1';
 
 // =========================
 // CONFIGURAÇÕES & SEGURANÇA
@@ -16,6 +16,8 @@ import {
   safeReadJson,
   apiFetchJson,
 } from './auth.js';
+
+const APP_BASE_URL = new URL('../', import.meta.url);
 
 // =========================
 // ESTADO
@@ -387,7 +389,7 @@ function normalizeEdital(api) {
     slug: generateSlug(titulo),
     descricao: data.objetivo || data.descricao || 'Sem descrição',
     publico_alvo: data.publico_alvo || '',
-    icone: data.icone_instituicao || null,
+    icone: resolveIconPath(data.icone_instituicao),
     instituicao: data.instituicao || '',
     estado: data.estado || 'BR',
     area: String(rawArea || 'Geral'),
@@ -404,6 +406,36 @@ function normalizeEdital(api) {
 
 function safeJsonParse(str, fallback) {
   try { return JSON.parse(str); } catch { return fallback; }
+}
+
+function resolveIconPath(value) {
+  if (value === null || value === undefined) return null;
+
+  const raw = String(value).trim().replace(/\\/g, '/');
+  if (!raw) return null;
+
+  if (/^(?:https?:|data:|blob:)/i.test(raw)) return raw;
+  if (raw.startsWith('//')) return `${window.location.protocol}${raw}`;
+
+  const normalized = raw
+    .replace(/^\.?\//, '')
+    .replace(/^\/+/, '');
+
+  const isProjectIconPath =
+    normalized.toLowerCase().startsWith('icons/') ||
+    normalized.toLowerCase().startsWith('assets/img/icons/');
+
+  const isBareImageFilename = /^[^/]+\.(?:png|jpe?g|gif|webp|svg|avif)$/i.test(normalized);
+
+  if (isProjectIconPath) {
+    return new URL(normalized, APP_BASE_URL).href;
+  }
+
+  if (isBareImageFilename) {
+    return new URL(`icons/${normalized}`, APP_BASE_URL).href;
+  }
+
+  return raw;
 }
 
 function generateSlug(text) {

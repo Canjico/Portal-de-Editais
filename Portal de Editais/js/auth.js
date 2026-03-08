@@ -13,8 +13,8 @@ export const IS_LOCAL =
 // Caminho local padrão (absoluto quando possível, pra não depender do "../")
 export const LOGIN_URL = IS_LOCAL
   ? ((window.location.origin && window.location.origin !== 'null')
-      ? `${window.location.origin}/Login/API/index.html`
-      : './Login/API/index.html')
+      ? `${window.location.origin}/Login-main/Login/index.html`
+      : './Login-main/Login/index.html')
   : 'https://login.atimus.agr.br';
 
 // =========================
