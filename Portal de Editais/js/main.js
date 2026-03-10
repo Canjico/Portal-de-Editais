@@ -979,7 +979,7 @@ function setupUIEvents() {
   }
 
   // logout (tenta encerrar sessão no back; se não existir endpoint, cai no redirect)
-  const doLogout = async () => {
+const doLogout = async () => {
     const endpoints = [
       { url: API_BASE + "/logout", method: "POST" },
       { url: API_BASE + "/auth/logout", method: "POST" },
@@ -994,6 +994,12 @@ function setupUIEvents() {
     ];
 
     try {
+      try {
+        if (window.AthosPresence?.markOffline) {
+          await window.AthosPresence.markOffline({ keepalive: true });
+        }
+      } catch (_) {}
+
       for (const ep of endpoints) {
         try {
           const r = await fetch(ep.url, { method: ep.method, credentials: "include" });
@@ -1001,6 +1007,7 @@ function setupUIEvents() {
         } catch (_) { /* tenta o próximo */ }
       }
     } finally {
+      try { window.dispatchEvent(new Event('athos:logout')); } catch (_) {}
       try { localStorage.removeItem('cliente_token'); } catch (_) {}
       try { sessionStorage.removeItem('cliente_token'); } catch (_) {}
       const sep = LOGIN_URL.includes('?') ? '&' : '?';

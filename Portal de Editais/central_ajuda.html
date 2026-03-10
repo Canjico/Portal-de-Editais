@@ -182,6 +182,7 @@
   <div class="mobile-sidebar-backdrop" id="mobileSidebarBackdrop" aria-hidden="true"></div>
 
   <script src="./js/consent.js"></script>
+  <script src="./js/presence.js?v=20260309.1"></script>
 
   <script>
     // logout simples (sem depender do main.js)
@@ -319,6 +320,12 @@ async function checkAuth(){
         ];
 
         try {
+          try {
+            if (window.AthosPresence?.markOffline) {
+              await window.AthosPresence.markOffline({ keepalive: true });
+            }
+          } catch (_) {}
+
           for (const ep of endpoints) {
             try {
               const r = await fetch(ep.url, { method: ep.method, credentials: 'include', headers: authHeaders() });
@@ -326,6 +333,7 @@ async function checkAuth(){
             } catch (_) {}
           }
         } finally {
+          try { window.dispatchEvent(new Event('athos:logout')); } catch (_) {}
           try { localStorage.removeItem('cliente_token'); } catch (_) {}
           try { sessionStorage.removeItem('cliente_token'); } catch (_) {}
           window.location.href = LOGIN_URL;

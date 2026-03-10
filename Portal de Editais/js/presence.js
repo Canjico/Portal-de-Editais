@@ -1,0 +1,261 @@
+/* =========================================================
+   Athos / Atimus - Presença de Usuário (Portal de Editais)
+   - Heartbeat periódico enquanto houver atividade real no portal
+   - Marcação de offline em logout, fechamento de aba e troca de página
+   ========================================================= */
+
+(function bootstrapPresenceTracker() {
+  const API_BASE = 'https://atimus-api-acb4gfgagefcevb5.brazilsouth-01.azurewebsites.net';
+
+  const HEARTBEAT_INTERVAL_MS = 30000;
+  const ACTIVE_GRACE_MS = 60000;
+  const FAILED_RETRY_COOLDOWN_MS = 300000;
+
+  const HEARTBEAT_ENDPOINTS = [
+    '/cliente/presenca/heartbeat',
+    '/cliente/presenca',
+    '/cliente/heartbeat',
+    '/cliente/activity',
+    '/presenca/heartbeat',
+  ];
+
+  const OFFLINE_ENDPOINTS = [
+    '/cliente/presenca/offline',
+    '/cliente/offline',
+    '/cliente/presenca',
+    '/presenca/offline',
+  ];
+
+  const PRESENCE_ENDPOINT_KEY = 'athos_presence_endpoint';
+  const PRESENCE_SOURCE = 'portal_editais';
+
+  let started = false;
+  let intervalId = null;
+  let lastInteractionAt = Date.now();
+  let resolvedEndpoint = null;
+  let failedProbeUntil = 0;
+
+  function getStoredToken() {
+    try {
+      return localStorage.getItem('cliente_token') || sessionStorage.getItem('cliente_token');
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function normalizeEndpoint(pathOrUrl) {
+    if (!pathOrUrl) return '';
+    if (/^https?:\/\//i.test(pathOrUrl)) return pathOrUrl;
+    const path = String(pathOrUrl).startsWith('/') ? String(pathOrUrl) : `/${String(pathOrUrl)}`;
+    return `${API_BASE}${path}`;
+  }
+
+  function uniqueEndpoints(candidates) {
+    const seen = new Set();
+    const out = [];
+    for (const candidate of candidates) {
+      const normalized = normalizeEndpoint(candidate);
+      if (!normalized || seen.has(normalized)) continue;
+      seen.add(normalized);
+      out.push(normalized);
+    }
+    return out;
+  }
+
+  function readCachedEndpoint() {
+    try {
+      const raw = sessionStorage.getItem(PRESENCE_ENDPOINT_KEY);
+      return raw ? normalizeEndpoint(raw) : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function writeCachedEndpoint(value) {
+    const normalized = normalizeEndpoint(value);
+    if (!normalized) return;
+    resolvedEndpoint = normalized;
+    try {
+      sessionStorage.setItem(PRESENCE_ENDPOINT_KEY, normalized);
+    } catch (_) {}
+  }
+
+  async function postPresence(url, payload, options = {}) {
+    const headers = { 'Content-Type': 'application/json' };
+    const token = getStoredToken();
+
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+      headers['X-Cliente-Token'] = token;
+    }
+
+    const request = {
+      method: 'POST',
+      credentials: 'include',
+      keepalive: !!options.keepalive,
+      headers,
+      body: JSON.stringify(payload),
+    };
+
+    return fetch(url, request);
+  }
+
+  async function touchSessionActivity() {
+    const headers = {};
+    const token = getStoredToken();
+
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+      headers['X-Cliente-Token'] = token;
+    }
+
+    try {
+      const res = await fetch(`${API_BASE}/cliente/me`, {
+        method: 'GET',
+        credentials: 'include',
+        headers,
+      });
+      return res.ok;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  async function tryPresenceRequest(kind, options = {}) {
+    const now = Date.now();
+    const payload = {
+      source: PRESENCE_SOURCE,
+      status: kind,
+      event_type: kind,
+      online: kind === 'online',
+      path: window.location.pathname,
+      occurred_at: new Date(now).toISOString(),
+      last_seen_at: new Date(now).toISOString(),
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || '',
+    };
+
+    const fallbackEndpoints = kind === 'online' ? HEARTBEAT_ENDPOINTS : OFFLINE_ENDPOINTS;
+    const candidates = resolvedEndpoint
+      ? [resolvedEndpoint, ...fallbackEndpoints]
+      : fallbackEndpoints;
+    const endpoints = uniqueEndpoints(candidates);
+
+    for (const endpoint of endpoints) {
+      try {
+        const res = await postPresence(endpoint, payload, options);
+        if (res.ok || res.status === 202 || res.status === 204) {
+          if (kind === 'online') writeCachedEndpoint(endpoint);
+          return true;
+        }
+      } catch (_) {
+        // tenta próximo endpoint
+      }
+    }
+
+    return false;
+  }
+
+  async function markOnline() {
+    const now = Date.now();
+    if (!resolvedEndpoint && failedProbeUntil > now) {
+      return touchSessionActivity();
+    }
+
+    const ok = await tryPresenceRequest('online');
+    if (ok) return true;
+
+    const touched = await touchSessionActivity();
+    if (touched) return true;
+
+    if (!resolvedEndpoint) {
+      failedProbeUntil = now + FAILED_RETRY_COOLDOWN_MS;
+    }
+    return false;
+  }
+
+  async function markOffline(options = {}) {
+    return tryPresenceRequest('offline', { keepalive: options.keepalive !== false });
+  }
+
+  function shouldSendHeartbeat() {
+    if (document.visibilityState !== 'visible') return false;
+    return (Date.now() - lastInteractionAt) <= ACTIVE_GRACE_MS;
+  }
+
+  function registerUserInteraction() {
+    lastInteractionAt = Date.now();
+  }
+
+  function bindActivityEvents() {
+    const passive = { passive: true };
+    const handler = () => registerUserInteraction();
+
+    window.addEventListener('mousemove', handler, passive);
+    window.addEventListener('pointerdown', handler, passive);
+    window.addEventListener('keydown', handler);
+    window.addEventListener('scroll', handler, passive);
+    window.addEventListener('touchstart', handler, passive);
+    window.addEventListener('focus', handler);
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        registerUserInteraction();
+        markOnline();
+      }
+    });
+
+    window.addEventListener('pagehide', () => {
+      markOffline({ keepalive: true });
+    });
+
+    window.addEventListener('beforeunload', () => {
+      markOffline({ keepalive: true });
+    });
+
+    window.addEventListener('athos:logout', () => {
+      markOffline({ keepalive: true });
+    });
+  }
+
+  function start() {
+    if (started) return;
+    started = true;
+    resolvedEndpoint = readCachedEndpoint();
+    registerUserInteraction();
+    bindActivityEvents();
+
+    markOnline();
+
+    intervalId = setInterval(() => {
+      if (!shouldSendHeartbeat()) return;
+      markOnline();
+    }, HEARTBEAT_INTERVAL_MS);
+  }
+
+  function stop() {
+    if (!started) return;
+    started = false;
+    if (intervalId) {
+      clearInterval(intervalId);
+      intervalId = null;
+    }
+  }
+
+  window.AthosPresence = {
+    start,
+    stop,
+    markOnline,
+    markOffline,
+    registerUserInteraction,
+    config: {
+      HEARTBEAT_INTERVAL_MS,
+      ACTIVE_GRACE_MS,
+    },
+  };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', start, { once: true });
+  } else {
+    start();
+  }
+})();

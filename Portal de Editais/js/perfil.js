@@ -143,7 +143,7 @@ function setupUI() {
 
   setupCustomSelects();
 
-  const doLogout = async () => {
+const doLogout = async () => {
     const endpoints = [
       { url: API_BASE + '/logout', method: 'POST' },
       { url: API_BASE + '/auth/logout', method: 'POST' },
@@ -158,6 +158,12 @@ function setupUI() {
     ];
 
     try {
+      try {
+        if (window.AthosPresence?.markOffline) {
+          await window.AthosPresence.markOffline({ keepalive: true });
+        }
+      } catch (_) {}
+
       for (const ep of endpoints) {
         try {
           const r = await apiFetch(ep.url, { method: ep.method });
@@ -165,6 +171,7 @@ function setupUI() {
         } catch (_) {}
       }
     } finally {
+      try { window.dispatchEvent(new Event('athos:logout')); } catch (_) {}
       try { localStorage.removeItem('cliente_token'); } catch (_) {}
       try { sessionStorage.removeItem('cliente_token'); } catch (_) {}
       window.location.href = LOGIN_URL;
