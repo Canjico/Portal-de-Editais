@@ -1,8 +1,13 @@
-/* =========================================================
+﻿/* =========================================================
    Athos / Atimus — Editais (UX/UI novo + filtros + paginação)
    ========================================================= */
 
-import { renderEditais } from './render.js?v=20260306.1';
+import { renderEditais } from './render.js?v=20260310.1';
+import {
+  parseAnyDateToTime,
+  buildSearchQueryContext,
+  matchesDateIntent,
+} from './search-date-utils.js?v=20260313.1';
 
 // =========================
 // CONFIGURAÇÕES & SEGURANÇA
@@ -10,10 +15,8 @@ import { renderEditais } from './render.js?v=20260306.1';
 import {
   API_BASE,
   LOGIN_URL,
-  authHeaders,
   bootstrapAuthFromUrl,
   buildLoginUrlWithNext,
-  safeReadJson,
   apiFetchJson,
 } from './auth.js';
 
@@ -25,9 +28,10 @@ const APP_BASE_URL = new URL('../', import.meta.url);
 let editaisOriginais = [];
 let fuseInstance = null;
 
-const PAGE_SIZE = 15;
+const PAGE_SIZE = 12;
 let currentPage = 1;
 let lastFiltered = [];
+let kpiFilter = 'all';
 
 // Filtros aplicados (só mudam quando clicar em "Aplicar filtros")
 let applied = {
@@ -38,21 +42,21 @@ let applied = {
 };
 
 const CATEGORY_OPTIONS = [
-  { value: 'Governo e Politicas Publicas', label: 'Governo & Políticas Públicas' },
-  { value: 'Administracao e Gestao', label: 'Administração & Gestão' },
-  { value: 'Tecnologia e Inovacao', label: 'Tecnologia & Inovação' },
-  { value: 'Educacao e Capacitacao', label: 'Educação & Capacitação' },
-  { value: 'Saude e Bem-Estar', label: 'Saúde & Bem-Estar' },
+  { value: 'Governo e Políticas Públicas', label: 'Governo & Políticas Públicas' },
+  { value: 'Administração e Gestão', label: 'Administração & Gestão' },
+  { value: 'Tecnologia e Inovação', label: 'Tecnologia & Inovação' },
+  { value: 'Educação e Capacitação', label: 'Educação & Capacitação' },
+  { value: 'Saúde e Bem-Estar', label: 'Saúde & Bem-Estar' },
   { value: 'Meio Ambiente e Sustentabilidade', label: 'Meio Ambiente & Sustentabilidade' },
   { value: 'Agricultura e Desenvolvimento Rural', label: 'Agricultura & Desenvolvimento Rural' },
   { value: 'Infraestrutura, Obras e Engenharia', label: 'Infraestrutura, Obras & Engenharia' },
-  { value: 'Logistica, Suprimentos e Operacoes', label: 'Logística, Suprimentos & Operações' },
-  { value: 'Economia, Financas e Licitacoes', label: 'Economia, Finanças & Licitações' },
-  { value: 'Ciencia, Pesquisa e Desenvolvimento', label: 'Ciência, Pesquisa & Desenvolvimento' },
+  { value: 'Logística, Suprimentos e Operações', label: 'Logística, Suprimentos & Operações' },
+  { value: 'Economia, Finanças e Licitações', label: 'Economia, Finanças & Licitações' },
+  { value: 'Ciência, Pesquisa e Desenvolvimento', label: 'Ciência, Pesquisa & Desenvolvimento' },
   { value: 'Social, Direitos e Comunidade', label: 'Social, Direitos & Comunidade' },
-  { value: 'Cultura, Arte e Patrimonio', label: 'Cultura, Arte & Patrimônio' },
+  { value: 'Cultura, Arte e Patrimônio', label: 'Cultura, Arte & Patrimônio' },
   { value: 'Esporte, Lazer e Qualidade de Vida', label: 'Esporte, Lazer & Qualidade de Vida' },
-  { value: 'Cooperacao e Relacoes Internacionais', label: 'Cooperação & Relações Internacionais' },
+  { value: 'Cooperação e Relações Internacionais', label: 'Cooperação & Relações Internacionais' },
 ];
 
 const INSTRUMENT_OPTIONS = [
@@ -63,6 +67,13 @@ const INSTRUMENT_OPTIONS = [
   'Edital privado',
   'Fundo de Investimento',
 ];
+
+const FILTER_META = {
+  estado: { label: 'Estado', icon: 'fa-map' },
+  instrumento: { label: 'Instrumento', icon: 'fa-file-contract' },
+  instituicao: { label: 'Instituição', icon: 'fa-building' },
+  area: { label: 'Categoria', icon: 'fa-tags' },
+};
 
 
 // =========================
@@ -76,6 +87,7 @@ let onlyFavoritos = false;
 // =========================
 const container = document.getElementById('editais-container');
 const searchInput = document.getElementById('search');
+const searchWrapper = document.getElementById('mainSearchWrapper');
 const sortSelect = document.getElementById('sortSelect');
 const sortChips = document.getElementById('sortChips');
 const sortDirectionBtn = document.getElementById('sortDirectionBtn');
@@ -83,6 +95,7 @@ const sortDirectionIcon = document.getElementById('sortDirectionIcon');
 const sortDirectionText = document.getElementById('sortDirectionText');
 const resultsMeta = document.getElementById('resultsMeta');
 const paginationEl = document.getElementById('pagination');
+const resultsStateHint = document.getElementById('resultsStateHint');
 
 let sortField = normalizeSortValue(sortSelect?.value || 'prazo');
 let sortDirection = getDefaultSortDirection(sortField);
@@ -91,16 +104,25 @@ let sortDirection = getDefaultSortDirection(sortField);
 const statTotal = document.getElementById('statTotal');
 const statAbertos = document.getElementById('statAbertos');
 const statFechados = document.getElementById('statFechados');
+const statChipTotal = document.getElementById('statChipTotal');
+const statChipAbertos = document.getElementById('statChipAbertos');
+const statChipFechados = document.getElementById('statChipFechados');
 
 // Filtros
 const filtersPanel = document.getElementById('filtersPanel');
 const applyFiltersBtn = document.getElementById('applyFiltersBtn');
 const clearFiltersBtn = document.getElementById('clearFiltersBtn');
+const clearActiveFiltersBtn = document.getElementById('clearActiveFiltersBtn');
 const mobileFiltersBtn = document.getElementById('mobileFiltersBtn');
 const filtersBackdrop = document.getElementById('filtersBackdrop');
 const filtersCloseBtn = document.getElementById('filtersCloseBtn');
 const mobileSidebarBtn = document.getElementById('mobileSidebarBtn');
 const mobileSidebarBackdrop = document.getElementById('mobileSidebarBackdrop');
+const filtersCountBadge = document.getElementById('filtersCountBadge');
+const filtersAppliedState = document.getElementById('filtersAppliedState');
+const activeFiltersBar = document.getElementById('activeFiltersBar');
+const activeFiltersChips = document.getElementById('activeFiltersChips');
+const filtersFooterSummary = document.getElementById('filtersFooterSummary');
 
 const filterSearchEstado = document.getElementById('filterSearchEstado');
 const filterSearchInstrumento = document.getElementById('filterSearchInstrumento');
@@ -132,8 +154,15 @@ const chatInput = document.getElementById('chat-input');
 const sendButton = document.getElementById('send-button');
 const messageContainer = document.getElementById('chatbot-messages');
 const chatWrapper = document.getElementById('chatbot-wrapper');
+const chatQuickPrompts = document.getElementById('chatQuickPrompts');
 const chatButton = document.querySelector('.e-contact-buttons__chat-button');
 const chatHeader = document.querySelector('.chat-header');
+const chatHeaderTitle = document.querySelector('.chat-header-title');
+const chatCloseBtn = document.getElementById('chatCloseBtn');
+const chatButtonContainer = document.querySelector('.e-contact-buttons__chat-button-container');
+const assistantBackdrop = document.getElementById('assistantBackdrop');
+
+const ASSISTANT_OVERLAY_BREAKPOINT = '(max-width: 1279px)';
 
 let botIsTyping = false;
 let chatState = null;
@@ -155,7 +184,12 @@ async function init() {
     await loadFavoritos();
     buildFuseIndex();
     generateDynamicFilters();
+    setupFilterGroupsAccordion();
     setupUIEvents();
+    setupConsentAwareOptionalFeatures();
+    syncKpiButtons();
+    setSearchVisualState();
+    renderChatQuickPrompts();
     applyFiltersAndRender({ resetPage: true });
 
     // deep link (?edital=slug ou ?id=)
@@ -227,6 +261,451 @@ function markAppReady() {
   document.body.classList.remove('app-loading');
 }
 
+function showToast(message, type = 'info', duration = 2200) {
+  const msg = String(message || '').trim();
+  if (!msg) return;
+  const toast = document.createElement('div');
+  toast.className = `toast toast--${type}`;
+  toast.textContent = msg;
+  document.body.appendChild(toast);
+  requestAnimationFrame(() => toast.classList.add('show'));
+  window.setTimeout(() => {
+    toast.classList.remove('show');
+    window.setTimeout(() => toast.remove(), 220);
+  }, Math.max(1200, duration));
+}
+
+function setSearchVisualState() {
+  if (!searchWrapper || !searchInput) return;
+  const isActive = String(searchInput.value || '').trim().length > 0;
+  searchWrapper.classList.toggle('is-active', isActive);
+}
+
+function countAppliedFilters() {
+  return Object.values(applied).reduce((sum, arr) => sum + (Array.isArray(arr) ? arr.length : 0), 0);
+}
+
+function countSelectedFilters() {
+  return ['estado', 'instrumento', 'instituicao', 'area']
+    .reduce((sum, key) => sum + readSelected(key).length, 0);
+}
+
+function hasAppliedFilters() {
+  return countAppliedFilters() > 0;
+}
+
+function updateFilterActionsState() {
+  const selectedCount = countSelectedFilters();
+  const appliedCount = countAppliedFilters();
+
+  if (applyFiltersBtn) {
+    applyFiltersBtn.textContent = selectedCount > 0
+      ? `Aplicar filtros (${selectedCount})`
+      : 'Aplicar filtros';
+  }
+
+  if (clearFiltersBtn) {
+    clearFiltersBtn.disabled = selectedCount === 0;
+  }
+
+  if (filtersFooterSummary) {
+    if (selectedCount === 0 && appliedCount === 0) {
+      filtersFooterSummary.textContent = 'Nenhum filtro selecionado';
+    } else if (selectedCount === appliedCount) {
+      filtersFooterSummary.textContent = `${selectedCount} selecionado${selectedCount > 1 ? 's' : ''}`;
+    } else {
+      filtersFooterSummary.textContent = `${selectedCount} selecionado${selectedCount > 1 ? 's' : ''} • ${appliedCount} ativo${appliedCount > 1 ? 's' : ''}`;
+    }
+  }
+}
+
+function hasPersonalizationConsent() {
+  const state = window.AthosConsent?.getState?.();
+  if (!state || state.status === 'pending') return false;
+  return Boolean(window.AthosConsent?.hasConsent?.('personalization'));
+}
+
+function isChatOpen() {
+  return Boolean(chatWrapper?.classList.contains('open'));
+}
+
+function isAssistantOverlayMode() {
+  return window.matchMedia(ASSISTANT_OVERLAY_BREAKPOINT).matches;
+}
+
+function syncAssistantLayoutState() {
+  const overlay = isAssistantOverlayMode();
+  const open = isChatOpen();
+
+  document.body.classList.toggle('assistant-overlay', overlay);
+  document.body.classList.toggle('chat-open', open);
+
+  if (assistantBackdrop) {
+    const shouldShowBackdrop = open && overlay;
+    assistantBackdrop.hidden = !shouldShowBackdrop;
+    assistantBackdrop.setAttribute('aria-hidden', shouldShowBackdrop ? 'false' : 'true');
+  }
+}
+
+function syncChatLauncherVisibility() {
+  const canUseChat = hasPersonalizationConsent();
+  const open = isChatOpen();
+  const shouldHideLauncher = !canUseChat || open;
+
+  if (chatButtonContainer) {
+    chatButtonContainer.hidden = shouldHideLauncher;
+    chatButtonContainer.setAttribute('aria-hidden', shouldHideLauncher ? 'true' : 'false');
+  }
+
+  if (chatButton) {
+    chatButton.setAttribute('aria-expanded', open ? 'true' : 'false');
+    chatButton.setAttribute('aria-label', open ? 'Fechar assistente' : 'Abrir chat');
+  }
+}
+
+function setChatOpen(nextOpen, { focusInput = false, skipWelcome = false } = {}) {
+  const open = Boolean(nextOpen);
+  const canUseChat = hasPersonalizationConsent();
+
+  if (open && !canUseChat) {
+    showToast('Ative cookies de personalização em Perfil > Preferências > Cookies para usar o chat.', 'info');
+    return;
+  }
+
+  if (chatWrapper) {
+    chatWrapper.classList.toggle('open', open);
+    chatWrapper.setAttribute('aria-hidden', open ? 'false' : 'true');
+  }
+
+  syncAssistantLayoutState();
+  syncChatLauncherVisibility();
+  updateChatHeader();
+
+  if (!open) return;
+
+  scrollToBottom();
+  if (!skipWelcome && messageContainer?.children.length === 0) {
+    addMessage('Olá! Busque por um tema (ex: inovação) e eu listarei os editais disponíveis.', 'bot');
+  }
+  if (focusInput) {
+    try { chatInput?.focus(); } catch (_) {}
+  }
+}
+
+function syncOptionalFeaturesByConsent() {
+  const canUseChat = hasPersonalizationConsent();
+
+  if (chatWrapper) {
+    chatWrapper.hidden = !canUseChat;
+    chatWrapper.setAttribute('aria-hidden', (!canUseChat || !isChatOpen()) ? 'true' : 'false');
+  }
+
+  if (!canUseChat) {
+    setChatOpen(false);
+  }
+
+  syncAssistantLayoutState();
+  syncChatLauncherVisibility();
+}
+
+function setupConsentAwareOptionalFeatures() {
+  syncOptionalFeaturesByConsent();
+  window.addEventListener('athos:cookie-consent-updated', () => {
+    syncOptionalFeaturesByConsent();
+  });
+}
+
+function clearAllFilters({ keepSearch = false, keepFavorites = false, rerender = true } = {}) {
+  document.querySelectorAll('.filter-options input[type="checkbox"]').forEach(cb => { cb.checked = false; });
+  if (filterSearchEstado) filterSearchEstado.value = '';
+  if (filterSearchInstrumento) filterSearchInstrumento.value = '';
+  if (filterSearchInstituicao) filterSearchInstituicao.value = '';
+  if (filterSearchArea) filterSearchArea.value = '';
+  document.querySelectorAll('.filter-options label').forEach(l => l.style.display = 'flex');
+  document.querySelectorAll('.filter-empty').forEach(el => { el.hidden = true; });
+
+  applied = { estado: [], instrumento: [], instituicao: [], area: [] };
+  kpiFilter = 'all';
+  syncKpiButtons();
+  if (!keepSearch && searchInput) searchInput.value = '';
+  if (!keepFavorites && onlyFavoritos) onlyFavoritos = false;
+  syncSavedToggleUI();
+  setSearchVisualState();
+  updateFilterActionsState();
+  if (rerender) applyFiltersAndRender({ resetPage: true });
+}
+
+function syncKpiButtons() {
+  const rows = [
+    { btn: statChipTotal, key: 'all' },
+    { btn: statChipAbertos, key: 'abertos' },
+    { btn: statChipFechados, key: 'fechados' },
+  ];
+  rows.forEach(({ btn, key }) => {
+    if (!btn) return;
+    const active = kpiFilter === key;
+    btn.classList.toggle('is-active', active);
+    btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+  });
+}
+
+function makeFilterChip(label, removeFn, tone = '') {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'active-filter-chip' + (tone ? ` ${tone}` : '');
+  btn.innerHTML = `<span>${escapeHtml(label)}</span><i class="fas fa-xmark" aria-hidden="true"></i>`;
+  btn.setAttribute('aria-label', `Remover filtro ${label}`);
+  btn.addEventListener('click', removeFn);
+  return btn;
+}
+
+function renderActiveFilters() {
+  if (!activeFiltersBar || !activeFiltersChips) return;
+
+  const chips = [];
+  const selectedTotal = countAppliedFilters();
+  Object.entries(applied).forEach(([key, values]) => {
+    if (!Array.isArray(values) || values.length === 0) return;
+    const meta = FILTER_META[key] || { label: key };
+    values.forEach((value) => {
+      chips.push(makeFilterChip(`${meta.label}: ${value}`, () => {
+        applied[key] = (applied[key] || []).filter(v => v !== value);
+        const checkbox = document.querySelector(`.filter-options[data-filter-type=\"${key}\"] input[value=\"${cssEscape(value)}\"]`);
+        if (checkbox) checkbox.checked = false;
+        applyFiltersAndRender({ resetPage: true });
+      }));
+    });
+  });
+
+  if (searchInput && String(searchInput.value || '').trim()) {
+    const searchValue = String(searchInput.value || '').trim();
+    chips.push(makeFilterChip(`Busca: ${searchValue}`, () => {
+      searchInput.value = '';
+      applyFiltersAndRender({ resetPage: true });
+    }));
+  }
+
+  if (onlyFavoritos) {
+    chips.push(makeFilterChip('Somente salvos', () => {
+      onlyFavoritos = false;
+      syncSavedToggleUI();
+      applyFiltersAndRender({ resetPage: true });
+    }, 'chip-favorites'));
+  }
+
+  if (kpiFilter !== 'all') {
+    const kpiLabel = kpiFilter === 'abertos' ? 'KPI: Abertos' : 'KPI: Encerrados';
+    chips.push(makeFilterChip(kpiLabel, () => {
+      kpiFilter = 'all';
+      syncKpiButtons();
+      applyFiltersAndRender({ resetPage: true });
+    }));
+  }
+
+  activeFiltersChips.innerHTML = '';
+  chips.forEach(chip => activeFiltersChips.appendChild(chip));
+  activeFiltersBar.hidden = chips.length === 0;
+
+  if (filtersCountBadge) {
+    if (selectedTotal > 0) {
+      filtersCountBadge.hidden = false;
+      filtersCountBadge.textContent = `${selectedTotal} ativo${selectedTotal > 1 ? 's' : ''}`;
+    } else {
+      filtersCountBadge.hidden = true;
+      filtersCountBadge.textContent = '0 ativos';
+    }
+  }
+
+  if (filtersAppliedState) {
+    if (selectedTotal > 0) {
+      filtersAppliedState.textContent = `Refinando por ${selectedTotal} filtro${selectedTotal > 1 ? 's' : ''}.`;
+    } else if (kpiFilter !== 'all') {
+      filtersAppliedState.textContent = 'Recorte rápido ativo pelo KPI.';
+    } else {
+      filtersAppliedState.textContent = 'Nenhum filtro aplicado';
+    }
+  }
+
+  if (applyFiltersBtn) applyFiltersBtn.classList.toggle('has-active-filters', selectedTotal > 0);
+  updateFilterActionsState();
+}
+
+function renderResultsStateHint(total) {
+  if (!resultsStateHint) return;
+
+  const hasSearch = String(searchInput?.value || '').trim().length > 0;
+  const hasFilters = hasAppliedFilters();
+
+  let text = '';
+  if (total === 0 && onlyFavoritos && favoritosSet.size === 0) {
+    text = 'Você ainda não salvou editais. Clique na estrela para montar sua lista.';
+  } else if (total === 0 && onlyFavoritos) {
+    text = 'Nenhum edital salvo corresponde aos filtros atuais.';
+  } else if (total === 0 && hasSearch && hasFilters) {
+    text = 'Busca sem correspondência para os filtros ativos.';
+  } else if (total === 0 && hasSearch) {
+    text = 'Nenhum resultado encontrado para esta busca.';
+  } else if (total === 0 && hasFilters) {
+    text = 'Nenhum edital para os filtros atuais.';
+  } else if (total > 0 && hasFilters) {
+    text = 'Filtros aplicados para resultados mais relevantes.';
+  }
+
+  if (!text) {
+    resultsStateHint.hidden = true;
+    resultsStateHint.textContent = '';
+    return;
+  }
+
+  resultsStateHint.hidden = false;
+  resultsStateHint.textContent = text;
+}
+
+function setFilterGroupExpanded(group, expanded, { animate = true } = {}) {
+  if (!group) return;
+  const btn = group.querySelector('[data-filter-toggle]');
+  const body = group.querySelector('.filter-group-body');
+  if (!btn || !body) return;
+
+  const current = btn.getAttribute('aria-expanded') === 'true';
+  const collapsedStateAlreadyApplied = group.classList.contains('is-collapsed') === !expanded;
+  const ariaStateAlreadyApplied = (body.getAttribute('aria-hidden') === 'true') === !expanded;
+  const hiddenStateAlreadyApplied = body.hidden === !expanded;
+
+  if (
+    current === expanded &&
+    !body.dataset.animating &&
+    collapsedStateAlreadyApplied &&
+    ariaStateAlreadyApplied &&
+    hiddenStateAlreadyApplied
+  ) {
+    return;
+  }
+
+  if (typeof body.__onTransitionEnd === 'function') {
+    body.removeEventListener('transitionend', body.__onTransitionEnd);
+    body.__onTransitionEnd = null;
+  }
+
+  group.classList.toggle('is-collapsed', !expanded);
+  btn.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+  body.setAttribute('aria-hidden', expanded ? 'false' : 'true');
+  body.toggleAttribute('inert', !expanded);
+
+  const shouldAnimate = animate && !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (!shouldAnimate) {
+    body.dataset.animating = '';
+    body.hidden = !expanded;
+    body.style.height = '';
+    body.style.overflow = '';
+    body.style.willChange = '';
+    return;
+  }
+
+  if (body.hidden) body.hidden = false;
+  const currentHeight = body.getBoundingClientRect().height;
+  const targetHeight = expanded ? body.scrollHeight : 0;
+
+  if (Math.abs(targetHeight - currentHeight) < 1) {
+    body.dataset.animating = '';
+    body.hidden = !expanded;
+    body.style.height = '';
+    body.style.overflow = '';
+    body.style.willChange = '';
+    return;
+  }
+
+  body.style.height = `${currentHeight}px`;
+  body.style.overflow = 'hidden';
+  body.style.willChange = 'height';
+  body.dataset.animating = 'true';
+
+  requestAnimationFrame(() => {
+    body.style.height = `${targetHeight}px`;
+  });
+
+  body.__onTransitionEnd = (event) => {
+    if (event.target !== body || event.propertyName !== 'height') return;
+    body.removeEventListener('transitionend', body.__onTransitionEnd);
+    body.__onTransitionEnd = null;
+    body.dataset.animating = '';
+    body.style.height = '';
+    body.style.overflow = '';
+    body.style.willChange = '';
+    body.hidden = !expanded;
+  };
+
+  body.addEventListener('transitionend', body.__onTransitionEnd);
+}
+
+function setupFilterGroupsAccordion() {
+  if (!filtersPanel) return;
+  const groups = Array.from(filtersPanel.querySelectorAll('.filter-group'));
+
+  groups.forEach((group, idx) => {
+    const btn = group.querySelector('[data-filter-toggle]');
+    const body = group.querySelector('.filter-group-body');
+    if (!btn || !body) return;
+
+    if (!body.id) body.id = `filter-group-body-${idx + 1}`;
+    btn.setAttribute('aria-controls', body.id);
+
+    setFilterGroupExpanded(group, false, { animate: false });
+
+    btn.addEventListener('click', () => {
+      const isExpanded = btn.getAttribute('aria-expanded') === 'true';
+      setFilterGroupExpanded(group, !isExpanded, { animate: true });
+    });
+
+    btn.addEventListener('keydown', (event) => {
+      if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+      event.preventDefault();
+      const step = event.key === 'ArrowDown' ? 1 : -1;
+      const nextIndex = (idx + step + groups.length) % groups.length;
+      const nextBtn = groups[nextIndex]?.querySelector('[data-filter-toggle]');
+      nextBtn?.focus();
+    });
+  });
+
+  filtersPanel.addEventListener('change', (event) => {
+    if (event.target?.matches?.('.filter-options input[type=\"checkbox\"]')) {
+      updateFilterActionsState();
+    }
+  });
+
+  updateFilterActionsState();
+}
+
+function renderChatQuickPrompts() {
+  if (!chatQuickPrompts) return;
+
+  const prompts = [
+    'Quais editais estão com prazo nesta semana?',
+    'Mostre oportunidades para tecnologia e inovação.',
+    'Quais editais aceitam pequenas empresas?',
+    'Resuma os documentos mais importantes deste edital.',
+  ];
+
+  chatQuickPrompts.innerHTML = '';
+  prompts.forEach((prompt) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'chat-prompt-btn';
+    btn.textContent = prompt;
+    btn.addEventListener('click', () => {
+      if (!chatInput) return;
+      chatInput.value = prompt;
+      handleChatSend();
+    });
+    chatQuickPrompts.appendChild(btn);
+  });
+}
+
+function cssEscape(value) {
+  if (window.CSS?.escape) return window.CSS.escape(String(value ?? ''));
+  return String(value ?? '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
 
 // =========================
 // DATA LOAD
@@ -238,6 +717,11 @@ async function loadEditais() {
     <div class="loading-container">
       <div class="spinner"></div>
       <p>Carregando editais...</p>
+      <div class="cards-skeleton" aria-hidden="true">
+        <div class="card-skeleton"></div>
+        <div class="card-skeleton"></div>
+        <div class="card-skeleton"></div>
+      </div>
     </div>
   `;
 
@@ -248,12 +732,12 @@ async function loadEditais() {
       // Se não estiver logado, manda pro login.
       if (res.status === 401 || res.status === 403) {
         container.innerHTML = `
-          <div style="grid-column: 1/-1; text-align:center; padding:2rem; color:#ef4444;">
-            <i class="fas fa-lock fa-2x"></i>
-            <p>Sessão expirada. Faça login para ver os editais.</p>
-            <br>
+          <section class="results-empty-state is-error">
+            <div class="empty-icon"><i class="fas fa-lock" aria-hidden="true"></i></div>
+            <h3>Sessão expirada</h3>
+            <p>Faça login novamente para acessar os editais.</p>
             <a class="btn btn-primary" href="${buildLoginUrlWithNext()}">Ir para o login</a>
-          </div>
+          </section>
         `;
         return;
       }
@@ -270,13 +754,12 @@ async function loadEditais() {
   } catch (e) {
     console.error('Erro ao carregar editais:', e);
     container.innerHTML = `
-      <div style="grid-column: 1/-1; text-align:center; padding:2rem; color:#ef4444;">
-        <i class="fas fa-exclamation-triangle fa-2x"></i>
-        <p>Não foi possível carregar os editais.</p>
-        <small>${escapeHtml(e?.message || String(e))}</small>
-        <br><br>
+      <section class="results-empty-state is-error">
+        <div class="empty-icon"><i class="fas fa-exclamation-triangle" aria-hidden="true"></i></div>
+        <h3>Não foi possível carregar os editais</h3>
+        <p>${escapeHtml(e?.message || String(e))}</p>
         <button onclick="location.reload()" class="btn btn-primary">Tentar novamente</button>
-      </div>
+      </section>
     `;
   }
 }
@@ -321,6 +804,8 @@ function syncSavedBadge() {
 function syncSavedToggleUI() {
   if (!savedToggleBtn) return;
   savedToggleBtn.classList.toggle('is-active', !!onlyFavoritos);
+  savedToggleBtn.setAttribute('aria-pressed', onlyFavoritos ? 'true' : 'false');
+  savedToggleBtn.setAttribute('title', onlyFavoritos ? 'Exibindo apenas salvos' : 'Ver salvos');
   const icon = savedToggleBtn.querySelector('i');
   if (icon) {
     icon.classList.toggle('fas', !!onlyFavoritos);
@@ -366,6 +851,7 @@ function updateSaveButtonUI(btn, isSaved) {
   if (!btn) return;
   btn.classList.toggle('is-saved', !!isSaved);
   btn.setAttribute('title', isSaved ? 'Remover dos salvos' : 'Salvar edital');
+  btn.setAttribute('data-tooltip', isSaved ? 'Remover dos salvos' : 'Salvar edital');
 
   const icon = btn.querySelector('i');
   if (icon) {
@@ -396,9 +882,22 @@ function normalizeEdital(api) {
     instrumento: toCanonicalInstrument(data.instrumento || data.apoio || 'Não informado'),
     tipo: data.tipo || 'Não informado',
     valor_total: data.valor_total || '',
-    data_fechamento: api?.data_final_submissao || data.data_final_submissao || null,
-    data_abertura: data.data_abertura || null,
-    tags: data.tags || [],    arquivos,
+    data_fechamento:
+      api?.data_final_submissao ||
+      api?.data_fechamento ||
+      data.data_final_submissao ||
+      data.data_fechamento ||
+      null,
+    data_abertura: api?.data_abertura || data.data_abertura || data.data_inicio_submissao || null,
+    data_publicacao:
+      api?.data_publicacao ||
+      data.data_publicacao ||
+      data.data_publicacao_edital ||
+      data.data_publicacao_resultado ||
+      api?.created_at ||
+      null,
+    tags: data.tags || [],
+    arquivos,
     is_favorite: false,
     share_link: api?.share_link || ''
   };
@@ -486,7 +985,7 @@ function toCanonicalInstrument(value) {
 function buildFuseIndex() {
   if (typeof Fuse === 'undefined') return;
   fuseInstance = new Fuse(editaisOriginais, {
-    keys: ['titulo', 'descricao', 'instituicao', 'area', 'tags'],
+    keys: ['titulo', 'descricao', 'instituicao', 'area', 'tags', 'data_fechamento', 'data_abertura', 'data_publicacao'],
     threshold: 0.35,
     ignoreLocation: true,
     minMatchCharLength: 2,
@@ -623,11 +1122,23 @@ function wireFilterSearch(inputEl, optionsEl) {
   if (!inputEl || !optionsEl) return;
   inputEl.addEventListener('input', () => {
     const q = normalizeCategoryKey(inputEl.value);
+    let visible = 0;
     optionsEl.querySelectorAll('label').forEach(label => {
       const key = label.getAttribute('data-label') || '';
       const keyNorm = normalizeCategoryKey(key);
-      label.style.display = (!q || keyNorm.includes(q)) ? 'flex' : 'none';
+      const show = !q || keyNorm.includes(q);
+      label.style.display = show ? 'flex' : 'none';
+      if (show) visible += 1;
     });
+
+    let empty = optionsEl.querySelector('.filter-empty');
+    if (!empty) {
+      empty = document.createElement('div');
+      empty.className = 'filter-empty';
+      empty.textContent = 'Nenhuma opção encontrada para essa busca.';
+      optionsEl.appendChild(empty);
+    }
+    empty.hidden = visible > 0;
   });
 }
 
@@ -699,27 +1210,39 @@ function toggleSortDirection() {
 // =========================
 // APLICAÇÃO DE FILTROS
 // =========================
+
 function applyFiltersAndRender({ resetPage } = { resetPage: false }) {
   if (resetPage) currentPage = 1;
 
   const termo = (searchInput?.value || '').trim();
-  const termoLower = termo.toLowerCase();
+  const searchContext = buildSearchQueryContext(termo);
+  const textQuery = searchContext.textQuery;
+  const textQueryLower = textQuery.toLowerCase();
+  setSearchVisualState();
 
   // 1) Base por relevância (Fuse) quando existir busca
   let base = [...editaisOriginais];
-  let fromFuse = false;
 
-  if (termo && fuseInstance) {
-    base = fuseInstance.search(termo).map(r => r.item);
-    fromFuse = true;
-  } else if (termo) {
+  if (textQuery && fuseInstance) {
+    base = fuseInstance.search(textQuery).map(r => r.item);
+  } else if (textQuery) {
     base = base.filter(e =>
-      (e.titulo || '').toLowerCase().includes(termoLower) ||
-      (e.descricao || '').toLowerCase().includes(termoLower) ||
-      (e.instituicao || '').toLowerCase().includes(termoLower) ||
-      (e.area || '').toLowerCase().includes(termoLower) ||
-      (Array.isArray(e.tags) && e.tags.some(t => String(t).toLowerCase().includes(termoLower)))
+      (e.titulo || '').toLowerCase().includes(textQueryLower) ||
+      (e.descricao || '').toLowerCase().includes(textQueryLower) ||
+      (e.instituicao || '').toLowerCase().includes(textQueryLower) ||
+      (e.area || '').toLowerCase().includes(textQueryLower) ||
+      (Array.isArray(e.tags) && e.tags.some(t => String(t).toLowerCase().includes(textQueryLower)))
     );
+  }
+
+  if (searchContext.dateIntent) {
+    const dateMatches = editaisOriginais.filter((edital) => matchesDateIntent(edital, searchContext.dateIntent));
+    if (searchContext.hasMeaningfulText && textQuery) {
+      const dateIds = new Set(dateMatches.map((edital) => String(edital.id)));
+      base = base.filter((edital) => dateIds.has(String(edital.id)));
+    } else {
+      base = dateMatches;
+    }
   }
 
   // 2) Filtros aplicados (checkboxes)
@@ -728,6 +1251,11 @@ function applyFiltersAndRender({ resetPage } = { resetPage: false }) {
   if (applied.instrumento.length) filtered = filtered.filter(e => applied.instrumento.includes(e.instrumento));
   if (applied.instituicao.length) filtered = filtered.filter(e => applied.instituicao.includes(e.instituicao));
   if (applied.area.length) filtered = filtered.filter(e => applied.area.includes(toCanonicalCategory(e.area)));
+  const statsBase = [...filtered];
+
+  // 2.4) Recorte por KPI clicado
+  if (kpiFilter === 'abertos') filtered = filtered.filter((edital) => !isClosedEdital(edital));
+  if (kpiFilter === 'fechados') filtered = filtered.filter((edital) => isClosedEdital(edital));
 
   // 2.5) Só salvos
   if (onlyFavoritos) filtered = filtered.filter(e => !!e.is_favorite);
@@ -774,9 +1302,82 @@ function applyFiltersAndRender({ resetPage } = { resetPage: false }) {
     resultsMeta.textContent = `Mostrando ${a}-${b} de ${total} ${label}`;
   }
 
-  updateHeroStats(filtered);
-  renderEditais(container, pageItems);
+  updateHeroStats(statsBase);
+  syncKpiButtons();
+  renderActiveFilters();
+  renderResultsStateHint(total);
+  renderEditais(container, pageItems, {
+    emptyState: buildEmptyState({ total, termo }),
+  });
   renderPagination(totalPages);
+}
+
+function buildEmptyState({ total, termo }) {
+  if (total > 0) return null;
+
+  const query = String(termo || '').trim();
+  if (onlyFavoritos && favoritosSet.size === 0) {
+    return {
+      icon: 'fa-star',
+      title: 'Sem favoritos ainda',
+      message: 'Você ainda não salvou editais. Clique na estrela dos cards para acompanhar depois.',
+      actionLabel: 'Ver todos os editais',
+      action: () => {
+        onlyFavoritos = false;
+        syncSavedToggleUI();
+        applyFiltersAndRender({ resetPage: true });
+      },
+    };
+  }
+
+  if (onlyFavoritos) {
+    return {
+      icon: 'fa-filter',
+      title: 'Sem salvos para este recorte',
+      message: 'Tente remover alguns filtros para encontrar editais favoritos.',
+      actionLabel: 'Limpar filtros',
+      action: () => clearAllFilters({ keepFavorites: true }),
+    };
+  }
+
+  if (query) {
+    return {
+      icon: 'fa-magnifying-glass',
+      title: 'Busca sem correspondência',
+      message: `Não encontramos editais para \"${query}\" com os filtros atuais.`,
+      actionLabel: 'Limpar busca',
+      action: () => {
+        if (searchInput) searchInput.value = '';
+        applyFiltersAndRender({ resetPage: true });
+      },
+    };
+  }
+
+  if (hasAppliedFilters() || kpiFilter !== 'all') {
+    return {
+      icon: 'fa-sliders',
+      title: 'Nenhum edital para os filtros atuais',
+      message: 'Ajuste os filtros ou recorte por KPI para ampliar os resultados.',
+      actionLabel: 'Limpar filtros',
+      action: () => clearAllFilters({ keepSearch: true }),
+    };
+  }
+
+  return {
+    icon: 'fa-folder-open',
+    title: 'Nenhum edital disponível',
+    message: 'No momento não há editais para exibir.',
+  };
+}
+
+function isClosedEdital(edital) {
+  const t = parseAnyDateToTime(edital?.data_fechamento);
+  if (t === null) return false;
+  const d = new Date(t);
+  const prazo = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  return prazo < today;
 }
 
 function compareIsoDate(a, b) {
@@ -786,21 +1387,6 @@ function compareIsoDate(a, b) {
   if (da === null) return 1;
   if (db === null) return -1;
   return da < db ? -1 : da > db ? 1 : 0;
-}
-
-function parseAnyDateToTime(dateString) {
-  if (!dateString) return null;
-  const s = String(dateString).trim();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
-    const [y, m, d] = s.split('-').map(Number);
-    return new Date(y, m - 1, d).getTime();
-  }
-  if (/^\d{2}\/\d{2}\/\d{4}$/.test(s)) {
-    const [d, m, y] = s.split('/').map(Number);
-    return new Date(y, m - 1, d).getTime();
-  }
-  const t = Date.parse(s);
-  return Number.isFinite(t) ? t : null;
 }
 
 function updateHeroStats(filtered) {
@@ -965,6 +1551,8 @@ function setupUIEvents() {
       closeSidebarMobile();
       appSidebar?.classList.remove('mobile-open');
     }
+    syncAssistantLayoutState();
+    syncChatLauncherVisibility();
   });
 
   // user dropdown
@@ -1018,10 +1606,15 @@ const doLogout = async () => {
   if (logoutBtn) logoutBtn.addEventListener('click', doLogout);
 
   syncSortControls();
+  syncKpiButtons();
+  setSearchVisualState();
 
   // busca global (aplica instantâneo)
   if (searchInput) {
-    searchInput.addEventListener('input', () => applyFiltersAndRender({ resetPage: true }));
+    searchInput.addEventListener('input', () => {
+      setSearchVisualState();
+      applyFiltersAndRender({ resetPage: true });
+    });
   }
 
   // ordenar
@@ -1054,6 +1647,16 @@ const doLogout = async () => {
     });
   }
 
+  [statChipTotal, statChipAbertos, statChipFechados].forEach((btn) => {
+    if (!btn) return;
+    btn.addEventListener('click', () => {
+      const next = String(btn.getAttribute('data-kpi-filter') || 'all');
+      kpiFilter = next;
+      syncKpiButtons();
+      applyFiltersAndRender({ resetPage: true });
+    });
+  });
+
   // ver salvos (bookmark ao lado das notificações)
   if (savedToggleBtn) {
     savedToggleBtn.addEventListener('click', () => {
@@ -1072,6 +1675,7 @@ const doLogout = async () => {
         instituicao: readSelected('instituicao'),
         area: readSelected('area'),
       };
+      updateFilterActionsState();
       closeFiltersMobile();
       applyFiltersAndRender({ resetPage: true });
     });
@@ -1079,16 +1683,14 @@ const doLogout = async () => {
 
   if (clearFiltersBtn) {
     clearFiltersBtn.addEventListener('click', () => {
-      document.querySelectorAll('.filter-options input[type="checkbox"]').forEach(cb => { cb.checked = false; });
-      if (filterSearchEstado) filterSearchEstado.value = '';
-      if (filterSearchInstrumento) filterSearchInstrumento.value = '';
-      if (filterSearchInstituicao) filterSearchInstituicao.value = '';
-      if (filterSearchArea) filterSearchArea.value = '';
-      document.querySelectorAll('.filter-options label').forEach(l => l.style.display = 'flex');
-
-      applied = { estado: [], instrumento: [], instituicao: [], area: [] };
       closeFiltersMobile();
-      applyFiltersAndRender({ resetPage: true });
+      clearAllFilters({ keepSearch: true, keepFavorites: true, rerender: true });
+    });
+  }
+
+  if (clearActiveFiltersBtn) {
+    clearActiveFiltersBtn.addEventListener('click', () => {
+      clearAllFilters({ keepSearch: true, keepFavorites: false, rerender: true });
     });
   }
 
@@ -1138,13 +1740,14 @@ const doLogout = async () => {
           const r = await toggleFavorito(id);
           if (r?.ok) {
             updateSaveButtonUI(saveBtn, r.is_favorite);
+            showToast(r.is_favorite ? 'Edital salvo na sua lista.' : 'Edital removido dos salvos.', 'success', 1800);
             // Se estiver vendo só salvos e removeu, some do grid
             if (onlyFavoritos && !r.is_favorite) {
               applyFiltersAndRender({ resetPage: true });
             }
           }
         } catch (err) {
-          alert(err?.message || 'Não foi possível salvar este edital.');
+          showToast(err?.message || 'Não foi possível atualizar este edital nos salvos.', 'error');
         } finally {
           saveBtn.disabled = prevDisabled;
         }
@@ -1170,13 +1773,16 @@ const doLogout = async () => {
   // chat
   if (chatButton && chatWrapper) {
     chatButton.addEventListener('click', () => {
-      chatWrapper.classList.toggle('open');
-      updateChatHeader();
-      scrollToBottom();
-      if (messageContainer?.children.length === 0) {
-        addMessage('Olá! Busque por um tema (ex: inovação) e eu listarei os editais disponíveis.', 'bot');
-      }
+      setChatOpen(!isChatOpen(), { focusInput: true });
     });
+  }
+
+  if (chatCloseBtn) {
+    chatCloseBtn.addEventListener('click', () => setChatOpen(false));
+  }
+
+  if (assistantBackdrop) {
+    assistantBackdrop.addEventListener('click', () => setChatOpen(false));
   }
 
   if (sendButton && chatInput) {
@@ -1212,7 +1818,7 @@ const doLogout = async () => {
         if (searchInput) searchInput.value = q;
         applyFiltersAndRender({ resetPage: true });
         window.scrollTo({ top: 0, behavior: 'smooth' });
-        if (chatWrapper) chatWrapper.classList.remove('open');
+        setChatOpen(false);
         return;
       }
 
@@ -1228,10 +1834,21 @@ const doLogout = async () => {
       }
     });
   }
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    if (!isChatOpen()) return;
+    if (modalOverlay?.classList.contains('open')) return;
+    setChatOpen(false);
+  });
+
+  syncAssistantLayoutState();
+  syncChatLauncherVisibility();
 }
 
 function openFiltersMobile() {
   if (!filtersPanel || !filtersBackdrop) return;
+  setChatOpen(false);
   filtersPanel.classList.add('open');
   filtersBackdrop.classList.add('active');
   filtersBackdrop.setAttribute('aria-hidden', 'false');
@@ -1248,6 +1865,7 @@ function closeFiltersMobile() {
 
 function openSidebarMobile() {
   if (!appSidebar || !mobileSidebarBackdrop) return;
+  setChatOpen(false);
   appSidebar.classList.remove('collapsed');
   appSidebar.classList.add('mobile-open');
   mobileSidebarBackdrop.classList.add('active');
@@ -1264,42 +1882,96 @@ function closeSidebarMobile() {
 }
 
 // =========================
-// MODAL (mantém links de documentos)
+// MODAL (detalhes do edital)
 // =========================
-function openModal(edital) {
-  if (!modalOverlay || !modalContentContainer) return;
+function formatModalDate(dateValue) {
+  const t = parseAnyDateToTime(dateValue);
+  if (t === null) return 'Não informado';
+  return new Intl.DateTimeFormat('pt-BR', { dateStyle: 'medium' }).format(new Date(t));
+}
 
-  let arquivosHtml = '';
-  if (Array.isArray(edital.arquivos) && edital.arquivos.length > 0) {
-    arquivosHtml = `
-      <div class="attachments-section">
-        <div class="attachments-summary" role="button" tabindex="0" aria-label="Abrir recursos e documentos">
-          <div class="attachments-label">
-            <h3>Recursos e Documentos</h3>
-            <span class="attachments-hint">clique para ver</span>
-          </div>
-          <i class="fas fa-chevron-right"></i>
-        </div>
-        <div class="attachments-wrapper">
-          <ul class="attachment-list">
-            ${edital.arquivos.map(a => `
-              <li>
-                <a href="${escapeAttr(a.url)}" target="_blank" rel="noopener" download>
-                  <i class="fas fa-link"></i> ${escapeHtml(a.nome || 'Acessar Documento')}
-                </a>
-              </li>
-            `).join('')}
-          </ul>
-        </div>
-      </div>
-    `;
-  } else {
-    arquivosHtml = '<p style="margin-top:14px; color:#6B7280;">Nenhum documento anexado.</p>';
+function formatModalFunding(value) {
+  if (value === null || value === undefined || String(value).trim() === '') return 'Não informado';
+  const parsed = parseMoneyToNumber(value);
+  if (Number.isFinite(parsed) && parsed > 0) return formatBRL(parsed);
+  return String(value);
+}
+
+function formatModalPublicoAlvo(value) {
+  if (Array.isArray(value)) {
+    const items = value.map(v => String(v || '').trim()).filter(Boolean);
+    return items.length ? items.join(', ') : 'Não informado';
   }
+  const clean = String(value || '').trim();
+  return clean || 'Não informado';
+}
 
-  const baseUrl = window.location.origin + window.location.pathname.split('?')[0];
-  const linkParam = edital.slug ? `edital=${encodeURIComponent(edital.slug)}` : `id=${encodeURIComponent(edital.id)}`;
-  const localShareLink = `${baseUrl}?${linkParam}`;
+function getFileExtension(name = '', url = '') {
+  const source = `${name} ${url}`.toLowerCase();
+  const match = source.match(/\.([a-z0-9]{2,5})(?:$|[?#\s])/i);
+  return match ? match[1] : '';
+}
+
+function getFileIcon(ext) {
+  switch (ext) {
+    case 'pdf': return 'fa-file-pdf';
+    case 'xls':
+    case 'xlsx':
+    case 'csv': return 'fa-file-excel';
+    case 'doc':
+    case 'docx':
+    case 'rtf':
+    case 'odt': return 'fa-file-word';
+    case 'ppt':
+    case 'pptx': return 'fa-file-powerpoint';
+    case 'png':
+    case 'jpg':
+    case 'jpeg':
+    case 'gif':
+    case 'webp':
+    case 'svg': return 'fa-file-image';
+    case 'zip':
+    case 'rar':
+    case '7z':
+    case 'tar': return 'fa-file-zipper';
+    default: return 'fa-file-lines';
+  }
+}
+
+function friendlyAttachmentName(rawName, url, index) {
+  const source = String(rawName || '').trim() || extractFileNameFromUrl(url) || `Documento ${index + 1}`;
+  const noQuery = source.split('?')[0];
+  const cleaned = decodeURIComponent(noQuery)
+    .replace(/[_\-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/\b[a-f0-9]{24,}\b/gi, '')
+    .trim();
+  if (!cleaned) return `Documento ${index + 1}`;
+  return cleaned.replace(/\.[a-z0-9]{2,5}$/i, '').trim() || `Documento ${index + 1}`;
+}
+
+function extractFileNameFromUrl(url) {
+  try {
+    const pathname = new URL(String(url || ''), window.location.origin).pathname;
+    const parts = pathname.split('/').filter(Boolean);
+    return parts.length ? parts[parts.length - 1] : '';
+  } catch {
+    const clean = String(url || '').split('?')[0];
+    const parts = clean.split('/').filter(Boolean);
+    return parts.length ? parts[parts.length - 1] : '';
+  }
+}
+
+function getModalStatusChip(edital) {
+  if (isClosedEdital(edital)) return '<span class="status-chip status-chip--closed">Encerrado</span>';
+  return '<span class="status-chip status-chip--open">Aberto</span>';
+}
+
+function openModal(edital) {
+  if (!modalOverlay || !modalContentContainer || !edital) return;
+
+  const shareLink = String(edital.share_link || '').trim();
+
   const uniqueTags = [];
   const seenTags = new Set();
   const rawTags = [edital.area, ...(Array.isArray(edital.tags) ? edital.tags : [])];
@@ -1311,46 +1983,127 @@ function openModal(edital) {
     seenTags.add(key);
     uniqueTags.push(clean);
   }
+
   const tagsHtml = uniqueTags.length
     ? `<div class="modal-tags">${uniqueTags.map(t => `<span class="pill">${escapeHtml(t)}</span>`).join('')}</div>`
     : '';
 
+  const files = (Array.isArray(edital.arquivos) ? edital.arquivos : [])
+    .map((file, index) => {
+      const url = String(file?.url || '').trim();
+      if (!url) return null;
+      const ext = getFileExtension(file?.nome, url);
+      return {
+        url,
+        ext,
+        icon: getFileIcon(ext),
+        name: friendlyAttachmentName(file?.nome, url, index),
+      };
+    })
+    .filter(Boolean);
+
+  const arquivosHtml = files.length
+    ? `
+      <div class="attachments-section">
+        <div class="attachments-summary" role="button" tabindex="0" aria-label="Abrir recursos e documentos">
+          <div class="attachments-label">
+            <h3>Recursos e documentos</h3>
+            <span class="attachments-hint">${files.length} arquivo(s) disponível(is)</span>
+          </div>
+          <i class="fas fa-chevron-right"></i>
+        </div>
+        <div class="attachments-wrapper">
+          <ul class="attachment-list">
+            ${files.map((file) => `
+              <li>
+                <a href="${escapeAttr(file.url)}" target="_blank" rel="noopener noreferrer">
+                  <i class="fas ${file.icon}" aria-hidden="true"></i>
+                  <span class="attachment-item-copy">
+                    <strong>${escapeHtml(file.name)}</strong>
+                    <small>${escapeHtml(file.ext ? file.ext.toUpperCase() : 'Arquivo')}</small>
+                  </span>
+                </a>
+              </li>
+            `).join('')}
+          </ul>
+        </div>
+      </div>
+    `
+    : `
+      <div class="attachments-section">
+        <div class="attachments-empty">
+          <i class="fas fa-folder-open" aria-hidden="true"></i>
+          <span>Nenhum documento anexado.</span>
+        </div>
+      </div>
+    `;
+
   modalContentContainer.innerHTML = `
-    <div class="modal-topbar">
+    <div class="modal-breadcrumb">
+      <i class="fas fa-house" aria-hidden="true"></i>
+      <span>Dashboard</span>
+      <i class="fas fa-chevron-right" aria-hidden="true"></i>
+      <span>Detalhes do edital</span>
+    </div>
+
+    <div class="modal-topbar modal-topbar--premium">
       <div class="modal-top-left">
-        ${edital.icone ? `<img src="${escapeAttr(edital.icone)}" alt="${escapeHtml(edital.instituicao || '')}" class="modal-logo">` : '<div></div>'}
+        ${edital.icone ? `<img src="${escapeAttr(edital.icone)}" alt="${escapeHtml(edital.instituicao || '')}" class="modal-logo">` : '<div class="modal-logo-placeholder"><i class="fas fa-building"></i></div>'}
+        <div class="modal-top-copy">
+          <div class="modal-kicker">${escapeHtml(edital.instituicao || 'Instituição não informada')}</div>
+          <div class="modal-status-row">
+            ${getModalStatusChip(edital)}
+            <span class="pill gray">${escapeHtml(edital.estado || 'BR')}</span>
+            <span class="pill gray">${escapeHtml(edital.instrumento || 'Instrumento não informado')}</span>
+          </div>
+        </div>
       </div>
 
       <div class="modal-top-actions">
-        <button class="modal-share-btn" type="button" id="modalCopyLinkBtn">
+        <button class="modal-share-btn" type="button" id="modalCopyLinkBtn" data-tooltip="Copiar link">
           <i class="fas fa-link"></i> Copiar link
         </button>
 
-        <button class="modal-save-btn" type="button" id="modalSaveBtn" title="${edital.is_favorite ? 'Remover dos salvos' : 'Salvar edital'}">
+        <button class="modal-save-btn" type="button" id="modalSaveBtn" title="${edital.is_favorite ? 'Remover dos salvos' : 'Salvar edital'}" data-tooltip="${edital.is_favorite ? 'Remover dos salvos' : 'Salvar edital'}">
           <i class="${edital.is_favorite ? 'fas' : 'far'} fa-star"></i> ${edital.is_favorite ? 'Salvo' : 'Salvar'}
         </button>
       </div>
     </div>
 
-    <h2>${escapeHtml(edital.titulo)}</h2>
-    <p>${escapeHtml(edital.descricao)}</p>
+    <h2 class="modal-title">${escapeHtml(edital.titulo || 'Sem título')}</h2>
+    <p class="modal-desc">${escapeHtml(edital.descricao || 'Sem descrição cadastrada')}</p>
+
+    <div class="modal-highlights">
+      <article class="modal-highlight">
+        <span>Prazo final</span>
+        <strong>${escapeHtml(formatModalDate(edital.data_fechamento))}</strong>
+      </article>
+      <article class="modal-highlight">
+        <span>Valor do fomento</span>
+        <strong>${escapeHtml(formatModalFunding(edital.valor_total))}</strong>
+      </article>
+      <article class="modal-highlight">
+        <span>Quem pode participar</span>
+        <strong>${escapeHtml(truncateText(formatModalPublicoAlvo(edital.publico_alvo), 120))}</strong>
+      </article>
+    </div>
 
     <div class="modal-details">
       <div class="modal-detail-row"><strong>Instituição:</strong> <span>${escapeHtml(edital.instituicao || 'Não informada')}</span></div>
-      <div class="modal-detail-row"><strong>Estado:</strong> <span>${escapeHtml(edital.estado || '—')}</span></div>
-      <div class="modal-detail-row"><strong>Instrumento:</strong> <span>${escapeHtml(edital.instrumento || '—')}</span></div>
-      ${edital.data_fechamento ? `<div class="modal-detail-row"><strong>Data final:</strong> <span>${escapeHtml(edital.data_fechamento)}</span></div>` : ''}
+      <div class="modal-detail-row"><strong>Estado:</strong> <span>${escapeHtml(edital.estado || 'Não informado')}</span></div>
+      <div class="modal-detail-row"><strong>Instrumento:</strong> <span>${escapeHtml(edital.instrumento || 'Não informado')}</span></div>
+      <div class="modal-detail-row"><strong>Categoria:</strong> <span>${escapeHtml(edital.area || 'Não informada')}</span></div>
     </div>
 
     ${tagsHtml}
 
-    <div class=\"edital-ai-cta\">
-      <div class=\"cta-text\">
-        <strong>Quer falar sobre este edital?</strong>
-        <span>Pergunte e eu busco nos documentos deste card.</span>
+    <div class="edital-ai-cta">
+      <div class="cta-text">
+        <strong>Converse com a IA sobre este edital</strong>
+        <span>Pergunte sobre prazos, documentos, publico-alvo e proximos passos.</span>
       </div>
-      <button class=\"btn btn-primary\" type=\"button\" id=\"talkEditalBtn\">
-        <i class=\"fas fa-robot\"></i> Falar com a IA
+      <button class="btn btn-primary" type="button" id="talkEditalBtn">
+        <i class="fas fa-robot"></i> Falar com a IA
       </button>
     </div>
 
@@ -1360,9 +2113,13 @@ function openModal(edital) {
   const copyBtn = modalContentContainer.querySelector('#modalCopyLinkBtn');
   if (copyBtn) {
     copyBtn.addEventListener('click', () => {
-      navigator.clipboard.writeText(localShareLink)
-        .then(() => alert('Link copiado!'))
-        .catch(() => alert('Não foi possível copiar o link.'));
+      if (!shareLink) {
+        showToast('Link publico indisponivel para este edital.', 'error');
+        return;
+      }
+      navigator.clipboard.writeText(shareLink)
+        .then(() => showToast('Link copiado para compartilhar.', 'success', 1800))
+        .catch(() => showToast('Não foi possível copiar o link.', 'error'));
     });
   }
 
@@ -1374,27 +2131,20 @@ function openModal(edital) {
       try {
         const r = await toggleFavorito(edital.id);
         if (r?.ok) {
-          // atualiza texto/ícone do modal
-          const icon = modalSaveBtn.querySelector('i');
-          if (icon) {
-            icon.classList.toggle('fas', !!r.is_favorite);
-            icon.classList.toggle('far', !r.is_favorite);
-          }
           modalSaveBtn.innerHTML = `<i class="${r.is_favorite ? 'fas' : 'far'} fa-star"></i> ${r.is_favorite ? 'Salvo' : 'Salvar'}`;
           modalSaveBtn.setAttribute('title', r.is_favorite ? 'Remover dos salvos' : 'Salvar edital');
+          modalSaveBtn.setAttribute('data-tooltip', r.is_favorite ? 'Remover dos salvos' : 'Salvar edital');
 
-          // atualiza também o card (se estiver na página)
           const cardBtn = document.querySelector(`.save-btn[data-id="${String(edital.id)}"]`);
           if (cardBtn) updateSaveButtonUI(cardBtn, r.is_favorite);
+          showToast(r.is_favorite ? 'Edital salvo com sucesso.' : 'Edital removido dos salvos.', 'success', 1800);
 
-          // Se estiver vendo só salvos e removeu, deixa o modal aberto,
-          // mas atualiza o grid por trás.
           if (onlyFavoritos && !r.is_favorite) {
             applyFiltersAndRender({ resetPage: true });
           }
         }
       } catch (err) {
-        alert(err?.message || 'Não foi possível atualizar os salvos.');
+        showToast(err?.message || 'Não foi possível atualizar os salvos.', 'error');
       } finally {
         modalSaveBtn.disabled = prev;
       }
@@ -1426,14 +2176,14 @@ function openModal(edital) {
     });
   }
 
-
-const talkBtn = modalContentContainer.querySelector('#talkEditalBtn');
-if (talkBtn) {
-  talkBtn.addEventListener('click', () => startEditalChat(edital));
-}
+  const talkBtn = modalContentContainer.querySelector('#talkEditalBtn');
+  if (talkBtn) {
+    talkBtn.addEventListener('click', () => startEditalChat(edital));
+  }
 
   modalOverlay.classList.add('open');
   modalOverlay.setAttribute('aria-hidden', 'false');
+  document.body.classList.add('modal-open');
   document.body.style.overflow = 'hidden';
 }
 
@@ -1441,17 +2191,19 @@ function closeModal() {
   if (!modalOverlay) return;
   modalOverlay.classList.remove('open');
   modalOverlay.setAttribute('aria-hidden', 'true');
+  document.body.classList.remove('modal-open');
   document.body.style.overflow = '';
 }
 
 function updateChatHeader() {
-  if (!chatHeader) return;
+  const target = chatHeaderTitle || chatHeader;
+  if (!target) return;
   const editalId = chatState?.edital_id ?? chatState?.editalId ?? null;
   const titulo = chatState?.titulo ?? chatState?.edital_titulo ?? chatState?.editalTitulo ?? null;
   if (editalId && titulo) {
-    chatHeader.textContent = `Athos • Edital: ${truncateText(titulo, 28)}`;
+    target.textContent = `Athos • Edital: ${truncateText(titulo, 28)}`;
   } else {
-    chatHeader.textContent = 'Athos • Assistente';
+    target.textContent = 'Athos • Assistente';
   }
 }
 
@@ -1463,8 +2215,7 @@ function startEditalChat(edital) {
     titulo: edital.titulo || 'Edital'
   };
 
-  if (chatWrapper) chatWrapper.classList.add('open');
-  updateChatHeader();
+  setChatOpen(true, { focusInput: true, skipWelcome: true });
 
   addMessage(
     `Fechado. Vamos falar do edital: "${edital.titulo || 'Sem título'}".\n` +
@@ -1473,7 +2224,6 @@ function startEditalChat(edital) {
   );
 
   closeModal();
-  try { chatInput?.focus(); } catch (_) {}
 }
 
 function stripHtmlPreserveBreaks(htmlStr) {
@@ -1698,6 +2448,28 @@ function buildSourcesDetails(sources) {
 // =========================
 // CHAT — OPÇÕES (quick replies)
 // =========================
+const CHAT_QUERY_STOPWORDS = new Set([
+  'a', 'as', 'o', 'os', 'um', 'uma', 'uns', 'umas',
+  'de', 'do', 'da', 'dos', 'das', 'em', 'no', 'na', 'nos', 'nas',
+  'para', 'por', 'com', 'sem', 'que', 'quais', 'qual', 'me', 'mostre',
+  'quero', 'tem', 'têm', 'temos', 'sobre', 'site', 'athos', 'edital', 'editais',
+  'esta', 'estao', 'estão', 'nesta', 'nesse', 'nessa', 'agora', 'hoje',
+]);
+
+const CHAT_OPEN_HINTS = [
+  'aberto', 'abertos', 'aberta', 'abertas', 'em aberto', 'inscricoes abertas', 'inscrições abertas',
+  'ativos', 'ativas', 'vigente', 'vigentes',
+];
+
+const CHAT_DEADLINE_HINTS = [
+  'prazo', 'prazos', 'vence', 'vencem', 'vencimento', 'encerramento',
+  'inscricao', 'inscricoes', 'inscrição', 'inscrições', 'data limite',
+];
+
+const CHAT_WEEK_HINTS = [
+  'semana', 'esta semana', 'nesta semana', 'proxima semana', 'próxima semana', '7 dias', 'sete dias',
+];
+
 function shouldOfferEditaisOptions(answerText) {
   const t = String(answerText || '').toLowerCase();
   if (!t) return false;
@@ -1705,35 +2477,146 @@ function shouldOfferEditaisOptions(answerText) {
   return t.includes('encontrei') && (t.includes('edital') || t.includes('editais'));
 }
 
+function normalizeAssistantQuery(value) {
+  return String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^\w\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function hasAnyChatHint(normalizedQuery, hints) {
+  if (!normalizedQuery) return false;
+  return hints.some((hint) => normalizedQuery.includes(normalizeAssistantQuery(hint)));
+}
+
+function extractChatKeywords(normalizedQuery) {
+  if (!normalizedQuery) return [];
+  return normalizedQuery
+    .split(/\s+/)
+    .map((t) => t.trim())
+    .filter(Boolean)
+    .filter((token) => token.length >= 3 && !CHAT_QUERY_STOPWORDS.has(token));
+}
+
+function formatChatDate(value) {
+  const t = parseAnyDateToTime(value);
+  if (t === null) return String(value || '').trim();
+  return new Date(t).toLocaleDateString('pt-BR');
+}
+
+function parseChatDeadline(edital) {
+  const time = parseAnyDateToTime(edital?.data_fechamento ?? edital?.prazo ?? null);
+  if (time === null) return null;
+  const d = new Date(time);
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+}
+
+function isOpenEditalForChat(edital) {
+  if (!edital) return false;
+  if (edital.fluxo_continuo === true) return true;
+
+  const deadline = parseChatDeadline(edital);
+  if (deadline === null) return true;
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return deadline >= today.getTime();
+}
+
+function isDeadlineWithinNextDays(edital, days = 7) {
+  const deadline = parseChatDeadline(edital);
+  if (deadline === null) return false;
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const limit = new Date(today);
+  limit.setDate(limit.getDate() + Number(days || 0));
+  return deadline >= today.getTime() && deadline <= limit.getTime();
+}
+
+function sortEditaisForChat(items, { prioritizeOpen = false, prioritizeWeek = false } = {}) {
+  const arr = Array.isArray(items) ? [...items] : [];
+  if (!arr.length) return arr;
+
+  return arr.sort((a, b) => {
+    const da = parseChatDeadline(a);
+    const db = parseChatDeadline(b);
+
+    if (prioritizeWeek) {
+      const aw = isDeadlineWithinNextDays(a, 7) ? 0 : 1;
+      const bw = isDeadlineWithinNextDays(b, 7) ? 0 : 1;
+      if (aw !== bw) return aw - bw;
+    }
+
+    if (prioritizeOpen) {
+      const ao = isOpenEditalForChat(a) ? 0 : 1;
+      const bo = isOpenEditalForChat(b) ? 0 : 1;
+      if (ao !== bo) return ao - bo;
+    }
+
+    if (da === null && db === null) return 0;
+    if (da === null) return 1;
+    if (db === null) return -1;
+    return da - db;
+  });
+}
+
 function searchEditaisForChat(query) {
   const q = String(query || '').trim();
-  if (!q || !editaisOriginais || editaisOriginais.length === 0) return [];
+  if (!q || !Array.isArray(editaisOriginais) || editaisOriginais.length === 0) return [];
 
-  const qLower = q.toLowerCase();
+  const normalizedQuery = normalizeAssistantQuery(q);
+  const keywords = extractChatKeywords(normalizedQuery);
+  const wantsClosed = hasAnyChatHint(normalizedQuery, ['encerrado', 'encerrados', 'fechado', 'fechados']);
+  const wantsOpen = !wantsClosed && hasAnyChatHint(normalizedQuery, CHAT_OPEN_HINTS);
+  const wantsWeek = hasAnyChatHint(normalizedQuery, CHAT_WEEK_HINTS) && hasAnyChatHint(normalizedQuery, CHAT_DEADLINE_HINTS);
+
   let items = [];
 
-  if (fuseInstance && q.length >= 2) {
-    items = fuseInstance.search(q).map(r => r.item);
-  } else {
-    items = editaisOriginais.filter(e => {
+  if (keywords.length && fuseInstance) {
+    items = fuseInstance.search(keywords.join(' ')).map((r) => r.item);
+  } else if (keywords.length) {
+    items = editaisOriginais.filter((e) => {
       const hay = [
         e.titulo, e.descricao, e.instituicao, e.estado, e.area,
-        ...(Array.isArray(e.tags) ? e.tags : [])
-      ].map(x => String(x || '').toLowerCase());
-      return hay.some(x => x.includes(qLower));
+        ...(Array.isArray(e.tags) ? e.tags : []),
+      ]
+        .map((x) => normalizeAssistantQuery(String(x || '')))
+        .filter(Boolean)
+        .join(' ');
+      return keywords.some((k) => hay.includes(k));
     });
+  } else {
+    items = [...editaisOriginais];
   }
 
-  // dedupe por id
+  if (wantsOpen) {
+    items = items.filter((e) => isOpenEditalForChat(e));
+  }
+
+  if (wantsWeek) {
+    items = items.filter((e) => isOpenEditalForChat(e) && isDeadlineWithinNextDays(e, 7));
+  }
+
+  // Para perguntas amplas (ex: "quais editais estão em aberto"), não depender de texto livre.
+  if (!items.length && (wantsOpen || wantsWeek)) {
+    items = [...editaisOriginais];
+    if (wantsOpen) items = items.filter((e) => isOpenEditalForChat(e));
+    if (wantsWeek) items = items.filter((e) => isOpenEditalForChat(e) && isDeadlineWithinNextDays(e, 7));
+  }
+
   const seen = new Set();
-  const out = [];
-  for (const e of items) {
+  const deduped = [];
+  for (const e of sortEditaisForChat(items, { prioritizeOpen: wantsOpen, prioritizeWeek: wantsWeek })) {
     const id = String(e?.id ?? '');
     if (!id || seen.has(id)) continue;
     seen.add(id);
-    out.push(e);
+    deduped.push(e);
   }
-  return out;
+  return deduped;
 }
 
 function truncateText(text, max = 80) {
@@ -1742,42 +2625,94 @@ function truncateText(text, max = 80) {
   return s.slice(0, Math.max(0, max - 1)).trimEnd() + '…';
 }
 
-function attachEditaisOptions(msgEl, query) {
-  if (!msgEl) return;
+function normalizeBackendChatOptions(rawOptions) {
+  if (!Array.isArray(rawOptions)) return [];
 
-  const all = searchEditaisForChat(query);
-  if (!all.length) return;
+  const out = [];
+  const seen = new Set();
 
-  const top = all.slice(0, 5);
+  rawOptions.forEach((opt) => {
+    if (!opt || typeof opt !== 'object') return;
+    const id = opt.id ?? opt.edital_id ?? opt.editalId ?? null;
+    if (id === null || id === undefined) return;
 
-  const options = top.map((e) => {
+    const idKey = String(id);
+    if (seen.has(idKey)) return;
+    seen.add(idKey);
+
+    const title = String(opt.titulo || opt.title || opt.nome || 'Sem título').trim();
+    const instituicao = String(opt.instituicao || opt.instituição || '').trim();
+    const estado = String(opt.estado || '').trim();
+    const dataFechamento = opt.data_fechamento || opt.prazo || opt.deadline || null;
+    const prazoLabel = dataFechamento ? formatChatDate(dataFechamento) : '';
+
     const metaParts = [];
-    if (e.instituicao) metaParts.push(e.instituicao);
-    if (e.estado) metaParts.push(e.estado);
-    if (e.data_fechamento) metaParts.push('Até ' + e.data_fechamento);
-    const meta = metaParts.join(' • ');
+    if (instituicao) metaParts.push(instituicao);
+    if (estado) metaParts.push(estado);
+    if (prazoLabel) metaParts.push(`Até ${prazoLabel}`);
 
-    return {
+    out.push({
       action: 'open_edital',
-      id: e.id,
-      title: e.titulo || 'Sem título',
-      meta: meta || null
-    };
+      id,
+      title,
+      meta: metaParts.length ? metaParts.join(' • ') : null,
+    });
   });
 
-  if (all.length > top.length) {
-    options.push({
-      action: 'view_all',
-      query,
-      title: `Ver todos no painel (${all.length})`,
-      meta: 'Aplica a busca no Dashboard'
+  return out;
+}
+
+function attachEditaisOptions(msgEl, query, rawOptions = null) {
+  if (!msgEl) return;
+
+  const fromBackend = normalizeBackendChatOptions(rawOptions);
+  const hasBackendOptions = fromBackend.length > 0;
+  let options = [];
+
+  if (hasBackendOptions) {
+    options = fromBackend.slice(0, 5);
+    if (fromBackend.length > options.length) {
+      options.push({
+        action: 'view_all',
+        query,
+        title: `Ver todos no painel (${fromBackend.length})`,
+        meta: 'Aplica a busca no Dashboard',
+      });
+    }
+  } else {
+    const all = searchEditaisForChat(query);
+    if (!all.length) return;
+
+    const top = all.slice(0, 5);
+    options = top.map((e) => {
+      const metaParts = [];
+      if (e.instituicao) metaParts.push(e.instituicao);
+      if (e.estado) metaParts.push(e.estado);
+      if (e.data_fechamento) metaParts.push(`Até ${formatChatDate(e.data_fechamento)}`);
+      const meta = metaParts.join(' • ');
+
+      return {
+        action: 'open_edital',
+        id: e.id,
+        title: e.titulo || 'Sem título',
+        meta: meta || null,
+      };
     });
+
+    if (all.length > top.length) {
+      options.push({
+        action: 'view_all',
+        query,
+        title: `Ver todos no painel (${all.length})`,
+        meta: 'Aplica a busca no Dashboard',
+      });
+    }
   }
 
   options.push({
     action: 'ask_new',
     title: 'Buscar outro tema',
-    meta: 'Trocar a palavra-chave'
+    meta: 'Trocar a palavra-chave',
   });
 
   const wrap = document.createElement('div');
@@ -1856,6 +2791,10 @@ function localAssistantAnswer(question) {
 
 async function handleChatSend() {
   if (botIsTyping) return;
+  if (!hasPersonalizationConsent()) {
+    showToast('Ative cookies de personalização em Perfil > Preferências > Cookies para usar o chat.', 'info');
+    return;
+  }
 
   const question = (chatInput?.value || '').trim();
   if (!question) return;
@@ -1863,19 +2802,19 @@ async function handleChatSend() {
   chatInput.value = '';
   addMessage(question, 'user');
 
-  botIsTyping = true;
+  setChatBusy(true);
   const typingMsg = addMessage('digitando...', 'bot', null, { isTyping: true });
 
   try {
     const editalId = chatState?.edital_id ?? chatState?.editalId ?? null;
-const endpoint = editalId ? `/chat/edital/${encodeURIComponent(editalId)}` : '/chat';
+    const endpoint = editalId ? `/chat/edital/${encodeURIComponent(editalId)}` : '/chat';
 
-const { res, data } = await apiFetchJson(endpoint, {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  // manda "message" (backend) e "question" (compat)
-  body: JSON.stringify({ message: question, question, state: chatState }),
-});
+    const { res, data } = await apiFetchJson(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      // manda "message" (backend) e "question" (compat)
+      body: JSON.stringify({ message: question, question, state: chatState }),
+    });
 
     if (!res.ok) {
       // fallback local (não deixa o usuário no vácuo)
@@ -1906,8 +2845,12 @@ const { res, data } = await apiFetchJson(endpoint, {
     const finalSources = normalizeSources(data?.sources, extracted.names);
     setMessageText(typingMsg, finalText, finalSources);
 
-    // Se o bot disser que encontrou editais, mostra opções clicáveis (sem depender do backend)
-    if (shouldOfferEditaisOptions(finalText)) {
+    const backendOptions = Array.isArray(data?.options) ? data.options : [];
+
+    // Prioriza opções vindas da API; fallback para busca local se não vierem opções.
+    if (backendOptions.length) {
+      attachEditaisOptions(typingMsg, question, backendOptions);
+    } else if (shouldOfferEditaisOptions(finalText)) {
       attachEditaisOptions(typingMsg, question);
     }
 
@@ -1919,9 +2862,15 @@ const { res, data } = await apiFetchJson(endpoint, {
       attachEditaisOptions(typingMsg, question);
     }
   } finally {
-    botIsTyping = false;
+    setChatBusy(false);
     scrollToBottom();
   }
+}
+
+function setChatBusy(isBusy) {
+  botIsTyping = !!isBusy;
+  if (chatInput) chatInput.disabled = !!isBusy;
+  if (sendButton) sendButton.disabled = !!isBusy;
 }
 
 
@@ -1941,4 +2890,3 @@ function escapeHtml(str) {
 function escapeAttr(str) {
   return escapeHtml(str).replaceAll('`', '');
 }
-

@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8" />
@@ -18,7 +18,7 @@
 
     <aside class="app-sidebar" id="appSidebar">
       <div class="sidebar-top">
-        <img src="./assets/img/icons/Atimus5.png" alt="Logo" class="sidebar-logo" />
+        <img src="./assets/img/icons/Athos.png" alt="Logo" class="sidebar-logo" />
         <button class="icon-btn sidebar-toggle" id="sidebarToggle" title="Recolher menu" type="button">
           <i class="fas fa-bars"></i>
         </button>
@@ -58,7 +58,7 @@
 
         <div class="search-wrapper">
           <i class="fas fa-search"></i>
-          <input type="text" id="helpSearch" placeholder="Buscar na central de ajuda..." autocomplete="off" />
+          <input type="text" id="helpSearch" placeholder="Buscar na central de ajuda..." autocomplete="off" aria-label="Buscar na central de ajuda" />
         </div>
 
         <div class="topbar-actions">
@@ -77,11 +77,16 @@
         <section class="help-hero">
           <div class="help-hero-inner">
             <div class="help-hero-icon"><i class="fas fa-circle-question"></i></div>
-            <h1>Central de Ajuda</h1>
-            <p>Encontre respostas para suas dúvidas e aprenda a usar o sistema Athos Radar.</p>
+            <h1>Como podemos ajudar hoje?</h1>
+            <p>Busque artigos, tutoriais e respostas rápidas para usar o Athos com confiança.</p>
             <div class="help-hero-search">
               <i class="fas fa-search"></i>
-              <input type="text" id="helpSearch2" placeholder="Buscar na central de ajuda..." />
+              <input type="text" id="helpSearch2" placeholder="Ex.: como filtrar por área e prazo" />
+            </div>
+            <div class="help-hero-tags">
+              <span class="pill gray">Primeiros passos</span>
+              <span class="pill gray">Filtros avançados</span>
+              <span class="pill gray">Perfil e segurança</span>
             </div>
           </div>
         </section>
@@ -90,91 +95,177 @@
           <div class="help-main">
 
             <div class="help-quick">
-              <div class="help-quick-card">
+              <article class="help-quick-card">
                 <i class="fas fa-file-lines"></i>
                 <div>
                   <strong>Documentação</strong>
-                  <span>12 artigos</span>
+                  <span>Guias oficiais e base de conhecimento</span>
                 </div>
-              </div>
-              <div class="help-quick-card">
+              </article>
+              <article class="help-quick-card">
                 <i class="fas fa-users"></i>
                 <div>
                   <strong>Tutoriais</strong>
-                  <span>8 artigos</span>
+                  <span>Passo a passo para equipes</span>
                 </div>
-              </div>
-              <div class="help-quick-card">
+              </article>
+              <article class="help-quick-card">
                 <i class="fas fa-calendar"></i>
                 <div>
                   <strong>Calendário</strong>
-                  <span>5 artigos</span>
+                  <span>Ritmos de atualização e operação</span>
                 </div>
-              </div>
+              </article>
             </div>
 
             <div class="help-card">
-              <h2>Perguntas Frequentes</h2>
+              <h2>Perguntas frequentes</h2>
+              <div class="faq-list" id="faqList">
+                <article class="faq-item" data-faq-item>
+                  <h3 class="faq-question">
+                    <button
+                      class="faq-trigger"
+                      type="button"
+                      id="faq-trigger-1"
+                      aria-expanded="false"
+                      aria-controls="faq-panel-1"
+                    >
+                      <span>Como funciona o monitoramento de editais no Athos?</span>
+                      <i class="fas fa-chevron-down" aria-hidden="true"></i>
+                    </button>
+                  </h3>
+                  <div class="faq-panel" id="faq-panel-1" role="region" aria-labelledby="faq-trigger-1" aria-hidden="true" hidden inert>
+                    <div class="faq-panel-inner">
+                      <div class="faq-body">O sistema coleta fontes públicas e privadas, normaliza os dados e organiza as oportunidades por filtros como estado, instituição, instrumento e categoria.</div>
+                    </div>
+                  </div>
+                </article>
 
-              <details class="faq-item">
-                <summary>Como funciona o sistema de captação de editais?</summary>
-                <div class="faq-body">O sistema coleta editais de fontes públicas e privadas, normaliza os dados e organiza por filtros (localização, instrumento e instituição).</div>
-              </details>
+                <article class="faq-item" data-faq-item>
+                  <h3 class="faq-question">
+                    <button
+                      class="faq-trigger"
+                      type="button"
+                      id="faq-trigger-2"
+                      aria-expanded="false"
+                      aria-controls="faq-panel-2"
+                    >
+                      <span>Como filtrar editais por área de interesse?</span>
+                      <i class="fas fa-chevron-down" aria-hidden="true"></i>
+                    </button>
+                  </h3>
+                  <div class="faq-panel" id="faq-panel-2" role="region" aria-labelledby="faq-trigger-2" aria-hidden="true" hidden inert>
+                    <div class="faq-panel-inner">
+                      <div class="faq-body">No dashboard, use os filtros laterais e clique em <strong>Aplicar filtros</strong>. Também é possível remover filtros individualmente pelos chips ativos.</div>
+                    </div>
+                  </div>
+                </article>
 
-              <details class="faq-item">
-                <summary>Como posso filtrar editais por área de interesse?</summary>
-                <div class="faq-body">Use os filtros do painel lateral e clique em <strong>Aplicar filtros</strong>. O resultado atualiza com paginação.</div>
-              </details>
+                <article class="faq-item" data-faq-item>
+                  <h3 class="faq-question">
+                    <button
+                      class="faq-trigger"
+                      type="button"
+                      id="faq-trigger-3"
+                      aria-expanded="false"
+                      aria-controls="faq-panel-3"
+                    >
+                      <span>Como salvar editais favoritos?</span>
+                      <i class="fas fa-chevron-down" aria-hidden="true"></i>
+                    </button>
+                  </h3>
+                  <div class="faq-panel" id="faq-panel-3" role="region" aria-labelledby="faq-trigger-3" aria-hidden="true" hidden inert>
+                    <div class="faq-panel-inner">
+                      <div class="faq-body">Clique no ícone de estrela em cada card. Depois, use o atalho de salvos na barra superior para ver apenas sua lista favorita.</div>
+                    </div>
+                  </div>
+                </article>
 
-              <details class="faq-item">
-                <summary>Posso salvar editais favoritos?</summary>
-                <div class="faq-body">Sim — o próximo passo natural é adicionar uma estrela por card e armazenar no navegador ou no backend. (UI já pronta para isso.)</div>
-              </details>
+                <article class="faq-item" data-faq-item>
+                  <h3 class="faq-question">
+                    <button
+                      class="faq-trigger"
+                      type="button"
+                      id="faq-trigger-4"
+                      aria-expanded="false"
+                      aria-controls="faq-panel-4"
+                    >
+                      <span>Onde atualizo dados de perfil e empresa?</span>
+                      <i class="fas fa-chevron-down" aria-hidden="true"></i>
+                    </button>
+                  </h3>
+                  <div class="faq-panel" id="faq-panel-4" role="region" aria-labelledby="faq-trigger-4" aria-hidden="true" hidden inert>
+                    <div class="faq-panel-inner">
+                      <div class="faq-body">Acesse <strong>Perfil</strong> no menu lateral e atualize os painéis de dados pessoais, empresa, preferências e segurança.</div>
+                    </div>
+                  </div>
+                </article>
 
-              <details class="faq-item">
-                <summary>Como atualizar os dados da minha empresa?</summary>
-                <div class="faq-body">Acesse <strong>Perfil</strong> no menu lateral e atualize em <strong>Dados Pessoais</strong> e <strong>Empresa</strong>.</div>
-              </details>
-
-              <details class="faq-item">
-                <summary>Qual a diferença entre os tipos de inscricionalismo?</summary>
-                <div class="faq-body">Depende do instrumento: bolsas, prêmios e financiamentos têm regras e documentos diferentes. O card do edital mostra o tipo e os anexos.</div>
-              </details>
+                <article class="faq-item" data-faq-item>
+                  <h3 class="faq-question">
+                    <button
+                      class="faq-trigger"
+                      type="button"
+                      id="faq-trigger-5"
+                      aria-expanded="false"
+                      aria-controls="faq-panel-5"
+                    >
+                      <span>Como falar com o assistente de IA sobre um edital específico?</span>
+                      <i class="fas fa-chevron-down" aria-hidden="true"></i>
+                    </button>
+                  </h3>
+                  <div class="faq-panel" id="faq-panel-5" role="region" aria-labelledby="faq-trigger-5" aria-hidden="true" hidden inert>
+                    <div class="faq-panel-inner">
+                      <div class="faq-body">Abra os detalhes do edital e clique em <strong>Falar com a IA</strong>. O assistente passa a responder com foco naquele contexto.</div>
+                    </div>
+                  </div>
+                </article>
+              </div>
             </div>
           </div>
 
           <aside class="help-side">
             <div class="help-card help-support">
-              <h3>Precisa de ajuda?</h3>
-              <p>Nossa equipe está pronta para ajudar com qualquer dúvida.</p>
-              <a class="help-support-btn" href="mailto:suporte@athos.com.br"><i class="fas fa-envelope"></i> suporte@athos.com.br</a>
-              <button class="help-support-btn" type="button"><i class="fas fa-ticket"></i> Abrir chamado</button>
-              <button class="help-support-btn" type="button"><i class="fas fa-comments"></i> Falar no chat</button>
+              <h3>Suporte especializado</h3>
+              <p>Nosso time responde dúvidas técnicas, operacionais e de segurança da conta.</p>
+              <div class="help-support-actions">
+                <a class="help-support-btn" href="mailto:suporte@athos.com.br"><i class="fas fa-envelope"></i> suporte@athos.com.br</a>
+                <button class="help-support-btn" type="button"><i class="fas fa-ticket"></i> Abrir chamado</button>
+              </div>
+              <small class="help-support-note">Atendimento de segunda a sexta, das 9h às 18h (BRT).</small>
             </div>
 
             <div class="help-card">
-              <h3>Tutoriais em Vídeo</h3>
+              <h3>Tutoriais em vídeo</h3>
 
               <div class="video-row">
                 <div class="video-thumb"><i class="fas fa-play"></i></div>
                 <div>
                   <strong>Primeiros passos no Athos</strong>
-                  <div class="video-meta">5:30</div>
+                  <div class="video-meta">5:30 · nível iniciante</div>
                 </div>
               </div>
 
               <div class="video-row">
                 <div class="video-thumb"><i class="fas fa-play"></i></div>
                 <div>
-                  <strong>Como usar os filtros avançados</strong>
-                  <div class="video-meta">8:15</div>
+                  <strong>Como usar filtros avançados</strong>
+                  <div class="video-meta">8:15 · nível intermediário</div>
+                </div>
+              </div>
+
+              <div class="video-row">
+                <div class="video-thumb"><i class="fas fa-play"></i></div>
+                <div>
+                  <strong>Rotina de monitoramento semanal</strong>
+                  <div class="video-meta">6:40 · boas práticas</div>
                 </div>
               </div>
             </div>
           </aside>
         </section>
 
-        <footer class="app-footer">© 2026 – desenvolvido pela Atimus</footer>
+        <footer class="app-footer">&copy; 2026 - desenvolvido pela Atimus</footer>
       </main>
     </div>
   </div>
@@ -185,7 +276,6 @@
   <script src="./js/presence.js?v=20260309.1"></script>
 
   <script>
-    // logout simples (sem depender do main.js)
     (function(){
       const API_BASE = 'https://atimus-api-acb4gfgagefcevb5.brazilsouth-01.azurewebsites.net';
       const IS_LOCAL = window.location.hostname.includes('localhost') || window.location.hostname.includes('127.0.0.1');
@@ -262,7 +352,7 @@
         setInitials(sidebarAvatar, nome || email || sidebarAvatar?.textContent || 'U');
       }
 
-async function checkAuth(){
+      async function checkAuth(){
         try{
           const res = await fetch(`${API_BASE}/cliente/me`, { credentials: 'include', headers: authHeaders() });
           if (!res.ok) {
@@ -274,11 +364,7 @@ async function checkAuth(){
           }
 
           let data = {};
-          try {
-            data = await res.json();
-          } catch (_) {
-            data = {};
-          }
+          try { data = await res.json(); } catch (_) { data = {}; }
 
           if (data && typeof data === 'object' && ('logado' in data) && !data.logado){
             window.location.href = buildLoginUrlWithNext();
@@ -297,6 +383,83 @@ async function checkAuth(){
         document.body.classList.remove('app-loading');
       }
 
+      function setupFaqAccordion() {
+        const items = Array.from(document.querySelectorAll('[data-faq-item]'));
+        if (!items.length) return;
+
+        const getElements = (item) => ({
+          trigger: item.querySelector('.faq-trigger'),
+          panel: item.querySelector('.faq-panel'),
+        });
+
+        const setExpanded = (item, expanded, { animate = true } = {}) => {
+          const { trigger, panel } = getElements(item);
+          if (!trigger || !panel) return;
+
+          const isExpanded = trigger.getAttribute('aria-expanded') === 'true';
+          const classStateOk = item.classList.contains('is-open') === expanded;
+          const ariaStateOk = (panel.getAttribute('aria-hidden') === 'true') === !expanded;
+          const hiddenStateOk = panel.hidden === !expanded;
+          if (isExpanded === expanded && !panel.dataset.animating && classStateOk && ariaStateOk && hiddenStateOk) return;
+
+          item.classList.toggle('is-open', expanded);
+          trigger.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+          panel.setAttribute('aria-hidden', expanded ? 'false' : 'true');
+          panel.toggleAttribute('inert', !expanded);
+
+          if (!animate) {
+            panel.hidden = !expanded;
+            panel.style.height = '';
+            panel.style.overflow = '';
+            return;
+          }
+
+          if (panel.hidden) panel.hidden = false;
+          const currentHeight = panel.getBoundingClientRect().height;
+
+          const targetHeight = expanded ? panel.scrollHeight : 0;
+          panel.style.height = `${currentHeight}px`;
+          panel.style.overflow = 'hidden';
+          panel.dataset.animating = 'true';
+
+          requestAnimationFrame(() => {
+            panel.style.height = `${targetHeight}px`;
+          });
+
+          const handleTransitionEnd = (event) => {
+            if (event.target !== panel || event.propertyName !== 'height') return;
+            panel.removeEventListener('transitionend', handleTransitionEnd);
+            panel.dataset.animating = '';
+            panel.style.overflow = '';
+            panel.style.height = '';
+            panel.hidden = !expanded;
+          };
+
+          panel.addEventListener('transitionend', handleTransitionEnd);
+        };
+
+        items.forEach((item, idx) => {
+          const { trigger, panel } = getElements(item);
+          if (!trigger || !panel) return;
+
+          setExpanded(item, false, { animate: false });
+
+          trigger.addEventListener('click', () => {
+            const expanded = trigger.getAttribute('aria-expanded') === 'true';
+            setExpanded(item, !expanded, { animate: true });
+          });
+
+          trigger.addEventListener('keydown', (event) => {
+            if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+            event.preventDefault();
+            const step = event.key === 'ArrowDown' ? 1 : -1;
+            const next = (idx + step + items.length) % items.length;
+            const nextTrigger = items[next]?.querySelector('.faq-trigger');
+            nextTrigger?.focus();
+          });
+        });
+      }
+
       const init = async () => {
         try {
           bootstrapAuthFromUrl();
@@ -306,44 +469,43 @@ async function checkAuth(){
           hydrateSidebarUser(me);
 
           const doLogout = async () => {
-        const endpoints = [
-          { url: API_BASE + '/logout', method: 'POST' },
-          { url: API_BASE + '/auth/logout', method: 'POST' },
-          { url: API_BASE + '/cliente/logout', method: 'POST' },
-          { url: API_BASE + '/cliente/sair', method: 'POST' },
-          { url: API_BASE + '/session/logout', method: 'POST' },
-          { url: API_BASE + '/logout', method: 'GET' },
-          { url: API_BASE + '/auth/logout', method: 'GET' },
-          { url: API_BASE + '/cliente/logout', method: 'GET' },
-          { url: API_BASE + '/cliente/sair', method: 'GET' },
-          { url: API_BASE + '/session/logout', method: 'GET' },
-        ];
+            const endpoints = [
+              { url: API_BASE + '/logout', method: 'POST' },
+              { url: API_BASE + '/auth/logout', method: 'POST' },
+              { url: API_BASE + '/cliente/logout', method: 'POST' },
+              { url: API_BASE + '/cliente/sair', method: 'POST' },
+              { url: API_BASE + '/session/logout', method: 'POST' },
+              { url: API_BASE + '/logout', method: 'GET' },
+              { url: API_BASE + '/auth/logout', method: 'GET' },
+              { url: API_BASE + '/cliente/logout', method: 'GET' },
+              { url: API_BASE + '/cliente/sair', method: 'GET' },
+              { url: API_BASE + '/session/logout', method: 'GET' },
+            ];
 
-        try {
-          try {
-            if (window.AthosPresence?.markOffline) {
-              await window.AthosPresence.markOffline({ keepalive: true });
-            }
-          } catch (_) {}
-
-          for (const ep of endpoints) {
             try {
-              const r = await fetch(ep.url, { method: ep.method, credentials: 'include', headers: authHeaders() });
-              if (r.ok) break;
-            } catch (_) {}
-          }
-        } finally {
-          try { window.dispatchEvent(new Event('athos:logout')); } catch (_) {}
-          try { localStorage.removeItem('cliente_token'); } catch (_) {}
-          try { sessionStorage.removeItem('cliente_token'); } catch (_) {}
-          window.location.href = LOGIN_URL;
-        }
-      };
+              try {
+                if (window.AthosPresence?.markOffline) {
+                  await window.AthosPresence.markOffline({ keepalive: true });
+                }
+              } catch (_) {}
+
+              for (const ep of endpoints) {
+                try {
+                  const r = await fetch(ep.url, { method: ep.method, credentials: 'include', headers: authHeaders() });
+                  if (r.ok) break;
+                } catch (_) {}
+              }
+            } finally {
+              try { window.dispatchEvent(new Event('athos:logout')); } catch (_) {}
+              try { localStorage.removeItem('cliente_token'); } catch (_) {}
+              try { sessionStorage.removeItem('cliente_token'); } catch (_) {}
+              window.location.href = LOGIN_URL;
+            }
+          };
 
           const btn = document.getElementById('logoutIconBtn');
-          if(btn){
-            btn.addEventListener('click', doLogout);
-          }
+          if(btn) btn.addEventListener('click', doLogout);
+
           const sync = () => {
             const a = document.getElementById('helpSearch');
             const b = document.getElementById('helpSearch2');
@@ -353,6 +515,7 @@ async function checkAuth(){
             b.addEventListener('input', handler(b,a));
           };
           sync();
+          setupFaqAccordion();
 
           const toggle = document.getElementById('sidebarToggle');
           const sidebar = document.getElementById('appSidebar');
@@ -393,11 +556,8 @@ async function checkAuth(){
 
           if (mobileSidebarBtn && sidebar) {
             mobileSidebarBtn.addEventListener('click', () => {
-              if (sidebar.classList.contains('mobile-open')) {
-                closeSidebarMobile();
-              } else {
-                openSidebarMobile();
-              }
+              if (sidebar.classList.contains('mobile-open')) closeSidebarMobile();
+              else openSidebarMobile();
             });
           }
 
@@ -408,9 +568,7 @@ async function checkAuth(){
           if (sidebar) {
             sidebar.querySelectorAll('.sidebar-nav a').forEach((link) => {
               link.addEventListener('click', () => {
-                if (window.matchMedia('(max-width: 980px)').matches) {
-                  closeSidebarMobile();
-                }
+                if (window.matchMedia('(max-width: 980px)').matches) closeSidebarMobile();
               });
             });
           }

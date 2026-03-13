@@ -1,4 +1,4 @@
-(() => {
+﻿(() => {
   'use strict';
 
   const STORAGE_KEY = 'athos_cookie_consent_v1';
@@ -11,6 +11,7 @@
     necessary: true,
     analytics: false,
     marketing: false,
+    personalization: false,
     updatedAt: null,
   });
 
@@ -32,12 +33,21 @@
       'custom',
     ]);
 
+    const normalizedStatus = allowedStatus.has(status) ? status : DEFAULT_CONSENT.status;
+
     return {
       version: Number.isFinite(Number(raw.version)) ? Number(raw.version) : DEFAULT_CONSENT.version,
-      status: allowedStatus.has(status) ? status : DEFAULT_CONSENT.status,
+      status: normalizedStatus,
       necessary: true,
-      analytics: Boolean(raw.analytics),
-      marketing: Boolean(raw.marketing),
+      analytics: Object.prototype.hasOwnProperty.call(raw, 'analytics')
+        ? Boolean(raw.analytics)
+        : normalizedStatus === 'accepted_all',
+      marketing: Object.prototype.hasOwnProperty.call(raw, 'marketing')
+        ? Boolean(raw.marketing)
+        : normalizedStatus === 'accepted_all',
+      personalization: Object.prototype.hasOwnProperty.call(raw, 'personalization')
+        ? Boolean(raw.personalization)
+        : normalizedStatus === 'accepted_all',
       updatedAt: raw.updatedAt ? String(raw.updatedAt) : null,
     };
   }
@@ -59,6 +69,13 @@
   function writeCookie(name, value, maxAgeSeconds) {
     try {
       document.cookie = `${name}=${encodeURIComponent(value)}; Max-Age=${maxAgeSeconds}; Path=/; SameSite=Lax`;
+    } catch (_) {}
+  }
+
+  function deleteCookie(name) {
+    if (!name) return;
+    try {
+      document.cookie = `${name}=; Max-Age=0; Path=/; SameSite=Lax`;
     } catch (_) {}
   }
 
@@ -109,11 +126,55 @@
   }
 
   function hasCategoryConsent(category) {
-    if (!category) return false;
-    if (category === 'necessary') return true;
-    if (category === 'analytics') return Boolean(consent.analytics);
-    if (category === 'marketing') return Boolean(consent.marketing);
+    const normalized = String(category || '').trim().toLowerCase();
+    if (!normalized) return false;
+    if (normalized === 'necessary') return true;
+    if (normalized === 'analytics') return Boolean(consent.analytics);
+    if (normalized === 'marketing') return Boolean(consent.marketing);
+    if (normalized === 'personalization') return Boolean(consent.personalization);
     return false;
+  }
+
+  function pruneOptionalCookies() {
+    if (!consent.analytics) {
+      ['_ga', '_gid', '_gat'].forEach(deleteCookie);
+      try {
+        const dynamicGaCookies = (document.cookie ? document.cookie.split('; ') : [])
+          .map((item) => item.split('=')[0])
+          .filter((name) => String(name || '').startsWith('_ga_'));
+        dynamicGaCookies.forEach(deleteCookie);
+      } catch (_) {}
+    }
+
+    if (!consent.marketing) {
+      ['_fbp', '_fbc', 'hubspotutk'].forEach(deleteCookie);
+    }
+  }
+
+  function applyRuntimeConsentState() {
+    const root = document.documentElement;
+    if (!root) return;
+
+    root.dataset.consentStatus = String(consent.status || 'pending');
+    root.dataset.consentAnalytics = consent.analytics ? 'granted' : 'denied';
+    root.dataset.consentMarketing = consent.marketing ? 'granted' : 'denied';
+    root.dataset.consentPersonalization = consent.personalization ? 'granted' : 'denied';
+  }
+
+  function removeLegacyFloatingManagers() {
+    const selectors = [
+      '.cookie-consent-manager',
+      '#cookieConsentManager',
+      '[data-cookie-consent-manager]',
+    ];
+
+    selectors.forEach((selector) => {
+      document.querySelectorAll(selector).forEach((node) => {
+        try {
+          node.remove();
+        } catch (_) {}
+      });
+    });
   }
 
   function emitConsentChanged() {
@@ -123,7 +184,9 @@
   }
 
   function updateBodyLock() {
-    document.body.classList.toggle('cookie-consent-required', !hasDecision());
+    const panelOpen = Boolean(ui?.panel && !ui.panel.hidden);
+    const bannerOpen = Boolean(ui?.banner && !ui.banner.hidden);
+    document.body.classList.toggle('cookie-consent-required', panelOpen || bannerOpen);
   }
 
   function setBannerVisible(show) {
@@ -131,62 +194,47 @@
     ui.banner.hidden = !show;
   }
 
-  function setManagerVisible(show) {
-    if (!ui) return;
-    ui.manager.hidden = !show;
-  }
-
-  function getManagerSlot() {
-    return document.querySelector('[data-cookie-manager-slot]');
-  }
-
-  function placeManagerButton() {
-    if (!ui || !ui.manager) return;
-
-    const slot = getManagerSlot();
-    if (slot) {
-      ui.manager.classList.add('cookie-consent-manager--inline');
-      slot.appendChild(ui.manager);
-      return;
-    }
-
-    ui.manager.classList.remove('cookie-consent-manager--inline');
-  }
-
   function openPanel() {
     if (!ui || !ui.panel) return;
+
     if (ui.analytics) ui.analytics.checked = Boolean(consent.analytics);
     if (ui.marketing) ui.marketing.checked = Boolean(consent.marketing);
+    if (ui.personalization) ui.personalization.checked = Boolean(consent.personalization);
+
     ui.panel.hidden = false;
     ui.panel.classList.add('open');
     ui.panel.setAttribute('aria-hidden', 'false');
-    // Enquanto o painel estiver aberto, não mostra o banner por trás.
+
     setBannerVisible(false);
-    if (ui.backdrop) ui.backdrop.hidden = true;
+    if (ui.backdrop) ui.backdrop.hidden = false;
+
+    updateBodyLock();
     if (ui.closePanelBtn) ui.closePanelBtn.focus();
   }
 
   function closePanel(force = false) {
     if (!ui || !ui.panel) return;
+
     ui.panel.classList.remove('open');
     ui.panel.setAttribute('aria-hidden', 'true');
     ui.panel.hidden = true;
 
-    // Se ainda não houve decisão final, volta para o banner principal.
     if (!force && !hasDecision()) {
       setBannerVisible(true);
       if (ui.backdrop) ui.backdrop.hidden = false;
+    } else if (ui.backdrop) {
+      ui.backdrop.hidden = hasDecision();
     }
+
+    updateBodyLock();
   }
 
   function refreshUi() {
     if (!ui) return;
 
     const decisionDone = hasDecision();
-    const managerSlotExists = Boolean(getManagerSlot());
     ui.backdrop.hidden = decisionDone;
     setBannerVisible(!decisionDone);
-    setManagerVisible(decisionDone && managerSlotExists);
     updateBodyLock();
 
     if (!decisionDone) {
@@ -208,10 +256,13 @@
       necessary: true,
       analytics: Boolean(values?.analytics),
       marketing: Boolean(values?.marketing),
+      personalization: Boolean(values?.personalization),
       updatedAt: new Date().toISOString(),
     };
 
     persistConsent(consent);
+    applyRuntimeConsentState();
+    pruneOptionalCookies();
     refreshUi();
     closePanel(true);
     activateDeferredScripts();
@@ -250,14 +301,15 @@
 
   function buildUi() {
     if (document.getElementById('cookieConsentRoot')) {
+      removeLegacyFloatingManagers();
       return {
         root: document.getElementById('cookieConsentRoot'),
         backdrop: document.getElementById('cookieConsentBackdrop'),
         banner: document.getElementById('cookieConsentBanner'),
-        manager: document.getElementById('cookieConsentManagerBtn'),
         panel: document.getElementById('cookieConsentPanel'),
         analytics: document.getElementById('cookieConsentAnalytics'),
         marketing: document.getElementById('cookieConsentMarketing'),
+        personalization: document.getElementById('cookieConsentPersonalization'),
         closePanelBtn: document.getElementById('cookieConsentClosePanel'),
       };
     }
@@ -272,37 +324,33 @@
           <div class="cookie-consent__copy">
             <h2>Privacidade e cookies</h2>
             <p>
-              Usamos cookies essenciais para login, seguranca e funcionamento da plataforma.
-              Cookies opcionais (analiticos e marketing) so serao ativados com seu consentimento.
+              Usamos cookies essenciais para login, segurança e funcionamento da plataforma.
+              Cookies opcionais (analíticos, marketing e personalização) só serão ativados com seu consentimento.
             </p>
           </div>
           <div class="cookie-consent__actions">
             <button class="cookie-btn cookie-btn--primary" type="button" id="cookieConsentAcceptAll">Aceitar todos</button>
-            <button class="cookie-btn cookie-btn--secondary" type="button" id="cookieConsentRejectOptional">Recusar opcionais</button>
-            <button class="cookie-btn cookie-btn--ghost" type="button" id="cookieConsentManage">Preferencias</button>
+            <button class="cookie-btn cookie-btn--secondary" type="button" id="cookieConsentManage">Preferências</button>
+            <button class="cookie-btn cookie-btn--ghost" type="button" id="cookieConsentRejectOptional">Recusar opcionais</button>
           </div>
         </div>
       </section>
 
-      <button class="cookie-consent-manager" id="cookieConsentManagerBtn" type="button" aria-label="Gerenciar cookies" hidden>
-        Cookies
-      </button>
-
-      <div class="cookie-consent-panel" id="cookieConsentPanel" role="dialog" aria-modal="true" aria-label="Preferencias de cookies" aria-hidden="true" hidden>
+      <div class="cookie-consent-panel" id="cookieConsentPanel" role="dialog" aria-modal="true" aria-label="Preferências de cookies" aria-hidden="true" hidden>
         <div class="cookie-consent-panel__card">
           <div class="cookie-consent-panel__head">
-            <h3>Preferencias de cookies</h3>
+            <h3>Preferências de cookies</h3>
             <button type="button" class="cookie-consent-panel__close" id="cookieConsentClosePanel" aria-label="Fechar painel de cookies">×</button>
           </div>
 
           <p class="cookie-consent-panel__intro">
-            Voce pode escolher quais categorias opcionais quer habilitar. Os cookies essenciais permanecem ativos porque sao necessarios para autenticar sua sessao e manter a seguranca.
+            Você pode escolher quais categorias opcionais quer habilitar. Os cookies essenciais permanecem ativos porque são necessários para autenticar sua sessão e manter a segurança.
           </p>
 
           <div class="cookie-consent-row cookie-consent-row--locked">
             <div>
-              <strong>Essenciais (obrigatorios)</strong>
-              <span>Login, seguranca e funcionamento basico do portal.</span>
+              <strong>Essenciais (obrigatórios)</strong>
+              <span>Login, segurança e funcionamento básico do portal.</span>
             </div>
             <label class="cookie-switch">
               <input type="checkbox" checked disabled />
@@ -312,8 +360,8 @@
 
           <div class="cookie-consent-row">
             <div>
-              <strong>Analiticos</strong>
-              <span>Medem desempenho e uso para melhorar a experiencia.</span>
+              <strong>Analíticos</strong>
+              <span>Medem desempenho e uso para melhorar a experiência.</span>
             </div>
             <label class="cookie-switch">
               <input type="checkbox" id="cookieConsentAnalytics" />
@@ -324,7 +372,7 @@
           <div class="cookie-consent-row">
             <div>
               <strong>Marketing</strong>
-              <span>Personalizacao de campanhas e comunicacoes promocionais.</span>
+              <span>Personalização de campanhas e comunicações promocionais.</span>
             </div>
             <label class="cookie-switch">
               <input type="checkbox" id="cookieConsentMarketing" />
@@ -332,19 +380,31 @@
             </label>
           </div>
 
-          <details class="cookie-consent-legal">
-            <summary>Informacoes de privacidade (LGPD)</summary>
+          <div class="cookie-consent-row">
             <div>
-              <p>Finalidades: autenticacao, seguranca da conta, melhoria do produto e comunicacao institucional.</p>
-              <p>Base legal: execucao de contrato/interesse legitimo para essenciais e consentimento para opcionais.</p>
-              <p>Contato para privacidade e exercicio de direitos: <a href="mailto:privacidade@atimus.agr.br">privacidade@atimus.agr.br</a>.</p>
-              <p>Recomendacao: validar este texto com o juridico da empresa antes da publicacao final.</p>
+              <strong>Personalização</strong>
+              <span>Adapta recursos opcionais, como chat/widget externo e preferências de uso.</span>
+            </div>
+            <label class="cookie-switch">
+              <input type="checkbox" id="cookieConsentPersonalization" />
+              <span></span>
+            </label>
+          </div>
+
+          <details class="cookie-consent-legal">
+            <summary>Informações de privacidade (LGPD/GDPR)</summary>
+            <div>
+              <p>Finalidades: autenticação, segurança da conta, melhoria do produto e comunicação institucional.</p>
+              <p>Base legal: execução de contrato/interesse legítimo para essenciais e consentimento para opcionais.</p>
+              <p>Contato para privacidade e exercício de direitos: <a href="mailto:privacidade@atimus.agr.br">privacidade@atimus.agr.br</a>.</p>
+              <p>Recomendação: validar este texto com o jurídico da empresa antes da publicação final.</p>
             </div>
           </details>
 
           <div class="cookie-consent-panel__actions">
-            <button class="cookie-btn cookie-btn--secondary" type="button" id="cookieConsentSaveCustom">Salvar preferencias</button>
-            <button class="cookie-btn cookie-btn--ghost" type="button" id="cookieConsentAcceptInPanel">Aceitar todos</button>
+            <button class="cookie-btn cookie-btn--primary" type="button" id="cookieConsentSaveCustom">Salvar preferências</button>
+            <button class="cookie-btn cookie-btn--secondary" type="button" id="cookieConsentAcceptInPanel">Aceitar todos</button>
+            <button class="cookie-btn cookie-btn--ghost" type="button" id="cookieConsentRejectInPanel">Recusar opcionais</button>
           </div>
         </div>
       </div>
@@ -356,10 +416,10 @@
       root,
       backdrop: document.getElementById('cookieConsentBackdrop'),
       banner: document.getElementById('cookieConsentBanner'),
-      manager: document.getElementById('cookieConsentManagerBtn'),
       panel: document.getElementById('cookieConsentPanel'),
       analytics: document.getElementById('cookieConsentAnalytics'),
       marketing: document.getElementById('cookieConsentMarketing'),
+      personalization: document.getElementById('cookieConsentPersonalization'),
       closePanelBtn: document.getElementById('cookieConsentClosePanel'),
     };
   }
@@ -374,24 +434,24 @@
 
     acceptAllBtns.forEach((btn) => {
       btn.addEventListener('click', () => {
-        saveConsent('accepted_all', { analytics: true, marketing: true });
+        saveConsent('accepted_all', { analytics: true, marketing: true, personalization: true });
       });
     });
 
-    const rejectOptionalBtn = document.getElementById('cookieConsentRejectOptional');
-    if (rejectOptionalBtn) {
-      rejectOptionalBtn.addEventListener('click', () => {
-        saveConsent('rejected_optional', { analytics: false, marketing: false });
+    const rejectOptionalBtns = [
+      document.getElementById('cookieConsentRejectOptional'),
+      document.getElementById('cookieConsentRejectInPanel'),
+    ].filter(Boolean);
+
+    rejectOptionalBtns.forEach((btn) => {
+      btn.addEventListener('click', () => {
+        saveConsent('rejected_optional', { analytics: false, marketing: false, personalization: false });
       });
-    }
+    });
 
     const manageBtn = document.getElementById('cookieConsentManage');
     if (manageBtn) {
       manageBtn.addEventListener('click', openPanel);
-    }
-
-    if (ui.manager) {
-      ui.manager.addEventListener('click', openPanel);
     }
 
     const saveCustomBtn = document.getElementById('cookieConsentSaveCustom');
@@ -400,6 +460,7 @@
         saveConsent('custom', {
           analytics: Boolean(ui.analytics?.checked),
           marketing: Boolean(ui.marketing?.checked),
+          personalization: Boolean(ui.personalization?.checked),
         });
       });
     }
@@ -424,9 +485,11 @@
   }
 
   function boot() {
+    removeLegacyFloatingManagers();
     ui = buildUi();
-    placeManagerButton();
     bindEvents();
+    applyRuntimeConsentState();
+    pruneOptionalCookies();
     refreshUi();
     activateDeferredScripts();
     emitConsentChanged();
@@ -438,6 +501,22 @@
     },
     hasConsent(category) {
       return hasCategoryConsent(String(category || '').trim().toLowerCase());
+    },
+    acceptAll() {
+      saveConsent('accepted_all', { analytics: true, marketing: true, personalization: true });
+      return { ...consent };
+    },
+    rejectOptional() {
+      saveConsent('rejected_optional', { analytics: false, marketing: false, personalization: false });
+      return { ...consent };
+    },
+    setPreferences(values = {}, status = 'custom') {
+      saveConsent(status, {
+        analytics: Boolean(values.analytics),
+        marketing: Boolean(values.marketing),
+        personalization: Boolean(values.personalization),
+      });
+      return { ...consent };
     },
     openPreferences() {
       openPanel();

@@ -10,14 +10,59 @@ import {
   apiFetch,
   apiFetchJson,
 } from './auth.js';
+import {
+  normalizeTextValue,
+  normalizeDigits,
+  normalizeFormForComparison,
+  serializeComparableForm,
+  isComparableFormDirty,
+  resolveDirtyTrackingState,
+} from './perfil-dirty-state.js';
 
 const sidebarToggle = document.getElementById('sidebarToggle');
 const appSidebar = document.getElementById('appSidebar');
 const logoutIconBtn = document.getElementById('logoutIconBtn');
 const mobileSidebarBtn = document.getElementById('mobileSidebarBtn');
 const mobileSidebarBackdrop = document.getElementById('mobileSidebarBackdrop');
+const profileSaveBanner = document.getElementById('profileSaveBanner');
+const saveAllProfileBtn = document.getElementById('saveAllProfileBtn');
+const securityChangePasswordBtn = document.getElementById('securityChangePasswordBtn');
+const securityLogoutOthersBtn = document.getElementById('securityLogoutOthersBtn');
+const securityRefreshSessionsBtn = document.getElementById('securityRefreshSessionsBtn');
+const security2faEnable = document.getElementById('security2faEnable');
 const customSelectModels = [];
 let customSelectGlobalHandlersBound = false;
+let baselineForm = null;
+let baselineFormHash = '';
+let hasUserInteracted = false;
+let isHydratingProfile = false;
+
+const DIRTY_USER_HINT_ATTR = 'athosDirtyUserInitiated';
+
+const profileCookieAnalytics = document.getElementById('profileCookieAnalytics');
+const profileCookieMarketing = document.getElementById('profileCookieMarketing');
+const profileCookiePersonalization = document.getElementById('profileCookiePersonalization');
+const profileCookieSaveBtn = document.getElementById('profileCookieSaveBtn');
+const profileCookieRejectBtn = document.getElementById('profileCookieRejectBtn');
+const profileCookieStatus = document.getElementById('profileCookieStatus');
+
+const TRACKED_INPUT_IDS = [
+  'nomeCompleto',
+  'email',
+  'telefone',
+  'cargo',
+  'nomeEmpresa',
+  'cnpj',
+  'setorEmpresa',
+  'setorAtuacao',
+];
+
+const TRACKED_CHECKBOX_IDS = [
+  'prefEditais',
+  'prefPrazo',
+  'prefRelatorio',
+  'prefSistema',
+];
 
 document.addEventListener('DOMContentLoaded', init);
 
@@ -39,7 +84,13 @@ async function init() {
     if (!me) return;
 
     setupUI();
+    setupCookiePreferences();
+    if (profileSaveBanner) profileSaveBanner.hidden = true;
     await loadProfileFromApi();
+    bindDirtyTracking();
+    syncBaselineSnapshot({ resetInteraction: true });
+    updateDirtyState();
+    setupSecurityActions();
   } finally {
     markAppReady();
   }
@@ -84,7 +135,7 @@ async function checkAuth() {
 
     return data && typeof data === 'object' ? data : {};
   } catch (e) {
-    console.error('Erro na verificacao de autenticacao:', e);
+    console.error('Erro na verificação de autenticação:', e);
 
     if (e instanceof TypeError) return {};
 
@@ -180,7 +231,7 @@ const doLogout = async () => {
 
   if (logoutIconBtn) logoutIconBtn.addEventListener('click', doLogout);
 
-  // Navegacao interna do perfil (tabs)
+  // Navegação interna do perfil (tabs)
   document.querySelectorAll('.profile-nav-item').forEach((btn) => {
     btn.addEventListener('click', () => {
       clearTransientSelection(btn);
@@ -208,7 +259,10 @@ const doLogout = async () => {
       const x = e.target.closest('.chip-x');
       if (!x) return;
       const chip = x.closest('.chip');
-      if (chip && !chip.classList.contains('chip-add')) chip.remove();
+      if (chip && !chip.classList.contains('chip-add')) {
+        chip.remove();
+        updateDirtyState({ userInitiated: true });
+      }
     });
   }
 
@@ -216,20 +270,28 @@ const doLogout = async () => {
   const addAreaBtn = document.getElementById('addAreaBtn');
   if (addAreaBtn) {
     addAreaBtn.addEventListener('click', () => {
-      const name = prompt('Nome da nova area de interesse:');
+      const name = prompt('Nome da nova área de interesse:');
       if (!name) return;
       const span = document.createElement('span');
       span.className = 'chip';
       span.innerHTML = `${escapeHtml(name)} <button type="button" class="chip-x" aria-label="Remover">&times;</button>`;
       addAreaBtn.before(span);
+      updateDirtyState({ userInitiated: true });
     });
   }
 
   // Salvar no backend (SQL)
   const save = async (btn) => {
     const payload = collectForm();
-    const wasDisabled = !!btn?.disabled;
-    if (btn) btn.disabled = true;
+    clearFieldValidationState();
+    const errors = validateProfileForm(payload);
+    if (errors.length > 0) {
+      applyFieldValidation(errors);
+      toast(errors[0].message, 'error');
+      return;
+    }
+
+    setButtonLoading(btn, true, 'Salvando...');
 
     try {
       const { res, data } = await apiFetchJson('/cliente/perfil', {
@@ -245,20 +307,19 @@ const doLogout = async () => {
         }
         const msg = (data && typeof data === 'object' && (data.detail || data.msg))
           ? (data.detail || data.msg)
-          : 'Nao foi possivel salvar o perfil.';
+          : 'Não foi possível salvar o perfil.';
         throw new Error(msg);
       }
 
-      fillProfileForm(data);
-      toast('Perfil salvo com sucesso.');
+      fillProfileForm(data, { syncBaseline: true });
+      toast('Perfil salvo com sucesso.', 'success');
     } catch (e) {
       console.error('Erro ao salvar perfil:', e);
-      toast(e?.message || 'Nao foi possivel salvar o perfil.');
+      toast(e?.message || 'Não foi possível salvar o perfil.', 'error');
     } finally {
-      if (btn) btn.disabled = wasDisabled;
+      setButtonLoading(btn, false);
     }
   };
-
   const saveDadosBtn = document.getElementById('saveDadosBtn');
   const saveEmpresaBtn = document.getElementById('saveEmpresaBtn');
   const savePrefsBtn = document.getElementById('savePrefsBtn');
@@ -266,6 +327,99 @@ const doLogout = async () => {
   if (saveDadosBtn) saveDadosBtn.addEventListener('click', () => save(saveDadosBtn));
   if (saveEmpresaBtn) saveEmpresaBtn.addEventListener('click', () => save(saveEmpresaBtn));
   if (savePrefsBtn) savePrefsBtn.addEventListener('click', () => save(savePrefsBtn));
+  if (saveAllProfileBtn) saveAllProfileBtn.addEventListener('click', () => save(saveAllProfileBtn));
+}
+
+function normalizeConsentStateForProfile(rawState) {
+  const state = rawState && typeof rawState === 'object' ? rawState : {};
+  return {
+    analytics: Boolean(state.analytics),
+    marketing: Boolean(state.marketing),
+    personalization: Boolean(state.personalization),
+  };
+}
+
+function syncCookieInputsFromConsent(rawState) {
+  const consent = normalizeConsentStateForProfile(rawState);
+  if (profileCookieAnalytics) profileCookieAnalytics.checked = consent.analytics;
+  if (profileCookieMarketing) profileCookieMarketing.checked = consent.marketing;
+  if (profileCookiePersonalization) profileCookiePersonalization.checked = consent.personalization;
+}
+
+function setCookieStatusMessage(message, tone = '') {
+  if (!profileCookieStatus) return;
+  profileCookieStatus.textContent = String(message || '').trim();
+  profileCookieStatus.classList.toggle('is-success', tone === 'success');
+  profileCookieStatus.classList.toggle('is-error', tone === 'error');
+}
+
+function setupCookiePreferences() {
+  const hasCookieControls =
+    profileCookieAnalytics &&
+    profileCookieMarketing &&
+    profileCookiePersonalization &&
+    profileCookieSaveBtn &&
+    profileCookieRejectBtn;
+
+  if (!hasCookieControls) return;
+
+  const consentApi = window.AthosConsent;
+  if (!consentApi || typeof consentApi.getState !== 'function') {
+    setCookieStatusMessage('Não foi possível carregar as preferências de cookies.', 'error');
+    if (profileCookieSaveBtn) profileCookieSaveBtn.disabled = true;
+    if (profileCookieRejectBtn) profileCookieRejectBtn.disabled = true;
+    return;
+  }
+
+  syncCookieInputsFromConsent(consentApi.getState());
+  setCookieStatusMessage('As preferências são aplicadas imediatamente após salvar.');
+
+  if (typeof consentApi.onChange === 'function') {
+    consentApi.onChange((nextState) => {
+      syncCookieInputsFromConsent(nextState);
+    });
+  }
+
+  if (profileCookieSaveBtn) {
+    profileCookieSaveBtn.addEventListener('click', () => {
+      const payload = {
+        analytics: Boolean(profileCookieAnalytics?.checked),
+        marketing: Boolean(profileCookieMarketing?.checked),
+        personalization: Boolean(profileCookiePersonalization?.checked),
+      };
+
+      setButtonLoading(profileCookieSaveBtn, true, 'Salvando...');
+      try {
+        consentApi.setPreferences(payload, 'custom');
+        setCookieStatusMessage('Preferências de cookies atualizadas.', 'success');
+        toast('Preferências de cookies salvas.', 'success');
+      } catch (err) {
+        console.error('Erro ao salvar preferências de cookies:', err);
+        setCookieStatusMessage('Não foi possível salvar as preferências de cookies.', 'error');
+        toast('Não foi possível salvar as preferências de cookies.', 'error');
+      } finally {
+        setButtonLoading(profileCookieSaveBtn, false);
+      }
+    });
+  }
+
+  if (profileCookieRejectBtn) {
+    profileCookieRejectBtn.addEventListener('click', () => {
+      setButtonLoading(profileCookieRejectBtn, true, 'Aplicando...');
+      try {
+        consentApi.rejectOptional();
+        syncCookieInputsFromConsent(consentApi.getState());
+        setCookieStatusMessage('Cookies opcionais desativados.', 'success');
+        toast('Cookies opcionais desativados.', 'success');
+      } catch (err) {
+        console.error('Erro ao recusar cookies opcionais:', err);
+        setCookieStatusMessage('Não foi possível atualizar as preferências de cookies.', 'error');
+        toast('Não foi possível atualizar as preferências de cookies.', 'error');
+      } finally {
+        setButtonLoading(profileCookieRejectBtn, false);
+      }
+    });
+  }
 }
 
 function openSidebarMobile() {
@@ -354,6 +508,7 @@ function createCustomSelect(select) {
     item.addEventListener('click', () => {
       if (item.disabled) return;
       select.value = item.dataset.value || '';
+      markDirtyUserHint(select);
       select.dispatchEvent(new Event('change', { bubbles: true }));
       closeAllCustomSelects();
       trigger.focus();
@@ -448,6 +603,264 @@ function collectForm() {
   };
 }
 
+function collectComparableForm() {
+  return normalizeFormForComparison(collectForm());
+}
+
+function syncBaselineSnapshot({ resetInteraction = true } = {}) {
+  baselineForm = collectComparableForm();
+  baselineFormHash = serializeComparableForm(baselineForm);
+  if (resetInteraction) hasUserInteracted = false;
+}
+
+function markDirtyUserHint(el) {
+  if (!el) return;
+  el.dataset[DIRTY_USER_HINT_ATTR] = '1';
+}
+
+function consumeDirtyUserHint(el) {
+  if (!el || el.dataset[DIRTY_USER_HINT_ATTR] !== '1') return false;
+  delete el.dataset[DIRTY_USER_HINT_ATTR];
+  return true;
+}
+
+function isLikelyUserInitiatedChange(event, el) {
+  if (consumeDirtyUserHint(el)) return true;
+  if (!event?.isTrusted || !el) return false;
+
+  const activeElement = document.activeElement;
+  const target = event.target instanceof Element ? event.target : null;
+  const isDirectTarget = Boolean(target && (target === el || el.contains(target) || target.contains(el)));
+
+  if (el.matches?.('input[type="checkbox"], select')) {
+    return activeElement === el || isDirectTarget;
+  }
+
+  return activeElement === el;
+}
+
+function bindDirtyTracking() {
+  [...TRACKED_INPUT_IDS, ...TRACKED_CHECKBOX_IDS].forEach((id) => {
+    const el = document.getElementById(id);
+    if (!el || el.dataset.dirtyBound === '1') return;
+    const ev = el.type === 'checkbox' || el.tagName === 'SELECT' ? 'change' : 'input';
+    el.addEventListener(ev, (event) => {
+      if (isHydratingProfile) return;
+      clearValidationForElement(el);
+      updateDirtyState({ userInitiated: isLikelyUserInitiatedChange(event, el) });
+    });
+    el.dataset.dirtyBound = '1';
+  });
+
+  const areasWrap = document.getElementById('areasInteresse');
+  if (areasWrap && areasWrap.dataset.dirtyBound !== '1') {
+    areasWrap.addEventListener('click', (event) => {
+      if (isHydratingProfile) return;
+      const interactionEl = event.target?.closest?.('.chip-x, .chip-add') || areasWrap;
+      const run = () => updateDirtyState({ userInitiated: isLikelyUserInitiatedChange(event, interactionEl) });
+      if (typeof queueMicrotask === 'function') queueMicrotask(run);
+      else setTimeout(run, 0);
+    });
+    areasWrap.dataset.dirtyBound = '1';
+  }
+
+  if (!window.__athosProfileBeforeUnloadBound) {
+    window.addEventListener('beforeunload', (ev) => {
+      if (!hasUnsavedChanges() || !hasUserInteracted) return;
+      ev.preventDefault();
+      ev.returnValue = '';
+    });
+    window.__athosProfileBeforeUnloadBound = true;
+  }
+}
+
+function setupSecurityActions() {
+  if (securityChangePasswordBtn) {
+    securityChangePasswordBtn.addEventListener('click', async () => {
+      const current = getValue('securityCurrentPassword');
+      const next = getValue('securityNewPassword');
+      const confirm = getValue('securityConfirmPassword');
+
+      if (!current || !next || !confirm) {
+        toast('Preencha todos os campos de senha.', 'error');
+        return;
+      }
+      if (next.length < 8) {
+        toast('A nova senha deve ter ao menos 8 caracteres.', 'error');
+        return;
+      }
+      if (next !== confirm) {
+        toast('A confirmação de senha não confere.', 'error');
+        return;
+      }
+
+      setButtonLoading(securityChangePasswordBtn, true, 'Atualizando...');
+      await new Promise((resolve) => setTimeout(resolve, 520));
+      setButtonLoading(securityChangePasswordBtn, false);
+      toast('Fluxo de alteração de senha pronto para integrar com o endpoint.', 'success');
+    });
+  }
+
+  if (security2faEnable) {
+    security2faEnable.addEventListener('change', () => {
+      toast(
+        security2faEnable.checked
+          ? 'Preparação para 2FA ativada. Conecte o endpoint para concluir.'
+          : 'Preparação para 2FA desativada.',
+        'info'
+      );
+    });
+  }
+
+  if (securityLogoutOthersBtn) {
+    securityLogoutOthersBtn.addEventListener('click', async () => {
+      setButtonLoading(securityLogoutOthersBtn, true, 'Encerrando...');
+      await new Promise((resolve) => setTimeout(resolve, 520));
+      setButtonLoading(securityLogoutOthersBtn, false);
+      toast('Fluxo para encerrar outras sessões pronto para integração.', 'success');
+    });
+  }
+
+  if (securityRefreshSessionsBtn) {
+    securityRefreshSessionsBtn.addEventListener('click', () => {
+      toast('Atualização de sessões depende do endpoint de segurança.', 'info');
+    });
+  }
+}
+
+function hasUnsavedChanges() {
+  if (!baselineFormHash) return false;
+  return isComparableFormDirty(collectComparableForm(), baselineFormHash);
+}
+
+function updateDirtyState({ userInitiated = false } = {}) {
+  const current = collectComparableForm();
+  const resolved = resolveDirtyTrackingState({
+    currentComparableForm: current,
+    baselineComparableForm: baselineForm,
+    baselineHash: baselineFormHash,
+    hasUserInteracted,
+    userInitiated,
+  });
+
+  baselineForm = resolved.baselineComparableForm;
+  baselineFormHash = resolved.baselineHash;
+  hasUserInteracted = resolved.hasUserInteracted;
+
+  const baseline = baselineForm || current;
+
+  TRACKED_INPUT_IDS.forEach((id) => {
+    const isDirty = !isDeepEqual(current[id], baseline[id]);
+    markFieldDirty(id, isDirty);
+  });
+
+  TRACKED_CHECKBOX_IDS.forEach((id) => {
+    const isDirty = !isDeepEqual(current[id], baseline[id]);
+    markFieldDirty(id, isDirty);
+  });
+
+  const areaDirty = !isDeepEqual(current.areasInteresse, baseline.areasInteresse);
+  const areaField = document.getElementById('areasInteresse')?.closest('.field');
+  if (areaField) areaField.classList.toggle('is-dirty', areaDirty);
+  document.getElementById('areasInteresse')?.classList.toggle('is-dirty', areaDirty);
+
+  if (profileSaveBanner) profileSaveBanner.hidden = !resolved.showUnsavedBanner;
+}
+
+function markFieldDirty(id, isDirty) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.classList.toggle('is-dirty', isDirty);
+
+  const checkWrap = el.closest('.check');
+  if (checkWrap) checkWrap.classList.toggle('is-dirty', isDirty);
+
+  const fieldWrap = el.closest('.field');
+  if (fieldWrap) fieldWrap.classList.toggle('is-dirty', isDirty);
+
+  const customSelect = fieldWrap?.querySelector('.custom-select');
+  if (customSelect) customSelect.classList.toggle('is-dirty', isDirty);
+}
+
+function validateProfileForm(payload) {
+  const out = [];
+  const email = normalizeTextValue(payload.email, { lower: true });
+  const nome = normalizeTextValue(payload.nomeCompleto);
+  const cnpj = normalizeDigits(payload.cnpj);
+  const telefone = normalizeDigits(payload.telefone);
+
+  if (!nome || nome.length < 3) {
+    out.push({ field: 'nomeCompleto', message: 'Informe um nome completo válido.' });
+  }
+
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    out.push({ field: 'email', message: 'Informe um e-mail válido.' });
+  }
+
+  if (cnpj && cnpj.length !== 14) {
+    out.push({ field: 'cnpj', message: 'CNPJ deve conter 14 dígitos.' });
+  }
+
+  if (telefone && telefone.length < 10) {
+    out.push({ field: 'telefone', message: 'Telefone deve conter DDD e número.' });
+  }
+
+  return out;
+}
+
+function clearFieldValidationState() {
+  document.querySelectorAll('.is-invalid').forEach((el) => el.classList.remove('is-invalid'));
+}
+
+function clearValidationForElement(el) {
+  if (!el) return;
+  el.classList.remove('is-invalid');
+  el.closest('.field')?.classList.remove('is-invalid');
+  el.closest('.check')?.classList.remove('is-invalid');
+  el.closest('.custom-select')?.classList.remove('is-invalid');
+}
+
+function applyFieldValidation(errors) {
+  errors.forEach(({ field }) => {
+    const el = document.getElementById(field);
+    if (!el) return;
+    el.classList.add('is-invalid');
+    el.closest('.field')?.classList.add('is-invalid');
+    el.closest('.check')?.classList.add('is-invalid');
+    el.closest('.custom-select')?.classList.add('is-invalid');
+  });
+}
+
+function isDeepEqual(a, b) {
+  if (a === b) return true;
+
+  if (Array.isArray(a) && Array.isArray(b)) {
+    if (a.length !== b.length) return false;
+    return a.every((v, i) => isDeepEqual(v, b[i]));
+  }
+
+  if (a && b && typeof a === 'object' && typeof b === 'object') {
+    const keysA = Object.keys(a);
+    const keysB = Object.keys(b);
+    if (keysA.length !== keysB.length) return false;
+    return keysA.every((key) => isDeepEqual(a[key], b[key]));
+  }
+
+  return false;
+}
+
+function setButtonLoading(btn, loading, loadingText = 'Salvando...') {
+  if (!btn) return;
+  if (loading) {
+    btn.dataset.originalText = btn.dataset.originalText || btn.textContent || '';
+    btn.disabled = true;
+    btn.textContent = loadingText;
+    return;
+  }
+  btn.disabled = false;
+  if (btn.dataset.originalText) btn.textContent = btn.dataset.originalText;
+}
+
 async function loadProfileFromApi() {
   try {
     const { res, data } = await apiFetchJson('/cliente/perfil', { method: 'GET' });
@@ -458,49 +871,59 @@ async function loadProfileFromApi() {
       }
       const msg = (data && typeof data === 'object' && (data.detail || data.msg))
         ? (data.detail || data.msg)
-        : 'Nao foi possivel carregar o perfil.';
+        : 'Não foi possível carregar o perfil.';
       throw new Error(msg);
     }
 
-    fillProfileForm(data);
+    fillProfileForm(data, { syncBaseline: true });
   } catch (e) {
     console.error('Erro ao carregar perfil:', e);
-    toast(e?.message || 'Nao foi possivel carregar o perfil.');
+    toast(e?.message || 'Não foi possível carregar o perfil.', 'error');
   }
 }
 
-function fillProfileForm(data) {
+function fillProfileForm(data, { syncBaseline = false } = {}) {
   const profile = (data && typeof data === 'object') ? data : {};
+  isHydratingProfile = true;
 
-  if ('nomeCompleto' in profile) {
-    const nome = profile.nomeCompleto || '';
-    setValue('nomeCompleto', nome);
-    setText('profileName', nome);
-    setText('sidebarUserName', nome);
-    setInitials('profileAvatar', nome || profile.email || 'U');
-    setInitials('sidebarAvatar', nome || profile.email || 'U');
+  try {
+    if ('nomeCompleto' in profile) {
+      const nome = profile.nomeCompleto || '';
+      setValue('nomeCompleto', nome);
+      setText('profileName', nome);
+      setText('sidebarUserName', nome);
+      setInitials('profileAvatar', nome || profile.email || 'U');
+      setInitials('sidebarAvatar', nome || profile.email || 'U');
+    }
+
+    if ('email' in profile) {
+      const email = profile.email || '';
+      setValue('email', email);
+      setText('profileEmail', email);
+      setText('sidebarUserEmail', email);
+    }
+
+    if ('telefone' in profile) setValue('telefone', profile.telefone || '');
+    if ('cargo' in profile) setValue('cargo', profile.cargo || '');
+    if ('nomeEmpresa' in profile) setValue('nomeEmpresa', profile.nomeEmpresa || '');
+    if ('cnpj' in profile) setValue('cnpj', profile.cnpj || '');
+    if ('setorEmpresa' in profile) setValue('setorEmpresa', profile.setorEmpresa || '');
+    if ('setorAtuacao' in profile) setValue('setorAtuacao', profile.setorAtuacao || '');
+
+    setAreasInteresse(profile.areasInteresse);
+
+    if ('prefEditais' in profile) setChecked('prefEditais', !!profile.prefEditais);
+    if ('prefPrazo' in profile) setChecked('prefPrazo', !!profile.prefPrazo);
+    if ('prefRelatorio' in profile) setChecked('prefRelatorio', !!profile.prefRelatorio);
+    if ('prefSistema' in profile) setChecked('prefSistema', !!profile.prefSistema);
+  } finally {
+    isHydratingProfile = false;
+    if (syncBaseline) {
+      syncBaselineSnapshot({ resetInteraction: true });
+    }
+    updateDirtyState();
+    if (syncBaseline && profileSaveBanner) profileSaveBanner.hidden = true;
   }
-
-  if ('email' in profile) {
-    const email = profile.email || '';
-    setValue('email', email);
-    setText('profileEmail', email);
-    setText('sidebarUserEmail', email);
-  }
-
-  if ('telefone' in profile) setValue('telefone', profile.telefone || '');
-  if ('cargo' in profile) setValue('cargo', profile.cargo || '');
-  if ('nomeEmpresa' in profile) setValue('nomeEmpresa', profile.nomeEmpresa || '');
-  if ('cnpj' in profile) setValue('cnpj', profile.cnpj || '');
-  if ('setorEmpresa' in profile) setValue('setorEmpresa', profile.setorEmpresa || '');
-  if ('setorAtuacao' in profile) setValue('setorAtuacao', profile.setorAtuacao || '');
-
-  setAreasInteresse(profile.areasInteresse);
-
-  if ('prefEditais' in profile) setChecked('prefEditais', !!profile.prefEditais);
-  if ('prefPrazo' in profile) setChecked('prefPrazo', !!profile.prefPrazo);
-  if ('prefRelatorio' in profile) setChecked('prefRelatorio', !!profile.prefRelatorio);
-  if ('prefSistema' in profile) setChecked('prefSistema', !!profile.prefSistema);
 }
 
 function setAreasInteresse(areas) {
@@ -523,9 +946,9 @@ function setAreasInteresse(areas) {
   });
 }
 
-function toast(msg) {
+function toast(msg, type = 'info') {
   const t = document.createElement('div');
-  t.className = 'toast';
+  t.className = `toast toast--${type}`;
   t.textContent = msg;
   document.body.appendChild(t);
   requestAnimationFrame(() => t.classList.add('show'));

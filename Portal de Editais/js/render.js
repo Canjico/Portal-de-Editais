@@ -1,8 +1,8 @@
-export function renderEditais(container, editais) {
+﻿export function renderEditais(container, editais, options = {}) {
   container.innerHTML = '';
 
   if (!editais || editais.length === 0) {
-    container.innerHTML = '<p class="no-results">Nenhum edital encontrado com os filtros aplicados.</p>';
+    renderEmptyState(container, options.emptyState);
     return;
   }
 
@@ -10,32 +10,28 @@ export function renderEditais(container, editais) {
     const card = document.createElement('article');
     card.className = 'edital-card';
 
-    // Tags (mantém padrão: área + estado + extras)
     const areaLower = (edital.area || '').trim().toLowerCase();
     const estadoLower = (edital.estado || '').trim().toLowerCase();
 
     const tagsExtras = (edital.tags || [])
-      .filter(tag => {
+      .filter((tag) => {
         if (!tag) return false;
         const t = String(tag).trim().toLowerCase();
         return t && t !== areaLower && t !== estadoLower;
       })
-      .slice(0, 2);
+      .slice(0, 3);
 
     const tagsHtml = [
       edital.area ? `<span class="pill">${escapeHtml(edital.area)}</span>` : '',
       edital.estado ? `<span class="pill gray">${escapeHtml(edital.estado)}</span>` : '',
-      ...tagsExtras.map(t => `<span class="pill gray">${escapeHtml(t)}</span>`)
+      ...tagsExtras.map((t) => `<span class="pill gray">${escapeHtml(t)}</span>`),
     ].filter(Boolean).join('');
 
-    // Link amigável para compartilhar
-    const baseUrl = window.location.origin + window.location.pathname.split('?')[0];
-    const linkParam = edital.slug ? `edital=${encodeURIComponent(edital.slug)}` : `id=${encodeURIComponent(edital.id)}`;
-    const localShareLink = `${baseUrl}?${linkParam}`;
+    const shareLink = String(edital.share_link || '').trim();
 
     const instituicao = edital.instituicao || 'Instituição';
     const logoSrc = resolveLogoSrc(edital.icone);
-    const dataFinal = edital.data_fechamento || 'Não informada';
+    const dataFinal = edital.data_fechamento ? formatDisplayDate(edital.data_fechamento) : 'Não informado';
     const statusBadges = buildStatusBadges(edital.data_fechamento);
     const statusHtml = statusBadges
       .map((badge) => {
@@ -44,96 +40,135 @@ export function renderEditais(container, editais) {
       })
       .join('');
 
-    const valorFomento = formatFundingValue(edital.valor_total);
-    const publicoAlvo = formatPublicoAlvo(edital.publico_alvo);
-    const contextItems = [];
-
-    if (valorFomento) {
-      contextItems.push(`
-        <div class="card-context-item">
-          <i class="fas fa-money-bill-wave" aria-hidden="true"></i>
-          <span><strong>Fomento:</strong> ${escapeHtml(valorFomento)}</span>
-        </div>
-      `);
-    }
-
-    if (publicoAlvo) {
-      contextItems.push(`
-        <div class="card-context-item">
-          <i class="fas fa-users" aria-hidden="true"></i>
-          <span><strong>Quem pode participar:</strong> ${escapeHtml(publicoAlvo)}</span>
-        </div>
-      `);
-    }
-
-    const contextHtml = contextItems.length
-      ? `<div class="card-context">${contextItems.join('')}</div>`
-      : '';
+    const valorFomento = formatFundingValue(edital.valor_total) || 'Não informado';
+    const publicoAlvo = formatPublicoAlvo(edital.publico_alvo) || 'Não informado';
 
     card.innerHTML = `
       <div class="card-top">
         <div class="card-brand">
           <div class="card-logo">
-            ${logoSrc ? `<img src="${escapeAttr(logoSrc)}" alt="${escapeHtml(instituicao)}">` : `<span style="font-weight:1000; color:#9CA3AF; font-size:12px;">${escapeHtml(shortCode(instituicao))}</span>`}
+            ${logoSrc
+              ? `<img src="${escapeAttr(logoSrc)}" alt="${escapeHtml(instituicao)}">`
+              : `<span class="card-logo-fallback">${escapeHtml(shortCode(instituicao))}</span>`}
           </div>
-          <div style="min-width:0;">
+          <div class="card-brand-copy">
             <div class="card-org" title="${escapeHtml(instituicao)}">${escapeHtml(instituicao)}</div>
+            <div class="card-status-list" aria-label="Status do edital">${statusHtml}</div>
           </div>
         </div>
 
-        <div class="card-top-right">
-          <div class="card-status-list" aria-label="Status do edital">
-            ${statusHtml}
-          </div>
+        <div class="card-actions" aria-label="Ações do edital">
+          <button class="card-icon-btn share-btn" type="button" title="Copiar link" data-tooltip="Copiar link" aria-label="Copiar link" data-share="${escapeAttr(shareLink)}">
+            <i class="fas fa-link"></i>
+          </button>
 
-          <div class="card-actions">
-            <button class="card-icon-btn share-btn" type="button" title="Copiar link" aria-label="Copiar link" data-share="${escapeAttr(localShareLink)}">
-              <i class="fas fa-link"></i>
-            </button>
-
-            <button class="card-icon-btn save-btn ${edital.is_favorite ? 'is-saved' : ''}" type="button" title="${edital.is_favorite ? 'Remover dos salvos' : 'Salvar edital'}" aria-label="Salvar edital" data-id="${escapeAttr(edital.id)}">
-              <i class="${edital.is_favorite ? 'fas' : 'far'} fa-star"></i>
-            </button>
-          </div>
+          <button class="card-icon-btn save-btn ${edital.is_favorite ? 'is-saved' : ''}" type="button" title="${edital.is_favorite ? 'Remover dos salvos' : 'Salvar edital'}" data-tooltip="${edital.is_favorite ? 'Remover dos salvos' : 'Salvar edital'}" aria-label="Salvar edital" data-id="${escapeAttr(edital.id)}">
+            <i class="${edital.is_favorite ? 'fas' : 'far'} fa-star"></i>
+          </button>
         </div>
       </div>
 
       <h3 class="card-title">${escapeHtml(edital.titulo || 'Sem título')}</h3>
       <p class="card-desc">${escapeHtml(edital.descricao || 'Sem descrição')}</p>
-      ${contextHtml}
+
+      <div class="card-kpis" aria-label="Informações principais">
+        <div class="card-kpi">
+          <span>Prazo final</span>
+          <strong>${escapeHtml(dataFinal)}</strong>
+        </div>
+        <div class="card-kpi">
+          <span>Valor do fomento</span>
+          <strong>${escapeHtml(valorFomento)}</strong>
+        </div>
+        <div class="card-kpi card-kpi--full">
+          <span>Quem pode participar</span>
+          <strong>${escapeHtml(publicoAlvo)}</strong>
+        </div>
+      </div>
 
       <div class="card-tags">${tagsHtml}</div>
 
-      <div class="card-deadline">
-        <i class="far fa-calendar"></i>
-        <span><strong>Data final</strong> ${escapeHtml(dataFinal)}</span>
-      </div>
-
-      <button class="open-edital-btn" type="button" data-id="${escapeAttr(edital.id)}">Ver detalhes...</button>
+      <button class="open-edital-btn" type="button" data-id="${escapeAttr(edital.id)}">
+        Ver detalhes
+        <i class="fas fa-arrow-up-right-from-square" aria-hidden="true"></i>
+      </button>
     `;
 
     container.appendChild(card);
   });
 
-  // share: só precisa um listener por render
-  container.querySelectorAll('.share-btn').forEach(btn => {
+  container.querySelectorAll('.share-btn').forEach((btn) => {
     btn.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
       const link = btn.getAttribute('data-share');
-      if (!link) return;
+      if (!link) {
+        notify('Link publico indisponivel para este edital.', 'error');
+        return;
+      }
       navigator.clipboard.writeText(link)
-        .then(() => alert('Link copiado!'))
-        .catch(() => alert('Não foi possível copiar o link.'));
+        .then(() => notify('Link copiado para compartilhamento.', 'success'))
+        .catch(() => notify('Não foi possível copiar o link.', 'error'));
     });
   });
+}
+
+function renderEmptyState(container, state) {
+  const fallback = {
+    icon: 'fa-folder-open',
+    title: 'Nenhum edital encontrado',
+    message: 'Tente ajustar os filtros ou buscar por outro termo.',
+  };
+
+  const payload = {
+    ...fallback,
+    ...(state && typeof state === 'object' ? state : {}),
+  };
+
+  container.innerHTML = `
+    <section class="results-empty-state" role="status" aria-live="polite">
+      <div class="empty-icon"><i class="fas ${escapeAttr(payload.icon)}" aria-hidden="true"></i></div>
+      <h3>${escapeHtml(payload.title)}</h3>
+      <p>${escapeHtml(payload.message)}</p>
+      ${payload.actionLabel ? `<button type="button" class="btn btn-primary" id="emptyStateActionBtn">${escapeHtml(payload.actionLabel)}</button>` : ''}
+    </section>
+  `;
+
+  if (typeof payload.action === 'function') {
+    const btn = container.querySelector('#emptyStateActionBtn');
+    if (btn) btn.addEventListener('click', payload.action);
+  }
+}
+
+function notify(message, type = 'info') {
+  const text = String(message || '').trim();
+  if (!text) return;
+  const toast = document.createElement('div');
+  toast.className = `toast toast--${type}`;
+  toast.textContent = text;
+  document.body.appendChild(toast);
+  requestAnimationFrame(() => toast.classList.add('show'));
+  window.setTimeout(() => {
+    toast.classList.remove('show');
+    window.setTimeout(() => toast.remove(), 240);
+  }, 2000);
+}
+
+function formatDisplayDate(dateString) {
+  const t = parseAnyDateToTime(dateString);
+  if (t === null) return String(dateString || 'Não informado');
+  try {
+    return new Intl.DateTimeFormat('pt-BR', { dateStyle: 'medium' }).format(new Date(t));
+  } catch {
+    return String(dateString || 'Não informado');
+  }
 }
 
 function shortCode(text) {
   const s = String(text || '').trim();
   if (!s) return 'ED';
   const parts = s.split(/\s+/).slice(0, 2);
-  const letters = parts.map(p => p[0]).join('');
+  const letters = parts.map((p) => p[0]).join('');
   return letters.toUpperCase();
 }
 
@@ -260,6 +295,20 @@ function parseAnyDateToTime(dateString) {
     return new Date(y, m - 1, d).getTime();
   }
 
+  if (/^\d{2}-\d{2}-\d{4}$/.test(s)) {
+    const [d, m, y] = s.split('-').map(Number);
+    return new Date(y, m - 1, d).getTime();
+  }
+
+  if (/^\d{1,2}[\/-]\d{4}$/.test(s)) {
+    const [m, y] = s.split(/[\/-]/).map(Number);
+    if (m >= 1 && m <= 12) return new Date(y, m - 1, 1).getTime();
+  }
+
+  if (/^\d{4}$/.test(s)) {
+    return new Date(Number(s), 0, 1).getTime();
+  }
+
   const t = Date.parse(s);
   return Number.isFinite(t) ? t : null;
 }
@@ -308,7 +357,7 @@ function formatPublicoAlvo(value) {
 function truncateText(value, max) {
   const s = String(value || '').replace(/\s+/g, ' ').trim();
   if (!s || s.length <= max) return s;
-  return s.slice(0, Math.max(0, max - 1)).trimEnd() + '…';
+  return s.slice(0, Math.max(0, max - 1)).trimEnd() + '...';
 }
 
 function escapeHtml(str) {
