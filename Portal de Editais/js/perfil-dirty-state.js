@@ -22,6 +22,19 @@ function normalizeAreasInteresse(values) {
     .sort((a, b) => a.localeCompare(b, 'pt-BR', { sensitivity: 'base' }));
 }
 
+function normalizeThemePreference(value) {
+  const raw = normalizeTextValue(value, { lower: true });
+  if (raw === 'auto') return 'system';
+  if (raw === 'light' || raw === 'dark' || raw === 'system') return raw;
+  return 'system';
+}
+
+function normalizeUf(value) {
+  const raw = normalizeTextValue(value).toUpperCase();
+  if (/^[A-Z]{2}$/.test(raw)) return raw;
+  return '';
+}
+
 export function normalizeFormForComparison(form) {
   const source = form && typeof form === 'object' ? form : {};
   return {
@@ -31,6 +44,7 @@ export function normalizeFormForComparison(form) {
     cargo: normalizeTextValue(source.cargo),
     nomeEmpresa: normalizeTextValue(source.nomeEmpresa),
     cnpj: normalizeDigits(source.cnpj),
+    estadoUf: normalizeUf(source.estadoUf),
     setorEmpresa: normalizeTextValue(source.setorEmpresa),
     setorAtuacao: normalizeTextValue(source.setorAtuacao),
     areasInteresse: normalizeAreasInteresse(source.areasInteresse),
@@ -38,6 +52,7 @@ export function normalizeFormForComparison(form) {
     prefPrazo: Boolean(source.prefPrazo),
     prefRelatorio: Boolean(source.prefRelatorio),
     prefSistema: Boolean(source.prefSistema),
+    themePreference: normalizeThemePreference(source.themePreference),
   };
 }
 

@@ -4,11 +4,26 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Edital Compartilhado | Athos</title>
-  <meta name="description" content="Visualizacao publica de edital compartilhado no Athos. Para acessar o restante da plataforma, faca login." />
+  <script>
+    (function () {
+      try {
+        const key = 'athos_theme_preference';
+        const valid = { light: true, dark: true, system: true };
+        let pref = String(localStorage.getItem(key) || 'system').toLowerCase().trim();
+        if (!valid[pref]) pref = 'system';
+        const effective = pref === 'system'
+          ? (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+          : pref;
+        document.documentElement.setAttribute('data-theme-preference', pref);
+        document.documentElement.setAttribute('data-theme', effective);
+      } catch (_) {}
+    })();
+  </script>
+  <meta name="description" content="Visualização pública de edital compartilhado no Athos. Para acessar o restante da plataforma, faça login." />
   <meta name="robots" content="index,follow" />
   <meta property="og:type" content="article" />
   <meta property="og:title" content="Edital Compartilhado | Athos" />
-  <meta property="og:description" content="Visualizacao publica de um edital compartilhado no Athos." />
+  <meta property="og:description" content="Visualização pública de um edital compartilhado no Athos." />
   <meta property="og:url" content="" />
   <meta name="theme-color" content="#0b7a67" />
   <link rel="canonical" href="" />
@@ -16,36 +31,36 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="./CSS/edital-publico.css?v=20260313.1" />
+  <link rel="stylesheet" href="./CSS/edital-publico.css?v=20260317.4" />
 </head>
 
 <body>
   <div class="share-shell">
     <header class="share-topbar">
-      <a href="/athos" class="share-brand" aria-label="Athos - pagina inicial">
+      <a href="/athos" class="share-brand" id="headerBrandLink" aria-label="Athos - página inicial">
         <img src="./assets/img/icons/Athos.png" alt="Athos" onerror="this.style.display='none'; this.nextElementSibling.style.display='inline-grid';" />
         <span class="share-brand-mark" style="display:none;">A</span>
       </a>
 
       <div class="share-top-actions">
-        <a class="btn btn-outline" id="headerLoginLink" href="https://login.atimus.agr.br">Entrar</a>
-        <a class="btn btn-primary" id="headerPlatformLink" href="https://login.atimus.agr.br">Acessar plataforma</a>
+        <a class="btn btn-primary" id="headerPlatformLink" href="/athos">Acessar plataforma</a>
       </div>
     </header>
 
     <main class="share-main">
       <div class="share-note">
-        Voce esta vendo um edital compartilhado publicamente. O restante da plataforma requer autenticacao.
+        Você está visualizando um edital compartilhado publicamente. Para acessar recursos completos, entre na plataforma.
       </div>
 
       <section id="publicShareContent" aria-live="polite"></section>
     </main>
 
     <footer class="share-footer">
-      Athos - acesso publico restrito por edital compartilhado.
+      Athos · Visualização pública limitada para edital compartilhado.
     </footer>
   </div>
 
-  <script type="module" src="./js/edital-publico.js?v=20260313.1"></script>
+  <script src="./js/theme-init.js?v=20260317.2"></script>
+  <script type="module" src="./js/edital-publico.js?v=20260317.5"></script>
 </body>
 </html>

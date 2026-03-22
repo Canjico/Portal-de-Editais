@@ -1,16 +1,31 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Athos - Perfil</title>
+  <script>
+    (function () {
+      try {
+        const key = 'athos_theme_preference';
+        const valid = { light: true, dark: true, system: true };
+        let pref = String(localStorage.getItem(key) || 'system').toLowerCase().trim();
+        if (!valid[pref]) pref = 'system';
+        const effective = pref === 'system'
+          ? (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+          : pref;
+        document.documentElement.setAttribute('data-theme-preference', pref);
+        document.documentElement.setAttribute('data-theme', effective);
+      } catch (_) {}
+    })();
+  </script>
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" />
-  <link rel="stylesheet" href="./css/style.css" />
+  <link rel="stylesheet" href="./css/style.css?v=20260317.12" />
 </head>
 
 <body class="app-loading">
@@ -113,6 +128,40 @@
                   <label for="cargo">Cargo</label>
                   <input id="cargo" type="text" autocomplete="organization-title" />
                 </div>
+                <div class="field">
+                  <label for="estadoUf">Estado principal (UF)</label>
+                  <select id="estadoUf" required>
+                    <option value="" selected disabled>Selecione o estado</option>
+                    <option value="AC">AC - Acre</option>
+                    <option value="AL">AL - Alagoas</option>
+                    <option value="AP">AP - Amapá</option>
+                    <option value="AM">AM - Amazonas</option>
+                    <option value="BA">BA - Bahia</option>
+                    <option value="CE">CE - Ceará</option>
+                    <option value="DF">DF - Distrito Federal</option>
+                    <option value="ES">ES - Espírito Santo</option>
+                    <option value="GO">GO - Goiás</option>
+                    <option value="MA">MA - Maranhão</option>
+                    <option value="MT">MT - Mato Grosso</option>
+                    <option value="MS">MS - Mato Grosso do Sul</option>
+                    <option value="MG">MG - Minas Gerais</option>
+                    <option value="PA">PA - Pará</option>
+                    <option value="PB">PB - Paraíba</option>
+                    <option value="PR">PR - Paraná</option>
+                    <option value="PE">PE - Pernambuco</option>
+                    <option value="PI">PI - Piauí</option>
+                    <option value="RJ">RJ - Rio de Janeiro</option>
+                    <option value="RN">RN - Rio Grande do Norte</option>
+                    <option value="RS">RS - Rio Grande do Sul</option>
+                    <option value="RO">RO - Rondônia</option>
+                    <option value="RR">RR - Roraima</option>
+                    <option value="SC">SC - Santa Catarina</option>
+                    <option value="SP">SP - São Paulo</option>
+                    <option value="SE">SE - Sergipe</option>
+                    <option value="TO">TO - Tocantins</option>
+                  </select>
+                  <small class="field-help">Obrigatório para recomendações personalizadas de editais.</small>
+                </div>
               </div>
 
               <button class="btn btn-primary" id="saveDadosBtn" type="button">Salvar alterações</button>
@@ -210,6 +259,16 @@
                     <small>Comunicados sobre funcionalidades, melhorias e manutenções.</small>
                   </span>
                 </label>
+              </div>
+
+              <div class="field field-block">
+                <label for="prefTheme">Tema da interface</label>
+                <select id="prefTheme">
+                  <option value="system">Automático (seguir sistema)</option>
+                  <option value="light">Claro</option>
+                  <option value="dark">Escuro</option>
+                </select>
+                <small class="field-help">A alteração é aplicada imediatamente e salva ao confirmar as preferências.</small>
               </div>
 
               <button class="btn btn-primary" id="savePrefsBtn" type="button">Salvar preferências</button>
@@ -344,6 +403,15 @@
                   <button class="btn btn-secondary" id="securityLogoutOthersBtn" type="button">Sair de outras sessões</button>
                 </section>
 
+                <section class="security-card security-card--danger">
+                  <div class="security-card__head">
+                    <h3>Excluir conta</h3>
+                    <span class="security-badge security-badge--danger">Irreversível</span>
+                  </div>
+                  <p class="muted">Ao excluir sua conta, seus dados e favoritos vinculados serão removidos e a sessão será encerrada.</p>
+                  <button class="btn btn-danger" id="securityDeleteAccountBtn" type="button">Excluir conta</button>
+                </section>
+
                 <section class="security-card security-card--tips">
                   <div class="security-card__head">
                     <h3>Boas práticas</h3>
@@ -367,8 +435,20 @@
 
   <div class="mobile-sidebar-backdrop" id="mobileSidebarBackdrop" aria-hidden="true"></div>
 
+  <div class="account-delete-overlay" id="accountDeleteOverlay" hidden>
+    <div class="account-delete-dialog" role="dialog" aria-modal="true" aria-labelledby="accountDeleteTitle">
+      <h3 id="accountDeleteTitle">Confirmar exclusão de conta</h3>
+      <p>Essa ação é irreversível. Sua conta será removida e você perderá o acesso imediatamente.</p>
+      <div class="account-delete-actions">
+        <button class="btn btn-secondary" id="accountDeleteCancelBtn" type="button">Cancelar</button>
+        <button class="btn btn-danger" id="accountDeleteConfirmBtn" type="button">Excluir conta</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="./js/theme-init.js?v=20260317.2"></script>
   <script src="./js/consent.js"></script>
   <script src="./js/presence.js?v=20260309.1"></script>
-  <script type="module" src="./js/perfil.js"></script>
+  <script type="module" src="./js/perfil.js?v=20260318.2"></script>
 </body>
 </html>

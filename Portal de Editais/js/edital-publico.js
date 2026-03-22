@@ -1,29 +1,38 @@
-import {
-  LOGIN_URL,
-  buildLoginUrlWithNext,
-  apiFetchJson,
-} from "./auth.js";
+import { apiFetchJson } from "./auth.js";
 
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{20,255}$/;
+const ATHOS_BASE_PATH = detectAthosBasePath();
+const LANDING_PAGE_URL = toAbsoluteUrl(ATHOS_BASE_PATH);
+const DASHBOARD_CANONICAL_URL = toAbsoluteUrl(`${ATHOS_BASE_PATH}/editais/`);
 
 const contentEl = document.getElementById("publicShareContent");
-const headerLoginLink = document.getElementById("headerLoginLink");
+const headerBrandLink = document.getElementById("headerBrandLink");
 const headerPlatformLink = document.getElementById("headerPlatformLink");
 
 document.addEventListener("DOMContentLoaded", initPublicSharePage);
 
 async function initPublicSharePage() {
-  const loginHref = buildLoginHref();
-  applyLoginLinks(loginHref);
+  applyHeaderLinks();
   syncCanonicalUrl();
 
   const shareToken = resolveShareToken();
   if (!shareToken) {
-    renderInvalidState("Link de edital invalido ou indisponivel.");
+    renderInvalidState("Link de edital inválido ou indisponível.");
     return;
   }
 
-  renderLoadingState();
+  renderLoadingState("Validando acesso ao link compartilhado...");
+
+  const session = await resolveSessionStatus();
+  if (session.authenticated && window.AthosTheme?.setPreference && session.profile?.themePreference) {
+    window.AthosTheme.setPreference(session.profile.themePreference);
+  }
+  if (session.authenticated) {
+    const redirected = redirectToAuthenticatedExperience(shareToken, session.profile);
+    if (redirected) return;
+  }
+
+  renderLoadingState("Carregando dados públicos do edital...");
 
   try {
     const { res, data } = await apiFetchJson(`/editais/publico/${encodeURIComponent(shareToken)}`, {
@@ -33,40 +42,103 @@ async function initPublicSharePage() {
     if (!res.ok) {
       const detail = sanitizePlainText(data?.detail || data?.msg || "");
       if (res.status === 404) {
-        renderInvalidState(detail || "Link de edital invalido ou indisponivel.");
+        renderInvalidState(detail || "Link de edital inválido ou indisponível.");
       } else {
-        renderErrorState(detail || "Nao foi possivel carregar este edital compartilhado.");
+        renderErrorState(detail || "Não foi possível carregar este edital compartilhado.");
       }
       return;
     }
 
     const edital = normalizePublicPayload(data);
     if (!edital.titulo) {
-      renderErrorState("Este edital nao possui dados publicos para exibicao.");
+      renderErrorState("Este edital não possui dados públicos para exibição.");
       return;
     }
 
-    renderPublicEdital(edital, loginHref);
+    renderPublicEdital(edital);
     syncMetadata(edital);
   } catch (err) {
     console.error("[edital-publico] falha ao carregar edital compartilhado", err);
-    renderErrorState("Nao foi possivel carregar este edital compartilhado no momento.");
+    renderErrorState("Não foi possível carregar este edital compartilhado no momento.");
   }
 }
 
-function buildLoginHref() {
+function applyHeaderLinks() {
+  if (headerBrandLink) headerBrandLink.href = LANDING_PAGE_URL;
+  if (headerPlatformLink) headerPlatformLink.href = LANDING_PAGE_URL;
+}
+
+function detectAthosBasePath() {
+  let pathname = String(window.location.pathname || "");
   try {
-    return buildLoginUrlWithNext();
+    pathname = decodeURIComponent(pathname);
+  } catch (_) {}
+
+  const match = pathname.match(/^(.*?\/athos)(?:\/|$)/i);
+  if (match && match[1]) return trimTrailingSlashes(match[1]);
+  return "/athos";
+}
+
+function toAbsoluteUrl(path) {
+  const normalized = ensureLeadingSlash(path || "/");
+  try {
+    return new URL(normalized, window.location.origin).toString();
   } catch (_) {
-    const next = encodeURIComponent(window.location.href);
-    const sep = LOGIN_URL.includes("?") ? "&" : "?";
-    return `${LOGIN_URL}${sep}next=${next}`;
+    return normalized;
   }
 }
 
-function applyLoginLinks(loginHref) {
-  if (headerLoginLink) headerLoginLink.href = loginHref;
-  if (headerPlatformLink) headerPlatformLink.href = loginHref;
+function ensureLeadingSlash(value) {
+  const text = String(value || "").trim();
+  if (!text) return "/";
+  return text.startsWith("/") ? text : `/${text}`;
+}
+
+function trimTrailingSlashes(value) {
+  const normalized = ensureLeadingSlash(value);
+  if (normalized.length <= 1) return normalized;
+  return normalized.replace(/\/+$/, "");
+}
+
+async function resolveSessionStatus() {
+  try {
+    const { res, data } = await apiFetchJson("/cliente/me", { method: "GET" });
+    if (!res.ok) return { authenticated: false, profile: null };
+    if (data && typeof data === "object" && "logado" in data && !data.logado) {
+      return { authenticated: false, profile: null };
+    }
+    return { authenticated: true, profile: (data && typeof data === "object" ? data : {}) };
+  } catch (_) {
+    return { authenticated: false, profile: null };
+  }
+}
+
+function redirectToAuthenticatedExperience(shareToken, profile) {
+  try {
+    const baseUrl = resolveDashboardUrl(profile?.redirect);
+    const target = new URL(baseUrl, window.location.origin);
+    target.searchParams.set("share_token", shareToken);
+    window.location.replace(target.toString());
+    return true;
+  } catch (err) {
+    console.warn("[edital-publico] falha ao redirecionar para experiência autenticada", err);
+    return false;
+  }
+}
+
+function resolveDashboardUrl(raw) {
+  const value = sanitizePlainText(raw || "");
+  if (!value) return DASHBOARD_CANONICAL_URL;
+
+  try {
+    const parsed = new URL(value, window.location.origin);
+    const host = String(parsed.hostname || "").toLowerCase();
+    if (host === "localhost" || host === "127.0.0.1") {
+      return parsed.toString();
+    }
+  } catch (_) {}
+
+  return DASHBOARD_CANONICAL_URL;
 }
 
 function syncCanonicalUrl() {
@@ -77,7 +149,8 @@ function syncCanonicalUrl() {
 }
 
 function resolveShareToken() {
-  const queryToken = new URLSearchParams(window.location.search).get("token");
+  const params = new URLSearchParams(window.location.search);
+  const queryToken = params.get("token") || params.get("share_token");
   if (isValidToken(queryToken)) return queryToken.trim();
 
   let pathname = window.location.pathname || "";
@@ -104,13 +177,13 @@ function isValidToken(value) {
   return TOKEN_PATTERN.test(String(value || "").trim());
 }
 
-function renderLoadingState() {
+function renderLoadingState(message = "Carregando dados públicos do edital...") {
   if (!contentEl) return;
   contentEl.innerHTML = `
     <article class="share-state-card">
-      <small>Acesso publico em andamento</small>
-      <h1>Carregando edital compartilhado...</h1>
-      <p>Estamos consultando os dados publicos deste link.</p>
+      <small>Acesso público em verificação</small>
+      <h1>${escapeHtml(message)}</h1>
+      <p>Estamos consultando os dados públicos disponíveis neste link compartilhado.</p>
       <div class="loading-bars" aria-hidden="true">
         <span></span>
         <span></span>
@@ -122,7 +195,7 @@ function renderLoadingState() {
 
 function renderInvalidState(message) {
   renderStateCard({
-    title: "Link de edital invalido ou indisponivel",
+    title: "Link de edital inválido ou indisponível",
     message,
     toneClass: "text-warning",
   });
@@ -130,7 +203,7 @@ function renderInvalidState(message) {
 
 function renderErrorState(message) {
   renderStateCard({
-    title: "Nao foi possivel exibir este edital",
+    title: "Não foi possível exibir este edital",
     message,
     toneClass: "text-danger",
   });
@@ -138,16 +211,11 @@ function renderErrorState(message) {
 
 function renderStateCard({ title, message, toneClass = "" }) {
   if (!contentEl) return;
-  const loginHref = buildLoginHref();
   contentEl.innerHTML = `
     <article class="share-state-card">
-      <small class="${escapeAttr(toneClass)}">Acesso publico restrito</small>
+      <small class="${escapeAttr(toneClass)}">Acesso público limitado</small>
       <h2>${escapeHtml(title)}</h2>
       <p>${escapeHtml(message)}</p>
-      <div class="state-actions">
-        <a class="btn btn-outline" href="${escapeAttr(loginHref)}">Entrar na plataforma</a>
-        <a class="btn btn-primary" href="/athos">Ir para pagina inicial</a>
-      </div>
     </article>
   `;
 }
@@ -212,14 +280,24 @@ function normalizeArquivos(value) {
     const url = sanitizeHttpUrl(item.url);
     if (!url) return;
 
+    const nome = sanitizePlainText(item.nome) || `Documento ${idx + 1}`;
+    const tipo = sanitizePlainText(item.tipo);
+
     out.push({
-      nome: sanitizePlainText(item.nome) || `Documento ${idx + 1}`,
-      tipo: sanitizePlainText(item.tipo),
+      nome,
+      tipo,
       url,
+      extensao: extractFileExtension(nome, url),
     });
   });
 
   return out;
+}
+
+function extractFileExtension(name = "", url = "") {
+  const source = `${name} ${url}`.toLowerCase();
+  const match = source.match(/\.([a-z0-9]{2,5})(?:$|[?#\s])/i);
+  return match ? match[1].toLowerCase() : "";
 }
 
 function sanitizeHttpUrl(value) {
@@ -234,29 +312,17 @@ function sanitizeHttpUrl(value) {
   }
 }
 
-function renderPublicEdital(edital, loginHref) {
+function renderPublicEdital(edital) {
   if (!contentEl) return;
 
-  const statusLabel = edital.status || (edital.fluxoContinuo ? "Fluxo continuo" : "Aberto");
+  const statusLabel = edital.status || (edital.fluxoContinuo ? "Fluxo contínuo" : "Aberto");
   const statusClass = classifyStatus(statusLabel);
   const prazoLabel = formatPrazo(edital.prazo, edital.fluxoContinuo);
-  const valorLabel = edital.valor || "Nao informado";
-  const publicoAlvo = edital.publicoAlvo || "Nao informado";
-  const descricao = edital.descricao || "Sem descricao publica cadastrada.";
+  const valorLabel = edital.valor || "Não informado";
+  const publicoAlvo = edital.publicoAlvo || "Não informado";
+  const descricao = edital.descricao || "Sem descrição pública cadastrada.";
   const categorias = edital.categorias.length ? edital.categorias : [edital.area || "Geral"];
-
-  const arquivosHtml = edital.arquivos.length
-    ? `
-      <div class="docs-list">
-        ${edital.arquivos.map((item) => `
-          <a href="${escapeAttr(item.url)}" target="_blank" rel="noopener noreferrer">
-            <span>${escapeHtml(item.nome)}</span>
-            <small>${escapeHtml(item.tipo || "Abrir")}</small>
-          </a>
-        `).join("")}
-      </div>
-    `
-    : `<p class="text-block">Nenhum documento publico foi anexado neste compartilhamento.</p>`;
+  const documentosRestritosHtml = renderRestrictedDocumentsCallout();
 
   contentEl.innerHTML = `
     <article class="public-card">
@@ -266,7 +332,7 @@ function renderPublicEdital(edital, loginHref) {
           <button class="btn btn-ghost" type="button" id="copyPublicShareLinkBtn">Copiar este link</button>
         </div>
         <h1>${escapeHtml(edital.titulo || "Edital compartilhado")}</h1>
-        <p class="public-sub">${escapeHtml(edital.instituicao || "Instituicao nao informada")}</p>
+        <p class="public-sub">${escapeHtml(edital.instituicao || "Instituição não informada")}</p>
       </header>
 
       <div class="public-body">
@@ -280,24 +346,24 @@ function renderPublicEdital(edital, loginHref) {
             <strong>${escapeHtml(valorLabel)}</strong>
           </article>
           <article class="metric">
-            <small>Publico elegivel</small>
+            <small>Público elegível</small>
             <strong>${escapeHtml(publicoAlvo)}</strong>
           </article>
           <article class="metric">
             <small>Fonte</small>
-            <strong>${escapeHtml(edital.fonte || "Nao informada")}</strong>
+            <strong>${escapeHtml(edital.fonte || "Não informada")}</strong>
           </article>
           <article class="metric">
             <small>Estado</small>
-            <strong>${escapeHtml(edital.estado || "Nao informado")}</strong>
+            <strong>${escapeHtml(edital.estado || "Não informado")}</strong>
           </article>
           <article class="metric">
             <small>Instrumento</small>
-            <strong>${escapeHtml(edital.instrumento || "Nao informado")}</strong>
+            <strong>${escapeHtml(edital.instrumento || "Não informado")}</strong>
           </article>
         </div>
 
-        <h2 class="section-title">Descricao</h2>
+        <h2 class="section-title">Descrição</h2>
         <p class="text-block">${escapeHtml(descricao)}</p>
 
         <h2 class="section-title">Categorias</h2>
@@ -305,13 +371,8 @@ function renderPublicEdital(edital, loginHref) {
           ${categorias.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}
         </div>
 
-        <h2 class="section-title">Arquivos</h2>
-        ${arquivosHtml}
-
-        <div class="state-actions">
-          <a class="btn btn-outline" href="${escapeAttr(loginHref)}">Entrar para ver outros editais</a>
-          <a class="btn btn-primary" href="/athos">Conhecer o Athos</a>
-        </div>
+        <h2 class="section-title">Documentos</h2>
+        ${documentosRestritosHtml}
       </div>
     </article>
   `;
@@ -335,6 +396,17 @@ function renderPublicEdital(edital, loginHref) {
   }
 }
 
+function renderRestrictedDocumentsCallout() {
+  return `
+    <section class="docs-lock-callout" role="note" aria-label="Documentos restritos">
+      <span class="docs-lock-badge">Acesso restrito</span>
+      <h3>Documentos e análise com IA disponíveis apenas para usuários autenticados</h3>
+      <p>Entre na plataforma para acessar os anexos completos deste edital e usar os recursos de IA.</p>
+      <a class="btn btn-primary" href="${escapeAttr(LANDING_PAGE_URL)}">Acessar plataforma</a>
+    </section>
+  `;
+}
+
 function classifyStatus(status) {
   const token = sanitizePlainText(status).toLowerCase();
   if (token.includes("encerr")) return "status-encerrado";
@@ -343,9 +415,9 @@ function classifyStatus(status) {
 }
 
 function formatPrazo(value, fluxoContinuo) {
-  if (fluxoContinuo) return "Fluxo continuo";
+  if (fluxoContinuo) return "Fluxo contínuo";
   const raw = sanitizePlainText(value);
-  if (!raw) return "Nao informado";
+  if (!raw) return "Não informado";
 
   if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
     const [year, month, day] = raw.split("-").map(Number);
@@ -374,11 +446,11 @@ function syncMetadata(edital) {
 }
 
 function buildShareDescription(edital) {
-  const instituicao = edital.instituicao || "Instituicao nao informada";
+  const instituicao = edital.instituicao || "Instituição não informada";
   const resumo = sanitizePlainText(edital.descricao || "");
   const shortResumo = resumo.length > 170 ? `${resumo.slice(0, 167).trimEnd()}...` : resumo;
   if (shortResumo) return `${instituicao}. ${shortResumo}`;
-  return `${instituicao}. Visualizacao publica de edital compartilhado no Athos.`;
+  return `${instituicao}. Visualização pública de edital compartilhado no Athos.`;
 }
 
 function setMetaTag(attribute, key, content) {

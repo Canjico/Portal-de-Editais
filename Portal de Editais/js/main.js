@@ -2,7 +2,7 @@
    Athos / Atimus — Editais (UX/UI novo + filtros + paginação)
    ========================================================= */
 
-import { renderEditais } from './render.js?v=20260310.1';
+import { renderEditais } from './render.js?v=20260318.3';
 import {
   parseAnyDateToTime,
   buildSearchQueryContext,
@@ -21,6 +21,45 @@ import {
 } from './auth.js';
 
 const APP_BASE_URL = new URL('../', import.meta.url);
+const SHARE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{20,255}$/;
+
+function normalizeShareTokenParam(value) {
+  const token = String(value || '').trim();
+  return SHARE_TOKEN_PATTERN.test(token) ? token : '';
+}
+
+function extractShareTokenFromLink(link) {
+  const raw = String(link || '').trim();
+  if (!raw) return '';
+
+  const patterns = [
+    /\/share\/edital\/([A-Za-z0-9_-]{20,255})$/i,
+    /\/edital\/publico\/([A-Za-z0-9_-]{20,255})$/i,
+    /\/edital-publico(?:\.html)?\/([A-Za-z0-9_-]{20,255})$/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = raw.match(pattern);
+    if (match && SHARE_TOKEN_PATTERN.test(String(match[1] || ''))) {
+      return match[1];
+    }
+  }
+
+  try {
+    const parsed = new URL(raw, window.location.origin);
+    const qsToken = normalizeShareTokenParam(parsed.searchParams.get('token'));
+    if (qsToken) return qsToken;
+    const pathname = String(parsed.pathname || '').replace(/\/+$/, '');
+    for (const pattern of patterns) {
+      const match = pathname.match(pattern);
+      if (match && SHARE_TOKEN_PATTERN.test(String(match[1] || ''))) {
+        return match[1];
+      }
+    }
+  } catch (_) {}
+
+  return '';
+}
 
 // =========================
 // ESTADO
@@ -32,11 +71,11 @@ const PAGE_SIZE = 12;
 let currentPage = 1;
 let lastFiltered = [];
 let kpiFilter = 'all';
+let assistantPanelContext = null;
 
 // Filtros aplicados (só mudam quando clicar em "Aplicar filtros")
 let applied = {
   estado: [],
-  instrumento: [],
   instituicao: [],
   area: [],
 };
@@ -70,9 +109,39 @@ const INSTRUMENT_OPTIONS = [
 
 const FILTER_META = {
   estado: { label: 'Estado', icon: 'fa-map' },
-  instrumento: { label: 'Instrumento', icon: 'fa-file-contract' },
   instituicao: { label: 'Instituição', icon: 'fa-building' },
   area: { label: 'Categoria', icon: 'fa-tags' },
+};
+
+const ESTADO_LABELS = {
+  BR: 'Brasil',
+  AC: 'Acre',
+  AL: 'Alagoas',
+  AP: 'Amapá',
+  AM: 'Amazonas',
+  BA: 'Bahia',
+  CE: 'Ceará',
+  DF: 'Distrito Federal',
+  ES: 'Espírito Santo',
+  GO: 'Goiás',
+  MA: 'Maranhão',
+  MT: 'Mato Grosso',
+  MS: 'Mato Grosso do Sul',
+  MG: 'Minas Gerais',
+  PA: 'Pará',
+  PB: 'Paraíba',
+  PR: 'Paraná',
+  PE: 'Pernambuco',
+  PI: 'Piauí',
+  RJ: 'Rio de Janeiro',
+  RN: 'Rio Grande do Norte',
+  RS: 'Rio Grande do Sul',
+  RO: 'Rondônia',
+  RR: 'Roraima',
+  SC: 'Santa Catarina',
+  SP: 'São Paulo',
+  SE: 'Sergipe',
+  TO: 'Tocantins',
 };
 
 
@@ -125,7 +194,6 @@ const activeFiltersChips = document.getElementById('activeFiltersChips');
 const filtersFooterSummary = document.getElementById('filtersFooterSummary');
 
 const filterSearchEstado = document.getElementById('filterSearchEstado');
-const filterSearchInstrumento = document.getElementById('filterSearchInstrumento');
 const filterSearchInstituicao = document.getElementById('filterSearchInstituicao');
 const filterSearchArea = document.getElementById('filterSearchArea');
 const sidebarAvatar = document.getElementById('sidebarAvatar');
@@ -174,6 +242,7 @@ document.addEventListener('DOMContentLoaded', init);
 
 async function init() {
   bootstrapAuthFromUrl();
+  window.AthosTheme?.bootstrap?.();
   const me = await checkAuth();
   if (!me) return;
 
@@ -182,6 +251,9 @@ async function init() {
   try {
     await loadEditais();
     await loadFavoritos();
+    if (hasPersonalizedRelevance(editaisOriginais)) {
+      setSortField('relevancia', { resetDirection: true });
+    }
     buildFuseIndex();
     generateDynamicFilters();
     setupFilterGroupsAccordion();
@@ -194,10 +266,14 @@ async function init() {
 
     // deep link (?edital=slug ou ?id=)
     const urlParams = new URLSearchParams(window.location.search);
+    const shareToken = normalizeShareTokenParam(urlParams.get('share_token'));
     const editalSlug = urlParams.get('edital');
     const editalId = urlParams.get('id');
 
-    if (editalSlug) {
+    if (shareToken) {
+      const target = editaisOriginais.find((e) => extractShareTokenFromLink(e.share_link) === shareToken);
+      if (target) openModal(target);
+    } else if (editalSlug) {
       const target = editaisOriginais.find(e => e.slug === editalSlug);
       if (target) openModal(target);
     } else if (editalId) {
@@ -207,6 +283,11 @@ async function init() {
   } finally {
     markAppReady();
   }
+}
+
+function hasPersonalizedRelevance(items) {
+  if (!Array.isArray(items) || items.length === 0) return false;
+  return items.some((item) => normalizeRelevanceScore(item?.relevance_score) > 0 || item?.is_highlighted);
 }
 
 // =========================
@@ -227,6 +308,10 @@ async function checkAuth() {
     if (data && typeof data === 'object' && 'logado' in data && !data.logado) {
       window.location.href = buildLoginUrlWithNext();
       return null;
+    }
+
+    if (window.AthosTheme?.setPreference && data?.themePreference) {
+      window.AthosTheme.setPreference(data.themePreference);
     }
 
     return data && typeof data === 'object' ? data : {};
@@ -286,7 +371,7 @@ function countAppliedFilters() {
 }
 
 function countSelectedFilters() {
-  return ['estado', 'instrumento', 'instituicao', 'area']
+  return ['estado', 'instituicao', 'area']
     .reduce((sum, key) => sum + readSelected(key).length, 0);
 }
 
@@ -418,13 +503,13 @@ function setupConsentAwareOptionalFeatures() {
 function clearAllFilters({ keepSearch = false, keepFavorites = false, rerender = true } = {}) {
   document.querySelectorAll('.filter-options input[type="checkbox"]').forEach(cb => { cb.checked = false; });
   if (filterSearchEstado) filterSearchEstado.value = '';
-  if (filterSearchInstrumento) filterSearchInstrumento.value = '';
   if (filterSearchInstituicao) filterSearchInstituicao.value = '';
   if (filterSearchArea) filterSearchArea.value = '';
   document.querySelectorAll('.filter-options label').forEach(l => l.style.display = 'flex');
   document.querySelectorAll('.filter-empty').forEach(el => { el.hidden = true; });
 
-  applied = { estado: [], instrumento: [], instituicao: [], area: [] };
+  applied = { estado: [], instituicao: [], area: [] };
+  clearAssistantPanelContext();
   kpiFilter = 'all';
   syncKpiButtons();
   if (!keepSearch && searchInput) searchInput.value = '';
@@ -464,11 +549,24 @@ function renderActiveFilters() {
 
   const chips = [];
   const selectedTotal = countAppliedFilters();
+  const assistantLabels = assistantPanelContext?.filterLabels || [];
+  const assistantCount = assistantLabels.length;
+
+  if (assistantCount > 0) {
+    assistantLabels.forEach((label) => {
+      chips.push(makeFilterChip(label, () => {
+        clearAssistantPanelContext();
+        applyFiltersAndRender({ resetPage: true });
+      }, 'chip-assistant'));
+    });
+  }
+
   Object.entries(applied).forEach(([key, values]) => {
     if (!Array.isArray(values) || values.length === 0) return;
     const meta = FILTER_META[key] || { label: key };
     values.forEach((value) => {
-      chips.push(makeFilterChip(`${meta.label}: ${value}`, () => {
+      const displayValue = key === 'estado' ? formatEstadoLabel(value) : value;
+      chips.push(makeFilterChip(`${meta.label}: ${displayValue}`, () => {
         applied[key] = (applied[key] || []).filter(v => v !== value);
         const checkbox = document.querySelector(`.filter-options[data-filter-type=\"${key}\"] input[value=\"${cssEscape(value)}\"]`);
         if (checkbox) checkbox.checked = false;
@@ -506,10 +604,12 @@ function renderActiveFilters() {
   chips.forEach(chip => activeFiltersChips.appendChild(chip));
   activeFiltersBar.hidden = chips.length === 0;
 
+  const visibleFilterCount = selectedTotal + assistantCount;
+
   if (filtersCountBadge) {
-    if (selectedTotal > 0) {
+    if (visibleFilterCount > 0) {
       filtersCountBadge.hidden = false;
-      filtersCountBadge.textContent = `${selectedTotal} ativo${selectedTotal > 1 ? 's' : ''}`;
+      filtersCountBadge.textContent = `${visibleFilterCount} ativo${visibleFilterCount > 1 ? 's' : ''}`;
     } else {
       filtersCountBadge.hidden = true;
       filtersCountBadge.textContent = '0 ativos';
@@ -517,7 +617,11 @@ function renderActiveFilters() {
   }
 
   if (filtersAppliedState) {
-    if (selectedTotal > 0) {
+    if (assistantCount > 0 && selectedTotal > 0) {
+      filtersAppliedState.textContent = `Refinando por IA + ${selectedTotal} filtro${selectedTotal > 1 ? 's' : ''}.`;
+    } else if (assistantCount > 0) {
+      filtersAppliedState.textContent = 'Refinando por critérios sugeridos pela IA.';
+    } else if (selectedTotal > 0) {
       filtersAppliedState.textContent = `Refinando por ${selectedTotal} filtro${selectedTotal > 1 ? 's' : ''}.`;
     } else if (kpiFilter !== 'all') {
       filtersAppliedState.textContent = 'Recorte rápido ativo pelo KPI.';
@@ -534,7 +638,11 @@ function renderResultsStateHint(total) {
   if (!resultsStateHint) return;
 
   const hasSearch = String(searchInput?.value || '').trim().length > 0;
-  const hasFilters = hasAppliedFilters();
+  const hasFilters = hasAppliedFilters() || Boolean(assistantPanelContext);
+  const highlightedTotal = Array.isArray(lastFiltered)
+    ? lastFiltered.filter((item) => item?.is_highlighted).length
+    : 0;
+  const hasProfileRecommendations = highlightedTotal > 0;
 
   let text = '';
   if (total === 0 && onlyFavoritos && favoritosSet.size === 0) {
@@ -547,6 +655,15 @@ function renderResultsStateHint(total) {
     text = 'Nenhum resultado encontrado para esta busca.';
   } else if (total === 0 && hasFilters) {
     text = 'Nenhum edital para os filtros atuais.';
+  } else if (
+    total > 0 &&
+    hasProfileRecommendations &&
+    !hasSearch &&
+    !hasFilters &&
+    !onlyFavoritos &&
+    kpiFilter === 'all'
+  ) {
+    text = `Com base no seu perfil, ${highlightedTotal} edital${highlightedTotal > 1 ? 'is estão' : ' está'} em destaque.`;
   } else if (total > 0 && hasFilters) {
     text = 'Filtros aplicados para resultados mais relevantes.';
   }
@@ -877,7 +994,7 @@ function normalizeEdital(api) {
     publico_alvo: data.publico_alvo || '',
     icone: resolveIconPath(data.icone_instituicao),
     instituicao: data.instituicao || '',
-    estado: data.estado || 'BR',
+    estado: normalizeEstadoValue(data.estado || 'BR') || 'BR',
     area: String(rawArea || 'Geral'),
     instrumento: toCanonicalInstrument(data.instrumento || data.apoio || 'Não informado'),
     tipo: data.tipo || 'Não informado',
@@ -899,8 +1016,20 @@ function normalizeEdital(api) {
     tags: data.tags || [],
     arquivos,
     is_favorite: false,
-    share_link: api?.share_link || ''
+    share_link: api?.share_link || '',
+    is_open: typeof api?.is_open === 'boolean' ? api.is_open : undefined,
+    relevance_score: normalizeRelevanceScore(api?.relevance_score),
+    is_highlighted: !!api?.is_highlighted,
+    relevance_reasons: Array.isArray(api?.relevance_reasons) ? api.relevance_reasons.map((item) => String(item || '').trim()).filter(Boolean) : [],
   };
+}
+
+function normalizeRelevanceScore(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  if (n < 0) return 0;
+  if (n > 100) return 100;
+  return Math.round(n);
 }
 
 function safeJsonParse(str, fallback) {
@@ -957,6 +1086,27 @@ function normalizeCategoryKey(value) {
     .replace(/\s+/g, ' ');
 }
 
+function normalizeEstadoValue(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+
+  const upper = raw.toUpperCase();
+  if (ESTADO_LABELS[upper]) return upper;
+
+  const byPrefix = upper.match(/^([A-Z]{2})\b/);
+  if (byPrefix && ESTADO_LABELS[byPrefix[1]]) return byPrefix[1];
+
+  return raw;
+}
+
+function formatEstadoLabel(value) {
+  const normalized = normalizeEstadoValue(value);
+  const code = String(normalized || '').toUpperCase();
+  const nome = ESTADO_LABELS[code];
+  if (nome) return `${code} - ${nome}`;
+  return String(value || '').trim();
+}
+
 const CATEGORY_KEY_MAP = new Map(
   CATEGORY_OPTIONS.map(item => [normalizeCategoryKey(item.value), item.value])
 );
@@ -998,7 +1148,6 @@ function buildFuseIndex() {
 function generateDynamicFilters() {
   const types = [
     { key: 'estado', type: 'estado' },
-    { key: 'instrumento', type: 'instrumento' },
     { key: 'instituicao', type: 'instituicao' },
   ];
 
@@ -1008,16 +1157,14 @@ function generateDynamicFilters() {
 
     const counts = new Map();
     for (const e of editaisOriginais) {
-      const raw = type === 'instrumento'
-        ? toCanonicalInstrument(e?.[key])
+      const raw = type === 'estado'
+        ? normalizeEstadoValue(e?.[key])
         : (e?.[key] ?? '').toString().trim();
       if (!raw) continue;
       counts.set(raw, (counts.get(raw) || 0) + 1);
     }
 
-    const values = (type === 'instrumento'
-      ? INSTRUMENT_OPTIONS.slice()
-      : Array.from(counts.keys()))
+    const values = Array.from(counts.keys())
       .sort((a, b) => {
         const diff = (counts.get(b) || 0) - (counts.get(a) || 0);
         if (diff !== 0) return diff;
@@ -1031,8 +1178,9 @@ function generateDynamicFilters() {
     }
 
     for (const val of values) {
+      const displayVal = type === 'estado' ? formatEstadoLabel(val) : val;
       const label = document.createElement('label');
-      label.setAttribute('data-label', val.toLowerCase());
+      label.setAttribute('data-label', normalizeCategoryKey(`${val} ${displayVal}`));
 
       const left = document.createElement('span');
       left.className = 'label-left';
@@ -1042,11 +1190,16 @@ function generateDynamicFilters() {
       input.value = val;
 
       const text = document.createElement('span');
-      text.textContent = val;
+      text.textContent = displayVal;
       text.style.minWidth = '0';
       text.style.overflow = 'hidden';
       text.style.textOverflow = 'ellipsis';
       text.style.whiteSpace = 'nowrap';
+      if (type === 'estado') {
+        text.style.overflow = 'visible';
+        text.style.textOverflow = 'clip';
+        text.style.whiteSpace = 'normal';
+      }
 
       left.appendChild(input);
       left.appendChild(text);
@@ -1064,7 +1217,6 @@ function generateDynamicFilters() {
   generateCategoryFilters();
 
   wireFilterSearch(filterSearchEstado, document.querySelector('.filter-options[data-filter-type="estado"]'));
-  wireFilterSearch(filterSearchInstrumento, document.querySelector('.filter-options[data-filter-type="instrumento"]'));
   wireFilterSearch(filterSearchInstituicao, document.querySelector('.filter-options[data-filter-type="instituicao"]'));
   wireFilterSearch(filterSearchArea, document.querySelector('.filter-options[data-filter-type="area"]'));
 }
@@ -1159,7 +1311,7 @@ function normalizeSortValue(value) {
 
 function getDefaultSortDirection(sort) {
   const s = normalizeSortValue(sort);
-  return (s === 'atualizado' || s === 'prazo') ? 'desc' : 'asc';
+  return (s === 'atualizado' || s === 'prazo' || s === 'relevancia') ? 'desc' : 'asc';
 }
 
 function syncSortControls() {
@@ -1207,6 +1359,253 @@ function toggleSortDirection() {
   syncSortControls();
 }
 
+function toUniqueStringList(value, { normalize = null } = {}) {
+  const list = Array.isArray(value) ? value : (value == null ? [] : [value]);
+  const seen = new Set();
+  const out = [];
+
+  list.forEach((item) => {
+    const raw = String(item || '').trim();
+    if (!raw) return;
+    const normalizedValue = typeof normalize === 'function' ? normalize(raw) : raw;
+    const clean = String(normalizedValue || '').trim();
+    if (!clean) return;
+    const key = clean.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(clean);
+  });
+
+  return out;
+}
+
+function normalizeAssistantStatusToken(value) {
+  const token = normalizeAssistantQuery(value);
+  if (!token) return '';
+  if (token.includes('encerr') || token.includes('fechad') || token.includes('vencid')) return 'encerrado';
+  if (token.includes('abert') || token.includes('vigent') || token.includes('ativ')) return 'aberto';
+  return '';
+}
+
+function normalizeAssistantDeadlineRange(value) {
+  const token = normalizeAssistantQuery(value).replace(/\s+/g, '_');
+  if (!token) return '';
+  if (
+    token.includes('next_7_days') ||
+    token.includes('next7days') ||
+    token.includes('this_week') ||
+    token.includes('esta_semana') ||
+    token.includes('nesta_semana') ||
+    token.includes('semana')
+  ) {
+    return 'next_7_days';
+  }
+  return '';
+}
+
+function normalizeAssistantSearchPayload(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const payload = raw && typeof raw === 'object' ? raw : {};
+  const rawFilters = payload.filters && typeof payload.filters === 'object' ? payload.filters : {};
+
+  const status = toUniqueStringList(rawFilters.status || rawFilters.statuses, {
+    normalize: normalizeAssistantStatusToken,
+  }).filter(Boolean);
+
+  const deadlineRange = normalizeAssistantDeadlineRange(
+    rawFilters.deadline_range || rawFilters.deadlineRange || rawFilters.deadline
+  );
+
+  const categories = toUniqueStringList(rawFilters.categories || rawFilters.categorias, {
+    normalize: (v) => toCanonicalCategory(v),
+  });
+  const instituicoes = toUniqueStringList(rawFilters.instituicoes || rawFilters.instituicao);
+  const estado = toUniqueStringList(rawFilters.estado || rawFilters.estados, {
+    normalize: (v) => String(v || '').trim().toUpperCase(),
+  });
+  const keywords = toUniqueStringList(rawFilters.keywords || rawFilters.termos || rawFilters.temas, {
+    normalize: (v) => normalizeAssistantQuery(v),
+  });
+
+  const resultIds = toUniqueStringList(payload.result_ids || payload.resultIds || payload.ids, {
+    normalize: (v) => String(v),
+  });
+
+  const fallbackTotal = resultIds.length;
+  const parsedTotal = Number(payload.total);
+  const total = Number.isFinite(parsedTotal) && parsedTotal >= 0 ? parsedTotal : fallbackTotal;
+
+  const summary = String(payload.summary || payload.reply || '').trim();
+  const query = String(payload.query || '').trim();
+  const intent = normalizeAssistantIntent(payload.intent || 'edital_search');
+
+  const hasStructuredFilters =
+    status.length > 0 ||
+    Boolean(deadlineRange) ||
+    categories.length > 0 ||
+    instituicoes.length > 0 ||
+    estado.length > 0 ||
+    keywords.length > 0;
+
+  if (!hasStructuredFilters && resultIds.length === 0) return null;
+
+  return {
+    intent,
+    query,
+    summary,
+    total,
+    result_ids: resultIds,
+    filters: {
+      status,
+      deadline_range: deadlineRange,
+      categories,
+      instituicoes,
+      estado,
+      keywords,
+    },
+  };
+}
+
+function buildAssistantPayloadFromQuery(query, precomputedResults = null) {
+  const q = String(query || '').trim();
+  if (!q) return null;
+
+  const normalizedQuery = normalizeAssistantQuery(q);
+  const keywords = extractChatKeywords(normalizedQuery);
+  const wantsClosed = hasAnyChatHint(normalizedQuery, ['encerrado', 'encerrados', 'fechado', 'fechados']);
+  const wantsOpen = !wantsClosed && hasAnyChatHint(normalizedQuery, CHAT_OPEN_HINTS);
+  const wantsWeek = hasAnyChatHint(normalizedQuery, CHAT_WEEK_HINTS) && hasAnyChatHint(normalizedQuery, CHAT_DEADLINE_HINTS);
+
+  const all = Array.isArray(precomputedResults) ? precomputedResults : searchEditaisForChat(q);
+  const ids = all
+    .map((item) => String(item?.id || '').trim())
+    .filter(Boolean);
+
+  return normalizeAssistantSearchPayload({
+    intent: 'edital_search',
+    query: q,
+    total: all.length,
+    result_ids: ids,
+    filters: {
+      status: wantsOpen ? ['aberto'] : (wantsClosed ? ['encerrado'] : []),
+      deadline_range: wantsWeek ? 'next_7_days' : '',
+      keywords,
+    },
+  });
+}
+
+function buildAssistantFilterLabels(context) {
+  if (!context || !context.filters) return [];
+  const labels = [];
+  const filters = context.filters;
+
+  if (filters.status.includes('aberto')) labels.push('Status: aberto');
+  if (filters.status.includes('encerrado')) labels.push('Status: encerrado');
+  if (filters.deadline_range === 'next_7_days') labels.push('Prazo: próximos 7 dias');
+  if (filters.estado.length) {
+    const estadoLabels = filters.estado.slice(0, 3).map((uf) => formatEstadoLabel(uf));
+    labels.push(`Estado: ${estadoLabels.join(', ')}`);
+  }
+  if (filters.instituicoes.length) labels.push(`Instituição: ${filters.instituicoes.slice(0, 2).join(', ')}`);
+  if (filters.categories.length) labels.push(`Categoria: ${filters.categories.slice(0, 2).join(', ')}`);
+  const hasPrimaryCriteria = labels.length > 0;
+  if (!hasPrimaryCriteria && filters.keywords.length) labels.push(`Tema: ${filters.keywords.slice(0, 3).join(', ')}`);
+  if (!labels.length && context.total > 0) labels.push(`Resultados IA: ${context.total}`);
+
+  return labels;
+}
+
+function clearAssistantPanelContext() {
+  assistantPanelContext = null;
+}
+
+function applyAssistantPayloadToDashboard(rawPayload, { fallbackQuery = '' } = {}) {
+  const normalized = normalizeAssistantSearchPayload(rawPayload) || buildAssistantPayloadFromQuery(fallbackQuery);
+  if (!normalized) return false;
+
+  // Evita divergência com filtros antigos antes de aplicar o contexto da IA.
+  applied = { estado: [], instituicao: [], area: [] };
+  document.querySelectorAll('.filter-options input[type="checkbox"]').forEach((cb) => {
+    cb.checked = false;
+  });
+  kpiFilter = 'all';
+  syncKpiButtons();
+  if (onlyFavoritos) {
+    onlyFavoritos = false;
+    syncSavedToggleUI();
+  }
+
+  assistantPanelContext = {
+    ...normalized,
+    resultIdsSet: new Set((normalized.result_ids || []).map((id) => String(id))),
+    filterLabels: [],
+  };
+  assistantPanelContext.filterLabels = buildAssistantFilterLabels(assistantPanelContext);
+
+  if (searchInput) searchInput.value = '';
+  setSearchVisualState();
+  applyFiltersAndRender({ resetPage: true });
+  return true;
+}
+
+function applyAssistantContextFilters(items) {
+  if (!assistantPanelContext || !Array.isArray(items) || !items.length) return items;
+
+  let scoped = [...items];
+  const context = assistantPanelContext;
+  const filters = context.filters || {};
+  const idSet = context.resultIdsSet instanceof Set ? context.resultIdsSet : new Set();
+
+  if (idSet.size > 0) {
+    scoped = scoped.filter((edital) => idSet.has(String(edital?.id)));
+    return scoped;
+  }
+
+  const status = Array.isArray(filters.status) ? filters.status : [];
+  const onlyOpen = status.includes('aberto') && !status.includes('encerrado');
+  const onlyClosed = status.includes('encerrado') && !status.includes('aberto');
+  if (onlyOpen) scoped = scoped.filter((edital) => isOpenEditalForChat(edital));
+  if (onlyClosed) scoped = scoped.filter((edital) => !isOpenEditalForChat(edital));
+
+  if (filters.deadline_range === 'next_7_days') {
+    scoped = scoped.filter((edital) => isOpenEditalForChat(edital) && isDeadlineWithinNextDays(edital, 7));
+  }
+
+  if (Array.isArray(filters.estado) && filters.estado.length) {
+    const ufSet = new Set(filters.estado.map((uf) => String(uf || '').trim().toUpperCase()).filter(Boolean));
+    scoped = scoped.filter((edital) => ufSet.has(String(edital?.estado || '').trim().toUpperCase()));
+  }
+
+  if (Array.isArray(filters.instituicoes) && filters.instituicoes.length) {
+    const wanted = filters.instituicoes.map((item) => normalizeAssistantQuery(item));
+    scoped = scoped.filter((edital) => {
+      const inst = normalizeAssistantQuery(edital?.instituicao || '');
+      return wanted.some((needle) => inst.includes(needle));
+    });
+  }
+
+  if (Array.isArray(filters.categories) && filters.categories.length) {
+    const wanted = new Set(filters.categories.map((item) => toCanonicalCategory(item)));
+    scoped = scoped.filter((edital) => wanted.has(toCanonicalCategory(edital?.area || '')));
+  }
+
+  if ((!idSet.size) && Array.isArray(filters.keywords) && filters.keywords.length) {
+    scoped = scoped.filter((edital) => {
+      const blob = normalizeAssistantQuery([
+        edital?.titulo,
+        edital?.descricao,
+        edital?.instituicao,
+        edital?.estado,
+        edital?.area,
+        ...(Array.isArray(edital?.tags) ? edital.tags : []),
+      ].filter(Boolean).join(' '));
+      return filters.keywords.some((keyword) => blob.includes(normalizeAssistantQuery(keyword)));
+    });
+  }
+
+  return scoped;
+}
+
 // =========================
 // APLICAÇÃO DE FILTROS
 // =========================
@@ -1248,9 +1647,9 @@ function applyFiltersAndRender({ resetPage } = { resetPage: false }) {
   // 2) Filtros aplicados (checkboxes)
   let filtered = base;
   if (applied.estado.length) filtered = filtered.filter(e => applied.estado.includes(e.estado));
-  if (applied.instrumento.length) filtered = filtered.filter(e => applied.instrumento.includes(e.instrumento));
   if (applied.instituicao.length) filtered = filtered.filter(e => applied.instituicao.includes(e.instituicao));
   if (applied.area.length) filtered = filtered.filter(e => applied.area.includes(toCanonicalCategory(e.area)));
+  filtered = applyAssistantContextFilters(filtered);
   const statsBase = [...filtered];
 
   // 2.4) Recorte por KPI clicado
@@ -1277,8 +1676,19 @@ function applyFiltersAndRender({ resetPage } = { resetPage: false }) {
   } else if (sort === 'estado') {
     filtered = [...filtered].sort((a, b) => collate(a.estado, b.estado) * directionFactor);
   } else if (sort === 'relevancia') {
-    // se veio do Fuse, mantém a ordem do Fuse; se não, mantém a ordem do backend
-    filtered = sortDirection === 'asc' ? [...filtered].reverse() : filtered;
+    const compareRelevance = (a, b) => {
+      const relDiff = normalizeRelevanceScore(a?.relevance_score) - normalizeRelevanceScore(b?.relevance_score);
+      if (relDiff !== 0) return relDiff;
+
+      const highlightDiff = (a?.is_highlighted ? 1 : 0) - (b?.is_highlighted ? 1 : 0);
+      if (highlightDiff !== 0) return highlightDiff;
+
+      const openDiff = (isClosedEdital(a) ? 0 : 1) - (isClosedEdital(b) ? 0 : 1);
+      if (openDiff !== 0) return openDiff;
+
+      return collate(a?.titulo, b?.titulo) * -1;
+    };
+    filtered = [...filtered].sort((a, b) => compareRelevance(a, b) * directionFactor);
   } else {
     // fallback
     filtered = filtered;
@@ -1371,6 +1781,7 @@ function buildEmptyState({ total, termo }) {
 }
 
 function isClosedEdital(edital) {
+  if (typeof edital?.is_open === 'boolean') return !edital.is_open;
   const t = parseAnyDateToTime(edital?.data_fechamento);
   if (t === null) return false;
   const d = new Date(t);
@@ -1612,6 +2023,9 @@ const doLogout = async () => {
   // busca global (aplica instantâneo)
   if (searchInput) {
     searchInput.addEventListener('input', () => {
+      if (assistantPanelContext && String(searchInput.value || '').trim()) {
+        clearAssistantPanelContext();
+      }
       setSearchVisualState();
       applyFiltersAndRender({ resetPage: true });
     });
@@ -1671,7 +2085,6 @@ const doLogout = async () => {
     applyFiltersBtn.addEventListener('click', () => {
       applied = {
         estado: readSelected('estado'),
-        instrumento: readSelected('instrumento'),
         instituicao: readSelected('instituicao'),
         area: readSelected('area'),
       };
@@ -1815,8 +2228,14 @@ const doLogout = async () => {
         chatState = null;
         updateChatHeader();
         const q = btn.getAttribute('data-query') || '';
-        if (searchInput) searchInput.value = q;
-        applyFiltersAndRender({ resetPage: true });
+        const payload = btn._chatPayload || null;
+        const appliedFromChat = applyAssistantPayloadToDashboard(payload, { fallbackQuery: q });
+        if (!appliedFromChat) {
+          const normalized = normalizeAssistantQuery(q);
+          const fallbackKeywords = extractChatKeywords(normalized).join(' ');
+          if (searchInput) searchInput.value = fallbackKeywords;
+          applyFiltersAndRender({ resetPage: true });
+        }
         window.scrollTo({ top: 0, behavior: 'smooth' });
         setChatOpen(false);
         return;
@@ -1963,8 +2382,25 @@ function extractFileNameFromUrl(url) {
 }
 
 function getModalStatusChip(edital) {
-  if (isClosedEdital(edital)) return '<span class="status-chip status-chip--closed">Encerrado</span>';
-  return '<span class="status-chip status-chip--open">Aberto</span>';
+  const chips = [];
+  if (edital?.is_highlighted) {
+    chips.push('<span class="status-chip status-chip--highlight">Em destaque</span>');
+  }
+  if (isClosedEdital(edital)) chips.push('<span class="status-chip status-chip--closed">Encerrado</span>');
+  else chips.push('<span class="status-chip status-chip--open">Aberto</span>');
+  return chips.join('');
+}
+
+function isNotInformedLabel(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return (
+    !normalized ||
+    normalized === 'não informado' ||
+    normalized === 'nao informado' ||
+    normalized === 'não informada' ||
+    normalized === 'nao informada' ||
+    normalized === 'n/a'
+  );
 }
 
 function openModal(edital) {
@@ -1977,7 +2413,7 @@ function openModal(edital) {
   const rawTags = [edital.area, ...(Array.isArray(edital.tags) ? edital.tags : [])];
   for (const t of rawTags) {
     const clean = String(t || '').trim();
-    if (!clean || clean.toLowerCase() === 'geral') continue;
+    if (!clean || clean.toLowerCase() === 'geral' || isNotInformedLabel(clean)) continue;
     const key = clean.toLowerCase();
     if (seenTags.has(key)) continue;
     seenTags.add(key);
@@ -1986,6 +2422,11 @@ function openModal(edital) {
 
   const tagsHtml = uniqueTags.length
     ? `<div class="modal-tags">${uniqueTags.map(t => `<span class="pill">${escapeHtml(t)}</span>`).join('')}</div>`
+    : '';
+
+  const estadoTopTag = String(edital.estado || '').trim();
+  const estadoTopTagHtml = estadoTopTag && !isNotInformedLabel(estadoTopTag)
+    ? `<span class="pill gray">${escapeHtml(estadoTopTag)}</span>`
     : '';
 
   const files = (Array.isArray(edital.arquivos) ? edital.arquivos : [])
@@ -2053,8 +2494,7 @@ function openModal(edital) {
           <div class="modal-kicker">${escapeHtml(edital.instituicao || 'Instituição não informada')}</div>
           <div class="modal-status-row">
             ${getModalStatusChip(edital)}
-            <span class="pill gray">${escapeHtml(edital.estado || 'BR')}</span>
-            <span class="pill gray">${escapeHtml(edital.instrumento || 'Instrumento não informado')}</span>
+            ${estadoTopTagHtml}
           </div>
         </div>
       </div>
@@ -2091,7 +2531,6 @@ function openModal(edital) {
     <div class="modal-details">
       <div class="modal-detail-row"><strong>Instituição:</strong> <span>${escapeHtml(edital.instituicao || 'Não informada')}</span></div>
       <div class="modal-detail-row"><strong>Estado:</strong> <span>${escapeHtml(edital.estado || 'Não informado')}</span></div>
-      <div class="modal-detail-row"><strong>Instrumento:</strong> <span>${escapeHtml(edital.instrumento || 'Não informado')}</span></div>
       <div class="modal-detail-row"><strong>Categoria:</strong> <span>${escapeHtml(edital.area || 'Não informada')}</span></div>
     </div>
 
@@ -2100,7 +2539,7 @@ function openModal(edital) {
     <div class="edital-ai-cta">
       <div class="cta-text">
         <strong>Converse com a IA sobre este edital</strong>
-        <span>Pergunte sobre prazos, documentos, publico-alvo e proximos passos.</span>
+        <span>Pergunte sobre prazos, documentos, público-alvo e próximos passos.</span>
       </div>
       <button class="btn btn-primary" type="button" id="talkEditalBtn">
         <i class="fas fa-robot"></i> Falar com a IA
@@ -2114,7 +2553,7 @@ function openModal(edital) {
   if (copyBtn) {
     copyBtn.addEventListener('click', () => {
       if (!shareLink) {
-        showToast('Link publico indisponivel para este edital.', 'error');
+        showToast('Link público indisponível para este edital.', 'error');
         return;
       }
       navigator.clipboard.writeText(shareLink)
@@ -2470,12 +2909,42 @@ const CHAT_WEEK_HINTS = [
   'semana', 'esta semana', 'nesta semana', 'proxima semana', 'próxima semana', '7 dias', 'sete dias',
 ];
 
-function shouldOfferEditaisOptions(answerText) {
-  const t = String(answerText || '').toLowerCase();
-  if (!t) return false;
-  // cobre: "Encontrei estes editais", "Encontrei 3 edital(is)", "Encontrei esses editais"
-  return t.includes('encontrei') && (t.includes('edital') || t.includes('editais'));
-}
+const CHAT_GREETING_HINTS = [
+  'oi', 'ola', 'olá', 'opa', 'e ai', 'e aí', 'eae', 'bom dia', 'boa tarde', 'boa noite', 'salve',
+];
+
+const CHAT_SMALL_TALK_HINTS = [
+  'tudo bem', 'como voce esta', 'como você está', 'como vai', 'obrigado', 'obrigada', 'valeu',
+];
+
+const CHAT_HELP_HINTS = [
+  'o que voce pode', 'o que você pode', 'o que vc pode', 'como funciona', 'como usar', 'como eu uso',
+  'como filtro', 'como filtrar', 'filtro', 'filtros', 'ajuda', 'onde vejo', 'documento', 'documentos',
+  'anexo', 'anexos', 'dashboard', 'painel', 'portal', 'plataforma',
+];
+
+const CHAT_LISTING_HINTS = [
+  'quais', 'mostre', 'listar', 'liste', 'busque', 'buscar', 'procure', 'encontre',
+  'tem edital', 'tem editais', 'oportunidade', 'oportunidades',
+];
+
+const CHAT_REFINE_HINTS = [
+  'quero edital', 'quero editais', 'quero buscar', 'quero buscar algo',
+  'me mostra oportunidade', 'me mostra oportunidades', 'tem alguma oportunidade',
+  'tem alguma coisa', 'preciso de ajuda com edital', 'preciso de edital',
+  'tem edital', 'tem editais',
+];
+
+const CHAT_PLATFORM_HINTS = [
+  'edital', 'editais', 'oportunidade', 'oportunidades', 'prazo', 'prazos', 'instituicao', 'instituição',
+  'estado', 'categoria', 'filtro', 'filtros', 'documento', 'documentos', 'anexo', 'anexos',
+  'dashboard', 'painel', 'portal', 'plataforma', 'athos', 'ia',
+];
+
+const CHAT_GENERIC_QUERY_KEYWORDS = new Set([
+  'algum', 'alguma', 'coisa', 'coisas', 'oportunidade', 'oportunidades',
+  'buscar', 'busca', 'procura', 'procurar', 'mostrar', 'mostre', 'quero', 'tem', 'algo', 'qualquer',
+]);
 
 function normalizeAssistantQuery(value) {
   return String(value || '')
@@ -2494,11 +2963,175 @@ function hasAnyChatHint(normalizedQuery, hints) {
 
 function extractChatKeywords(normalizedQuery) {
   if (!normalizedQuery) return [];
+  const seen = new Set();
   return normalizedQuery
     .split(/\s+/)
     .map((t) => t.trim())
     .filter(Boolean)
-    .filter((token) => token.length >= 3 && !CHAT_QUERY_STOPWORDS.has(token));
+    .filter((token) => token.length >= 3 && !CHAT_QUERY_STOPWORDS.has(token))
+    .filter((token) => {
+      if (seen.has(token)) return false;
+      seen.add(token);
+      return true;
+    });
+}
+
+function normalizeAssistantIntent(value) {
+  const token = normalizeAssistantQuery(value || '');
+  if (!token) return 'unknown';
+  if (token === 'search_edital') return 'edital_search';
+  return token;
+}
+
+function hasSpecificChatKeywords(keywords) {
+  if (!Array.isArray(keywords) || !keywords.length) return false;
+  return keywords.some((token) => !CHAT_GENERIC_QUERY_KEYWORDS.has(String(token || '').trim()));
+}
+
+function messageHasAnyPhrase(normalizedQuery, phrases) {
+  if (!normalizedQuery || !Array.isArray(phrases) || !phrases.length) return false;
+  return phrases.some((phrase) => normalizedQuery.includes(normalizeAssistantQuery(phrase)));
+}
+
+function classifyAssistantIntent(question) {
+  const normalizedQuery = normalizeAssistantQuery(question);
+  if (!normalizedQuery) return 'unknown';
+
+  if (messageHasAnyPhrase(normalizedQuery, CHAT_GREETING_HINTS) || /^(oi|ola|opa|e ai|eae|bom dia|boa tarde|boa noite)\b/.test(normalizedQuery)) {
+    return 'greeting';
+  }
+
+  if (messageHasAnyPhrase(normalizedQuery, CHAT_SMALL_TALK_HINTS)) {
+    return 'small_talk';
+  }
+
+  if (messageHasAnyPhrase(normalizedQuery, CHAT_HELP_HINTS)) {
+    return 'help_intent';
+  }
+
+  const wantsClosed = hasAnyChatHint(normalizedQuery, ['encerrado', 'encerrados', 'fechado', 'fechados', 'vencido', 'expirado']);
+  const wantsOpen = !wantsClosed && hasAnyChatHint(normalizedQuery, CHAT_OPEN_HINTS);
+  const wantsWeek = hasAnyChatHint(normalizedQuery, CHAT_WEEK_HINTS) && hasAnyChatHint(normalizedQuery, CHAT_DEADLINE_HINTS);
+  const keywords = extractChatKeywords(normalizedQuery);
+  const hasStructuredCriteria = hasSpecificChatKeywords(keywords) || wantsOpen || wantsClosed || wantsWeek;
+  const hasPlatformScope = messageHasAnyPhrase(normalizedQuery, CHAT_PLATFORM_HINTS);
+  const isListingRequest = messageHasAnyPhrase(normalizedQuery, CHAT_LISTING_HINTS);
+
+  if ((wantsOpen || wantsClosed || wantsWeek) && (hasPlatformScope || hasStructuredCriteria)) {
+    return 'edital_search';
+  }
+  if (isListingRequest && hasStructuredCriteria) {
+    return 'edital_search';
+  }
+  if (hasPlatformScope && hasStructuredCriteria) {
+    return 'edital_search';
+  }
+  if (messageHasAnyPhrase(normalizedQuery, CHAT_REFINE_HINTS) && !hasStructuredCriteria) {
+    return 'refine_search';
+  }
+  if (!hasPlatformScope) {
+    return normalizedQuery.split(' ').length <= 1 ? 'unknown' : 'out_of_scope';
+  }
+  if (hasPlatformScope && !hasStructuredCriteria) {
+    return 'refine_search';
+  }
+  return 'unknown';
+}
+
+function buildLocalHelpReply(normalizedQuery) {
+  if (messageHasAnyPhrase(normalizedQuery, ['filtro', 'filtrar', 'ordenar', 'busca', 'buscar'])) {
+    return 'No dashboard, use busca + filtros laterais + ordenação para chegar nos editais mais relevantes.';
+  }
+  if (messageHasAnyPhrase(normalizedQuery, ['documento', 'documentos', 'anexo', 'anexos'])) {
+    return 'Abra um edital para ver anexos e documentos disponíveis no card detalhado.';
+  }
+  if (messageHasAnyPhrase(normalizedQuery, ['perfil', 'conta', 'preferencia', 'preferencias'])) {
+    return 'No Perfil, você atualiza seus dados e preferências de uso da plataforma.';
+  }
+  return 'Posso te ajudar a encontrar editais por tema, prazo, estado, instituição e categoria, além de orientar no uso dos filtros e da navegação do portal.';
+}
+
+function buildLocalAssistantOutcome(question) {
+  const q = String(question || '').trim();
+  const normalizedQuery = normalizeAssistantQuery(q);
+  const intent = classifyAssistantIntent(q);
+
+  if (intent === 'greeting' || intent === 'small_talk') {
+    return {
+      intent,
+      shouldSearch: false,
+      reply: 'Oi! Posso te ajudar a encontrar editais por tema, prazo, estado ou instituição.',
+      total: 0,
+    };
+  }
+
+  if (intent === 'help_intent') {
+    return {
+      intent,
+      shouldSearch: false,
+      reply: buildLocalHelpReply(normalizedQuery),
+      total: 0,
+    };
+  }
+
+  if (intent === 'refine_search') {
+    return {
+      intent,
+      shouldSearch: false,
+      reply: 'Claro. Me diga um critério para refinar: tema, estado, instituição, categoria ou prazo.',
+      total: 0,
+    };
+  }
+
+  if (intent === 'out_of_scope') {
+    return {
+      intent,
+      shouldSearch: false,
+      reply: 'Sou focada no portal de editais. Posso te ajudar com busca de oportunidades, filtros, prazos, documentos e navegação da plataforma.',
+      total: 0,
+    };
+  }
+
+  if (intent !== 'edital_search') {
+    return {
+      intent: 'unknown',
+      shouldSearch: false,
+      reply: 'Não entendi bem. Quer buscar por tema, estado, instituição, categoria ou prazo?',
+      total: 0,
+    };
+  }
+
+  const matches = searchEditaisForChat(q);
+  const total = matches.length;
+  if (total === 0) {
+    return {
+      intent,
+      shouldSearch: true,
+      reply: 'Não encontrei editais com esse recorte. Tente ajustar por tema, instituição, estado ou prazo.',
+      total,
+    };
+  }
+
+  const normalized = normalizeAssistantQuery(q);
+  const wantsClosed = hasAnyChatHint(normalized, ['encerrado', 'encerrados', 'fechado', 'fechados', 'vencido', 'expirado']);
+  const wantsOpen = !wantsClosed && hasAnyChatHint(normalized, CHAT_OPEN_HINTS);
+  const wantsWeek = hasAnyChatHint(normalized, CHAT_WEEK_HINTS) && hasAnyChatHint(normalized, CHAT_DEADLINE_HINTS);
+
+  let reply = `Encontrei ${total} edital(is) relacionado(s) ao seu pedido.`;
+  if (wantsWeek) {
+    reply = `Encontrei ${total} edital(is) em aberto com prazo nos próximos 7 dias.`;
+  } else if (wantsOpen) {
+    reply = `Encontrei ${total} edital(is) em aberto.`;
+  } else if (wantsClosed) {
+    reply = `Encontrei ${total} edital(is) encerrado(s).`;
+  }
+
+  return {
+    intent,
+    shouldSearch: true,
+    reply,
+    total,
+  };
 }
 
 function formatChatDate(value) {
@@ -2516,6 +3149,7 @@ function parseChatDeadline(edital) {
 
 function isOpenEditalForChat(edital) {
   if (!edital) return false;
+  if (typeof edital.is_open === 'boolean') return edital.is_open;
   if (edital.fluxo_continuo === true) return true;
 
   const deadline = parseChatDeadline(edital);
@@ -2556,6 +3190,9 @@ function sortEditaisForChat(items, { prioritizeOpen = false, prioritizeWeek = fa
       const bo = isOpenEditalForChat(b) ? 0 : 1;
       if (ao !== bo) return ao - bo;
     }
+
+    const relevanceDiff = normalizeRelevanceScore(b?.relevance_score) - normalizeRelevanceScore(a?.relevance_score);
+    if (relevanceDiff !== 0) return relevanceDiff;
 
     if (da === null && db === null) return 0;
     if (da === null) return 1;
@@ -2644,9 +3281,11 @@ function normalizeBackendChatOptions(rawOptions) {
     const instituicao = String(opt.instituicao || opt.instituição || '').trim();
     const estado = String(opt.estado || '').trim();
     const dataFechamento = opt.data_fechamento || opt.prazo || opt.deadline || null;
+    const isHighlighted = !!opt.is_highlighted;
     const prazoLabel = dataFechamento ? formatChatDate(dataFechamento) : '';
 
     const metaParts = [];
+    if (isHighlighted) metaParts.push('Em destaque');
     if (instituicao) metaParts.push(instituicao);
     if (estado) metaParts.push(estado);
     if (prazoLabel) metaParts.push(`Até ${prazoLabel}`);
@@ -2662,30 +3301,37 @@ function normalizeBackendChatOptions(rawOptions) {
   return out;
 }
 
-function attachEditaisOptions(msgEl, query, rawOptions = null) {
+function attachEditaisOptions(msgEl, query, rawOptions = null, rawStructuredPayload = null) {
   if (!msgEl) return;
 
+  const structuredPayload = normalizeAssistantSearchPayload(rawStructuredPayload);
   const fromBackend = normalizeBackendChatOptions(rawOptions);
   const hasBackendOptions = fromBackend.length > 0;
   let options = [];
 
   if (hasBackendOptions) {
+    const panelPayload = structuredPayload || buildAssistantPayloadFromQuery(query);
+    const panelTotal = Number(panelPayload?.total) > 0 ? Number(panelPayload.total) : fromBackend.length;
     options = fromBackend.slice(0, 5);
-    if (fromBackend.length > options.length) {
+    if (panelTotal > options.length) {
       options.push({
         action: 'view_all',
         query,
-        title: `Ver todos no painel (${fromBackend.length})`,
-        meta: 'Aplica a busca no Dashboard',
+        title: `Ver todos no painel (${panelTotal})`,
+        meta: 'Aplicar filtros da IA no Dashboard',
+        payload: panelPayload,
       });
     }
   } else {
     const all = searchEditaisForChat(query);
     if (!all.length) return;
+    const panelPayload = structuredPayload || buildAssistantPayloadFromQuery(query, all);
+    const panelTotal = Number(panelPayload?.total) > 0 ? Number(panelPayload.total) : all.length;
 
     const top = all.slice(0, 5);
     options = top.map((e) => {
       const metaParts = [];
+      if (e?.is_highlighted) metaParts.push('Em destaque');
       if (e.instituicao) metaParts.push(e.instituicao);
       if (e.estado) metaParts.push(e.estado);
       if (e.data_fechamento) metaParts.push(`Até ${formatChatDate(e.data_fechamento)}`);
@@ -2703,8 +3349,9 @@ function attachEditaisOptions(msgEl, query, rawOptions = null) {
       options.push({
         action: 'view_all',
         query,
-        title: `Ver todos no painel (${all.length})`,
-        meta: 'Aplica a busca no Dashboard',
+        title: `Ver todos no painel (${panelTotal})`,
+        meta: 'Aplicar filtros da IA no Dashboard',
+        payload: panelPayload,
       });
     }
   }
@@ -2726,6 +3373,7 @@ function attachEditaisOptions(msgEl, query, rawOptions = null) {
 
     if (opt.id != null) btn.setAttribute('data-edital-id', String(opt.id));
     if (opt.query) btn.setAttribute('data-query', String(opt.query));
+    if (opt.payload && typeof opt.payload === 'object') btn._chatPayload = opt.payload;
 
     const title = truncateText(opt.title, 70);
     const meta = opt.meta ? truncateText(opt.meta, 92) : '';
@@ -2743,50 +3391,40 @@ function attachEditaisOptions(msgEl, query, rawOptions = null) {
 }
 
 
-function localAssistantAnswer(question) {
-  const q = String(question || '').trim();
-  const qLower = q.toLowerCase();
+function resolveBackendSearchDecision({ data, question, backendOptions, backendStructuredPayload }) {
+  const normalizedIntent = normalizeAssistantIntent(
+    data?.intent || backendStructuredPayload?.intent || ''
+  );
+  const localIntent = classifyAssistantIntent(question);
 
-  // Conversa humana básica (porque sim, somos mamíferos sociais)
-  if (/^(oi|ol[áa]|eae|ea[íi]|bom dia|boa tarde|boa noite)\b/.test(qLower)) {
-    return 'Oi! Me manda um tema (ex: inovação, saúde, educação, agricultura) que eu te listo os editais mais próximos.';
+  const explicitShouldSearch = (typeof data?.should_search === 'boolean') ? data.should_search : null;
+  let shouldSearch = explicitShouldSearch;
+  const hasBackendOptions = Array.isArray(backendOptions) && backendOptions.length > 0;
+  const payloadTotal = Number(backendStructuredPayload?.total || 0);
+  const payloadIds = Array.isArray(backendStructuredPayload?.result_ids) ? backendStructuredPayload.result_ids : [];
+  const payloadHasData = payloadTotal > 0 || payloadIds.length > 0;
+
+  if (shouldSearch === null) {
+    if (normalizedIntent && normalizedIntent !== 'unknown') {
+      shouldSearch = normalizedIntent === 'edital_search';
+    } else if (hasBackendOptions) {
+      shouldSearch = true;
+    } else if (payloadHasData) {
+      shouldSearch = true;
+    } else {
+      shouldSearch = localIntent === 'edital_search';
+    }
   }
 
-  if (!editaisOriginais || editaisOriginais.length === 0) {
-    return null;
+  const finalIntent = normalizedIntent && normalizedIntent !== 'unknown' ? normalizedIntent : localIntent;
+  if (finalIntent !== 'edital_search') {
+    shouldSearch = false;
   }
 
-  let matches = [];
-  if (fuseInstance && q.length >= 2) {
-    matches = fuseInstance.search(q).map(r => r.item);
-  } else {
-    matches = editaisOriginais.filter(e => {
-      const hay = [
-        e.titulo, e.descricao, e.instituicao, e.estado, e.area,
-        ...(Array.isArray(e.tags) ? e.tags : [])
-      ].map(x => String(x || '').toLowerCase());
-      return hay.some(x => x.includes(qLower));
-    });
-  }
-
-  matches = matches.slice(0, 5);
-
-  if (matches.length === 0) {
-    return `Não achei editais parecidos com "${q}". Tenta outro termo (tema, instituição, estado) — tipo "inovação", "FAPESP", "SP".`;
-  }
-
-  const baseUrl = window.location.origin + window.location.pathname.split('?')[0];
-
-  const linhas = matches.map((e, idx) => {
-    const inst = e.instituicao || 'Instituição';
-    const estado = e.estado || '—';
-    const prazo = e.data_fechamento || 'não informado';
-    const linkParam = e.slug ? `edital=${encodeURIComponent(e.slug)}` : `id=${encodeURIComponent(e.id)}`;
-    const link = `${baseUrl}?${linkParam}`;
-    return `${idx + 1}) ${e.titulo || 'Sem título'}\n   ${inst} • ${estado} • Data final: ${prazo}\n   ${link}`;
-  });
-
-  return `Encontrei ${matches.length} edital(is) que batem com "${q}":\n\n${linhas.join('\n\n')}`;
+  return {
+    intent: finalIntent,
+    shouldSearch: Boolean(shouldSearch),
+  };
 }
 
 async function handleChatSend() {
@@ -2804,10 +3442,11 @@ async function handleChatSend() {
 
   setChatBusy(true);
   const typingMsg = addMessage('digitando...', 'bot', null, { isTyping: true });
+  const contextualEditalId = chatState?.edital_id ?? chatState?.editalId ?? null;
+  const canApplyDashboardSearch = !contextualEditalId;
 
   try {
-    const editalId = chatState?.edital_id ?? chatState?.editalId ?? null;
-    const endpoint = editalId ? `/chat/edital/${encodeURIComponent(editalId)}` : '/chat';
+    const endpoint = contextualEditalId ? `/chat/edital/${encodeURIComponent(contextualEditalId)}` : '/chat';
 
     const { res, data } = await apiFetchJson(endpoint, {
       method: 'POST',
@@ -2817,10 +3456,12 @@ async function handleChatSend() {
     });
 
     if (!res.ok) {
-      // fallback local (não deixa o usuário no vácuo)
-      const local = localAssistantAnswer(question);
-      setMessageText(typingMsg, local || 'O chat está indisponível no momento. Tenta de novo em alguns instantes.');
-      if (shouldOfferEditaisOptions(local)) {
+      const localOutcome = buildLocalAssistantOutcome(question);
+      setMessageText(
+        typingMsg,
+        localOutcome?.reply || 'O chat está indisponível no momento. Tenta de novo em alguns instantes.'
+      );
+      if (canApplyDashboardSearch && localOutcome?.shouldSearch) {
         attachEditaisOptions(typingMsg, question);
       }
       return;
@@ -2838,27 +3479,49 @@ async function handleChatSend() {
       data?._rawText ??
       null;
 
-    // Se o backend vier vazio, responde localmente.
-    const rawText = (answer && String(answer).trim()) ? normalizeBotText(answer) : (localAssistantAnswer(question) || 'Não consegui responder agora.');
+    const localOutcome = buildLocalAssistantOutcome(question);
+    const isLocalNonSearch = localOutcome?.intent !== 'edital_search';
+    const rawText = isLocalNonSearch
+      ? (localOutcome?.reply || 'Não consegui responder agora.')
+      : ((answer && String(answer).trim())
+        ? normalizeBotText(answer)
+        : (localOutcome?.reply || 'Não consegui responder agora.'));
     const extracted = extractEmbeddedSources(rawText);
     const finalText = extracted.text || rawText;
     const finalSources = normalizeSources(data?.sources, extracted.names);
     setMessageText(typingMsg, finalText, finalSources);
 
     const backendOptions = Array.isArray(data?.options) ? data.options : [];
+    const backendStructuredPayload = normalizeAssistantSearchPayload(
+      data?.search_payload ||
+      data?.intent_payload ||
+      data?.searchPayload ||
+      null
+    );
 
-    // Prioriza opções vindas da API; fallback para busca local se não vierem opções.
-    if (backendOptions.length) {
-      attachEditaisOptions(typingMsg, question, backendOptions);
-    } else if (shouldOfferEditaisOptions(finalText)) {
-      attachEditaisOptions(typingMsg, question);
+    const chatDecision = isLocalNonSearch
+      ? { intent: localOutcome?.intent || 'unknown', shouldSearch: false }
+      : resolveBackendSearchDecision({
+        data,
+        question,
+        backendOptions,
+        backendStructuredPayload,
+      });
+
+    if (canApplyDashboardSearch && chatDecision.shouldSearch) {
+      attachEditaisOptions(
+        typingMsg,
+        question,
+        backendOptions.length ? backendOptions : null,
+        backendStructuredPayload
+      );
     }
 
   } catch (e) {
     console.error('Erro no chat:', e);
-    const local = localAssistantAnswer(question);
-    setMessageText(typingMsg, local || 'Deu ruim aqui do meu lado. Tenta de novo em alguns segundos.');
-    if (shouldOfferEditaisOptions(local)) {
+    const localOutcome = buildLocalAssistantOutcome(question);
+    setMessageText(typingMsg, localOutcome?.reply || 'Deu ruim aqui do meu lado. Tenta de novo em alguns segundos.');
+    if (canApplyDashboardSearch && localOutcome?.shouldSearch) {
       attachEditaisOptions(typingMsg, question);
     }
   } finally {

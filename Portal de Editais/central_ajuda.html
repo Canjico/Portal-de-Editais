@@ -1,16 +1,31 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Athos - Central de Ajuda</title>
+  <script>
+    (function () {
+      try {
+        const key = 'athos_theme_preference';
+        const valid = { light: true, dark: true, system: true };
+        let pref = String(localStorage.getItem(key) || 'system').toLowerCase().trim();
+        if (!valid[pref]) pref = 'system';
+        const effective = pref === 'system'
+          ? (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+          : pref;
+        document.documentElement.setAttribute('data-theme-preference', pref);
+        document.documentElement.setAttribute('data-theme', effective);
+      } catch (_) {}
+    })();
+  </script>
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" />
-  <link rel="stylesheet" href="./css/style.css" />
+  <link rel="stylesheet" href="./css/style.css?v=20260317.12" />
 </head>
 
 <body class="app-loading">
@@ -56,11 +71,6 @@
           </button>
         </div>
 
-        <div class="search-wrapper">
-          <i class="fas fa-search"></i>
-          <input type="text" id="helpSearch" placeholder="Buscar na central de ajuda..." autocomplete="off" aria-label="Buscar na central de ajuda" />
-        </div>
-
         <div class="topbar-actions">
           <button class="icon-btn" type="button" aria-label="Notificações">
             <i class="far fa-bell"></i>
@@ -79,10 +89,6 @@
             <div class="help-hero-icon"><i class="fas fa-circle-question"></i></div>
             <h1>Como podemos ajudar hoje?</h1>
             <p>Busque artigos, tutoriais e respostas rápidas para usar o Athos com confiança.</p>
-            <div class="help-hero-search">
-              <i class="fas fa-search"></i>
-              <input type="text" id="helpSearch2" placeholder="Ex.: como filtrar por área e prazo" />
-            </div>
             <div class="help-hero-tags">
               <span class="pill gray">Primeiros passos</span>
               <span class="pill gray">Filtros avançados</span>
@@ -229,8 +235,8 @@
               <h3>Suporte especializado</h3>
               <p>Nosso time responde dúvidas técnicas, operacionais e de segurança da conta.</p>
               <div class="help-support-actions">
-                <a class="help-support-btn" href="mailto:suporte@athos.com.br"><i class="fas fa-envelope"></i> suporte@athos.com.br</a>
-                <button class="help-support-btn" type="button"><i class="fas fa-ticket"></i> Abrir chamado</button>
+                <a class="help-support-btn" href="mailto:operacoes@atimus.agr.br"><i class="fas fa-envelope"></i> operacoes@atimus.agr.br</a>
+                <a class="help-support-btn" href="https://wa.me/5519998815155?text=Quero%20falar%20sobre%20a%20Athos" target="_blank" rel="noopener noreferrer"><i class="fas fa-ticket"></i> Abrir chamado</a>
               </div>
               <small class="help-support-note">Atendimento de segunda a sexta, das 9h às 18h (BRT).</small>
             </div>
@@ -272,6 +278,7 @@
 
   <div class="mobile-sidebar-backdrop" id="mobileSidebarBackdrop" aria-hidden="true"></div>
 
+  <script src="./js/theme-init.js?v=20260317.2"></script>
   <script src="./js/consent.js"></script>
   <script src="./js/presence.js?v=20260309.1"></script>
 
@@ -460,11 +467,57 @@
         });
       }
 
+      function showHelpToast(message) {
+        const text = String(message || '').trim();
+        if (!text) return;
+
+        const existing = document.querySelector('.toast.help-video-toast');
+        if (existing) existing.remove();
+
+        const toast = document.createElement('div');
+        toast.className = 'toast help-video-toast';
+        toast.textContent = text;
+        document.body.appendChild(toast);
+
+        requestAnimationFrame(() => toast.classList.add('show'));
+
+        window.setTimeout(() => {
+          toast.classList.remove('show');
+          window.setTimeout(() => toast.remove(), 220);
+        }, 2200);
+      }
+
+      function setupVideoComingSoon() {
+        const videoRows = Array.from(document.querySelectorAll('.video-row'));
+        if (!videoRows.length) return;
+
+        const notify = () => {
+          showHelpToast('Os videos estarao disponiveis em breve.');
+        };
+
+        videoRows.forEach((row) => {
+          row.setAttribute('role', 'button');
+          row.setAttribute('tabindex', '0');
+          row.setAttribute('aria-label', 'Video em breve');
+
+          row.addEventListener('click', notify);
+          row.addEventListener('keydown', (event) => {
+            if (event.key !== 'Enter' && event.key !== ' ') return;
+            event.preventDefault();
+            notify();
+          });
+        });
+      }
+
       const init = async () => {
         try {
           bootstrapAuthFromUrl();
           const me = await checkAuth();
           if(!me) return;
+
+          if (window.AthosTheme?.setPreference && me?.themePreference) {
+            window.AthosTheme.setPreference(me.themePreference);
+          }
 
           hydrateSidebarUser(me);
 
@@ -506,16 +559,8 @@
           const btn = document.getElementById('logoutIconBtn');
           if(btn) btn.addEventListener('click', doLogout);
 
-          const sync = () => {
-            const a = document.getElementById('helpSearch');
-            const b = document.getElementById('helpSearch2');
-            if(!a || !b) return;
-            const handler = (src, dst) => () => dst.value = src.value;
-            a.addEventListener('input', handler(a,b));
-            b.addEventListener('input', handler(b,a));
-          };
-          sync();
           setupFaqAccordion();
+          setupVideoComingSoon();
 
           const toggle = document.getElementById('sidebarToggle');
           const sidebar = document.getElementById('appSidebar');

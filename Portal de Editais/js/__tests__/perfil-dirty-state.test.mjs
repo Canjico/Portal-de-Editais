@@ -13,6 +13,7 @@ const INITIAL_FORM = {
   cargo: 'Dev Full Stack',
   nomeEmpresa: 'Atimus',
   cnpj: '12.345.678/0001-90',
+  estadoUf: 'SP',
   setorEmpresa: 'Tecnologia da Informacao',
   setorAtuacao: 'Software',
   areasInteresse: ['Saude', 'Educacao'],
@@ -20,6 +21,7 @@ const INITIAL_FORM = {
   prefPrazo: false,
   prefRelatorio: true,
   prefSistema: false,
+  themePreference: 'dark',
 };
 
 test('render inicial nao exibe alerta de alteracoes nao salvas', () => {

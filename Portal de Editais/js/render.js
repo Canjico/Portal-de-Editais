@@ -17,13 +17,13 @@
       .filter((tag) => {
         if (!tag) return false;
         const t = String(tag).trim().toLowerCase();
-        return t && t !== areaLower && t !== estadoLower;
+        return t && t !== areaLower && t !== estadoLower && !isNotInformedTag(t);
       })
       .slice(0, 3);
 
     const tagsHtml = [
-      edital.area ? `<span class="pill">${escapeHtml(edital.area)}</span>` : '',
-      edital.estado ? `<span class="pill gray">${escapeHtml(edital.estado)}</span>` : '',
+      !isNotInformedTag(edital.area) ? `<span class="pill">${escapeHtml(edital.area)}</span>` : '',
+      !isNotInformedTag(edital.estado) ? `<span class="pill gray">${escapeHtml(edital.estado)}</span>` : '',
       ...tagsExtras.map((t) => `<span class="pill gray">${escapeHtml(t)}</span>`),
     ].filter(Boolean).join('');
 
@@ -32,7 +32,7 @@
     const instituicao = edital.instituicao || 'Instituição';
     const logoSrc = resolveLogoSrc(edital.icone);
     const dataFinal = edital.data_fechamento ? formatDisplayDate(edital.data_fechamento) : 'Não informado';
-    const statusBadges = buildStatusBadges(edital.data_fechamento);
+    const statusBadges = buildStatusBadges(edital);
     const statusHtml = statusBadges
       .map((badge) => {
         const styleAttr = badge.style ? ` style="${escapeAttr(badge.style)}"` : '';
@@ -103,7 +103,7 @@
       e.stopPropagation();
       const link = btn.getAttribute('data-share');
       if (!link) {
-        notify('Link publico indisponivel para este edital.', 'error');
+        notify('Link público indisponível para este edital.', 'error');
         return;
       }
       navigator.clipboard.writeText(link)
@@ -154,6 +154,18 @@ function notify(message, type = 'info') {
   }, 2000);
 }
 
+function isNotInformedTag(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return (
+    !normalized ||
+    normalized === 'não informado' ||
+    normalized === 'nao informado' ||
+    normalized === 'não informada' ||
+    normalized === 'nao informada' ||
+    normalized === 'n/a'
+  );
+}
+
 function formatDisplayDate(dateString) {
   const t = parseAnyDateToTime(dateString);
   if (t === null) return String(dateString || 'Não informado');
@@ -197,23 +209,37 @@ function resolveLogoSrc(value) {
   return raw;
 }
 
-function buildStatusBadges(dataFechamento) {
+function buildStatusBadges(edital) {
+  const dataFechamento = edital?.data_fechamento ?? edital;
+  const highlighted = Boolean(edital?.is_highlighted);
+  const explicitOpen = typeof edital?.is_open === 'boolean' ? edital.is_open : null;
   const COUNTDOWN_WINDOW_DAYS = 30;
   const t = parseAnyDateToTime(dataFechamento);
+  const badges = [];
+
+  if (highlighted) {
+    badges.push({ label: 'Em destaque', className: 'status-chip status-chip--highlight' });
+  }
+
+  if (explicitOpen === false) {
+    return [{ label: 'Encerrado', className: 'status-chip status-chip--closed' }];
+  }
 
   if (t === null) {
-    return [{ label: 'Aberto', className: 'status-chip status-chip--open' }];
+    badges.push({ label: 'Aberto', className: 'status-chip status-chip--open' });
+    return badges;
   }
 
   const target = toStartOfDayTime(t);
   const today = toStartOfDayTime(Date.now());
   const diffDays = Math.floor((target - today) / 86400000);
 
-  if (diffDays < 0) {
+  if (diffDays < 0 && explicitOpen !== true) {
     return [{ label: 'Encerrado', className: 'status-chip status-chip--closed' }];
   }
 
-  const badges = [{ label: 'Aberto', className: 'status-chip status-chip--open' }];
+  badges.push({ label: 'Aberto', className: 'status-chip status-chip--open' });
+  if (diffDays < 0) return badges;
   if (diffDays > COUNTDOWN_WINDOW_DAYS) return badges;
 
   const urgencyTone = buildUrgencyTone(diffDays, COUNTDOWN_WINDOW_DAYS);

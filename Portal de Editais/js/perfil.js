@@ -30,6 +30,10 @@ const securityChangePasswordBtn = document.getElementById('securityChangePasswor
 const securityLogoutOthersBtn = document.getElementById('securityLogoutOthersBtn');
 const securityRefreshSessionsBtn = document.getElementById('securityRefreshSessionsBtn');
 const security2faEnable = document.getElementById('security2faEnable');
+const securityDeleteAccountBtn = document.getElementById('securityDeleteAccountBtn');
+const accountDeleteOverlay = document.getElementById('accountDeleteOverlay');
+const accountDeleteCancelBtn = document.getElementById('accountDeleteCancelBtn');
+const accountDeleteConfirmBtn = document.getElementById('accountDeleteConfirmBtn');
 const customSelectModels = [];
 let customSelectGlobalHandlersBound = false;
 let baselineForm = null;
@@ -53,8 +57,10 @@ const TRACKED_INPUT_IDS = [
   'cargo',
   'nomeEmpresa',
   'cnpj',
+  'estadoUf',
   'setorEmpresa',
   'setorAtuacao',
+  'prefTheme',
 ];
 
 const TRACKED_CHECKBOX_IDS = [
@@ -63,6 +69,13 @@ const TRACKED_CHECKBOX_IDS = [
   'prefRelatorio',
   'prefSistema',
 ];
+
+const THEME_PREFERENCES = new Set(['system', 'light', 'dark']);
+const UF_CODES = new Set([
+  'AC', 'AL', 'AP', 'AM', 'BA', 'CE', 'DF', 'ES', 'GO',
+  'MA', 'MT', 'MS', 'MG', 'PA', 'PB', 'PR', 'PE', 'PI',
+  'RJ', 'RN', 'RS', 'RO', 'RR', 'SC', 'SP', 'SE', 'TO',
+]);
 
 document.addEventListener('DOMContentLoaded', init);
 
@@ -80,6 +93,7 @@ function clearTransientSelection(triggerEl = null) {
 async function init() {
   try {
     bootstrapAuthFromUrl();
+    window.AthosTheme?.bootstrap?.();
     const me = await checkAuth();
     if (!me) return;
 
@@ -91,6 +105,7 @@ async function init() {
     syncBaselineSnapshot({ resetInteraction: true });
     updateDirtyState();
     setupSecurityActions();
+    closeDeleteAccountModal();
   } finally {
     markAppReady();
   }
@@ -113,10 +128,15 @@ async function checkAuth() {
       return null;
     }
 
+    if (window.AthosTheme?.setPreference && data?.themePreference) {
+      window.AthosTheme.setPreference(data.themePreference);
+    }
+
     const nome = data?.nome || data?.nome_completo || data?.user?.nome || data?.usuario?.nome;
     const email = data?.email || data?.user?.email || data?.usuario?.email;
     const telefone = data?.celular || data?.telefone || '';
     const cnpj = data?.cnpj || '';
+    const estadoUf = normalizeUf(data?.estadoUf || '');
 
     if (nome) {
       setText('sidebarUserName', nome);
@@ -132,6 +152,7 @@ async function checkAuth() {
     }
     if (telefone) setValue('telefone', telefone);
     if (cnpj) setValue('cnpj', cnpj);
+    if (estadoUf) setValue('estadoUf', estadoUf);
 
     return data && typeof data === 'object' ? data : {};
   } catch (e) {
@@ -194,7 +215,19 @@ function setupUI() {
 
   setupCustomSelects();
 
-const doLogout = async () => {
+  const prefTheme = document.getElementById('prefTheme');
+  if (prefTheme && prefTheme.dataset.themeBound !== '1') {
+    prefTheme.dataset.themeBound = '1';
+    prefTheme.addEventListener('change', () => {
+      const nextTheme = normalizeThemePreference(prefTheme.value);
+      prefTheme.value = nextTheme;
+      if (window.AthosTheme?.setPreference) {
+        window.AthosTheme.setPreference(nextTheme);
+      }
+    });
+  }
+
+  const doLogout = async () => {
     const endpoints = [
       { url: API_BASE + '/logout', method: 'POST' },
       { url: API_BASE + '/auth/logout', method: 'POST' },
@@ -287,6 +320,7 @@ const doLogout = async () => {
     const errors = validateProfileForm(payload);
     if (errors.length > 0) {
       applyFieldValidation(errors);
+      revealFieldForValidation(errors[0].field);
       toast(errors[0].message, 'error');
       return;
     }
@@ -578,6 +612,17 @@ function markAppReady() {
   document.body.classList.remove('app-loading');
 }
 
+function normalizeThemePreference(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  if (raw === 'auto') return 'system';
+  return THEME_PREFERENCES.has(raw) ? raw : 'system';
+}
+
+function normalizeUf(value) {
+  const raw = String(value || '').trim().toUpperCase();
+  return UF_CODES.has(raw) ? raw : '';
+}
+
 function collectForm() {
   const areas = Array.from(document.querySelectorAll('#areasInteresse .chip'))
     .filter((c) => !c.classList.contains('chip-add'))
@@ -592,6 +637,7 @@ function collectForm() {
 
     nomeEmpresa: getValue('nomeEmpresa'),
     cnpj: getValue('cnpj'),
+    estadoUf: normalizeUf(getValue('estadoUf')),
     setorEmpresa: getValue('setorEmpresa'),
     setorAtuacao: getValue('setorAtuacao'),
     areasInteresse: areas,
@@ -600,6 +646,7 @@ function collectForm() {
     prefPrazo: getChecked('prefPrazo'),
     prefRelatorio: getChecked('prefRelatorio'),
     prefSistema: getChecked('prefSistema'),
+    themePreference: normalizeThemePreference(getValue('prefTheme')),
   };
 }
 
@@ -674,6 +721,53 @@ function bindDirtyTracking() {
   }
 }
 
+function openDeleteAccountModal() {
+  if (!accountDeleteOverlay) return;
+  accountDeleteOverlay.hidden = false;
+  document.body.style.overflow = 'hidden';
+}
+
+function closeDeleteAccountModal() {
+  if (!accountDeleteOverlay) return;
+  accountDeleteOverlay.hidden = true;
+  document.body.style.overflow = '';
+}
+
+function clearClientSessionAndRedirect() {
+  try { window.dispatchEvent(new Event('athos:logout')); } catch (_) {}
+  try { localStorage.removeItem('cliente_token'); } catch (_) {}
+  try { sessionStorage.removeItem('cliente_token'); } catch (_) {}
+  window.location.href = LOGIN_URL;
+}
+
+async function deleteOwnAccount() {
+  if (!accountDeleteConfirmBtn) return;
+
+  setButtonLoading(accountDeleteConfirmBtn, true, 'Excluindo...');
+  try {
+    const { res, data } = await apiFetchJson('/cliente/conta', { method: 'DELETE' });
+    if (!res.ok) {
+      if (res.status === 401 || res.status === 403) {
+        clearClientSessionAndRedirect();
+        return;
+      }
+      const msg = (data && typeof data === 'object' && (data.detail || data.msg))
+        ? (data.detail || data.msg)
+        : 'Não foi possível excluir a conta.';
+      throw new Error(msg);
+    }
+
+    closeDeleteAccountModal();
+    toast('Conta excluída com sucesso.', 'success');
+    clearClientSessionAndRedirect();
+  } catch (err) {
+    console.error('Erro ao excluir conta:', err);
+    toast(err?.message || 'Não foi possível excluir a conta.', 'error');
+  } finally {
+    setButtonLoading(accountDeleteConfirmBtn, false);
+  }
+}
+
 function setupSecurityActions() {
   if (securityChangePasswordBtn) {
     securityChangePasswordBtn.addEventListener('click', async () => {
@@ -726,6 +820,38 @@ function setupSecurityActions() {
       toast('Atualização de sessões depende do endpoint de segurança.', 'info');
     });
   }
+
+  if (securityDeleteAccountBtn) {
+    securityDeleteAccountBtn.addEventListener('click', () => {
+      openDeleteAccountModal();
+    });
+  }
+
+  if (accountDeleteCancelBtn) {
+    accountDeleteCancelBtn.addEventListener('click', () => {
+      closeDeleteAccountModal();
+    });
+  }
+
+  if (accountDeleteOverlay) {
+    accountDeleteOverlay.addEventListener('click', (event) => {
+      if (event.target === accountDeleteOverlay) {
+        closeDeleteAccountModal();
+      }
+    });
+  }
+
+  if (accountDeleteConfirmBtn) {
+    accountDeleteConfirmBtn.addEventListener('click', () => {
+      deleteOwnAccount();
+    });
+  }
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && accountDeleteOverlay && !accountDeleteOverlay.hidden) {
+      closeDeleteAccountModal();
+    }
+  });
 }
 
 function hasUnsavedChanges() {
@@ -788,6 +914,7 @@ function validateProfileForm(payload) {
   const nome = normalizeTextValue(payload.nomeCompleto);
   const cnpj = normalizeDigits(payload.cnpj);
   const telefone = normalizeDigits(payload.telefone);
+  const estadoUf = normalizeUf(payload.estadoUf);
 
   if (!nome || nome.length < 3) {
     out.push({ field: 'nomeCompleto', message: 'Informe um nome completo válido.' });
@@ -803,6 +930,10 @@ function validateProfileForm(payload) {
 
   if (telefone && telefone.length < 10) {
     out.push({ field: 'telefone', message: 'Telefone deve conter DDD e número.' });
+  }
+
+  if (!estadoUf) {
+    out.push({ field: 'estadoUf', message: 'Informe o estado principal (UF) para personalizar as recomendações.' });
   }
 
   return out;
@@ -829,6 +960,21 @@ function applyFieldValidation(errors) {
     el.closest('.check')?.classList.add('is-invalid');
     el.closest('.custom-select')?.classList.add('is-invalid');
   });
+}
+
+function revealFieldForValidation(fieldId) {
+  const el = document.getElementById(fieldId);
+  if (!el) return;
+
+  const pane = el.closest('.panel[role="tabpanel"]');
+  if (pane && pane.hidden) {
+    const tabButton = document.querySelector(`.profile-nav-item[data-target="${pane.id}"]`);
+    tabButton?.click();
+  }
+
+  window.setTimeout(() => {
+    try { el.focus({ preventScroll: false }); } catch (_) {}
+  }, 20);
 }
 
 function isDeepEqual(a, b) {
@@ -907,6 +1053,7 @@ function fillProfileForm(data, { syncBaseline = false } = {}) {
     if ('cargo' in profile) setValue('cargo', profile.cargo || '');
     if ('nomeEmpresa' in profile) setValue('nomeEmpresa', profile.nomeEmpresa || '');
     if ('cnpj' in profile) setValue('cnpj', profile.cnpj || '');
+    if ('estadoUf' in profile) setValue('estadoUf', normalizeUf(profile.estadoUf || ''));
     if ('setorEmpresa' in profile) setValue('setorEmpresa', profile.setorEmpresa || '');
     if ('setorAtuacao' in profile) setValue('setorAtuacao', profile.setorAtuacao || '');
 
@@ -916,6 +1063,13 @@ function fillProfileForm(data, { syncBaseline = false } = {}) {
     if ('prefPrazo' in profile) setChecked('prefPrazo', !!profile.prefPrazo);
     if ('prefRelatorio' in profile) setChecked('prefRelatorio', !!profile.prefRelatorio);
     if ('prefSistema' in profile) setChecked('prefSistema', !!profile.prefSistema);
+    if ('themePreference' in profile) {
+      const prefTheme = normalizeThemePreference(profile.themePreference);
+      setValue('prefTheme', prefTheme);
+      if (window.AthosTheme?.setPreference) {
+        window.AthosTheme.setPreference(prefTheme);
+      }
+    }
   } finally {
     isHydratingProfile = false;
     if (syncBaseline) {
