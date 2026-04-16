@@ -9,8 +9,8 @@
       try {
         const key = 'athos_theme_preference';
         const valid = { light: true, dark: true, system: true };
-        let pref = String(localStorage.getItem(key) || 'system').toLowerCase().trim();
-        if (!valid[pref]) pref = 'system';
+        let pref = String(localStorage.getItem(key) || 'light').toLowerCase().trim();
+        if (!valid[pref]) pref = 'light';
         const effective = pref === 'system'
           ? (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
           : pref;
@@ -271,7 +271,13 @@
           </aside>
         </section>
 
-        <footer class="app-footer">&copy; 2026 - desenvolvido pela Atimus</footer>
+        <footer class="app-footer">
+          <span>&copy; 2026 - desenvolvido pela Atimus</span>
+          <span class="app-footer-sep" aria-hidden="true">&bull;</span>
+          <a href="./termos-de-uso">Termos de Uso</a>
+          <span class="app-footer-sep" aria-hidden="true">&bull;</span>
+          <a href="./politica-de-privacidade">Política de Privacidade</a>
+        </footer>
       </main>
     </div>
   </div>
@@ -492,13 +498,13 @@
         if (!videoRows.length) return;
 
         const notify = () => {
-          showHelpToast('Os videos estarao disponiveis em breve.');
+          showHelpToast('Os vídeos estarão disponíveis em breve.');
         };
 
         videoRows.forEach((row) => {
           row.setAttribute('role', 'button');
           row.setAttribute('tabindex', '0');
-          row.setAttribute('aria-label', 'Video em breve');
+          row.setAttribute('aria-label', 'Vídeo em breve');
 
           row.addEventListener('click', notify);
           row.addEventListener('keydown', (event) => {
@@ -516,7 +522,10 @@
           if(!me) return;
 
           if (window.AthosTheme?.setPreference && me?.themePreference) {
-            window.AthosTheme.setPreference(me.themePreference);
+            const nextTheme = window.AthosTheme.resolveProfilePreference
+              ? window.AthosTheme.resolveProfilePreference(me.themePreference)
+              : me.themePreference;
+            window.AthosTheme.setPreference(nextTheme);
           }
 
           hydrateSidebarUser(me);

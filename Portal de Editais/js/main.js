@@ -8,6 +8,38 @@ import {
   buildSearchQueryContext,
   matchesDateIntent,
 } from './search-date-utils.js?v=20260313.1';
+import {
+  appendConversationTurn,
+  clearChatSessionState,
+  clearActiveContextInState,
+  createChatSessionState,
+  ensureChatSessionState,
+  loadChatSessionState,
+  restoreConversationHistory,
+  saveChatSessionState,
+  setActiveEditalContextInState,
+  setPendingTopicExitConfirmation,
+  updateTopicDetection,
+} from './chat-session-state.js?v=20260401.1';
+import {
+  markInitialChatInteraction,
+  prefersReducedMotion,
+  shouldShowInitialChatSuggestions,
+} from './chat-initial-suggestions.js?v=20260401.1';
+import {
+  buildTopicDisambiguationNotice,
+  detectTopicTransition,
+  isExplicitStayCommand,
+} from './chat-topic-detector.js?v=20260401.1';
+import {
+  createDashboardAssistantMemory,
+  runDashboardAssistantSemanticQuery,
+} from './chat-card-semantics.js?v=20260402.1';
+import {
+  dashboardPlanToLegacySearchPayload,
+  normalizeDashboardAssistantPlan,
+} from './chat-dashboard-contract.js?v=20260403.1';
+import { createSingleFlight } from './bootstrap-utils.js?v=20260415.1';
 
 // =========================
 // CONFIGURAÇÕES & SEGURANÇA
@@ -18,7 +50,13 @@ import {
   bootstrapAuthFromUrl,
   buildLoginUrlWithNext,
   apiFetchJson,
-} from './auth.js';
+  isPasswordChangeRequiredPayload,
+  isPasswordChangeRequiredResponse,
+  resolvePasswordChangeRedirectTarget,
+  resolveAuthFailureRedirectTarget,
+  redirectWithAuthGuard,
+} from './auth.js?v=20260416.1';
+import { runDashboardBootstrapFlow } from './bootstrap-flows.js?v=20260416.1';
 
 const APP_BASE_URL = new URL('../', import.meta.url);
 const SHARE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{20,255}$/;
@@ -72,6 +110,11 @@ let currentPage = 1;
 let lastFiltered = [];
 let kpiFilter = 'all';
 let assistantPanelContext = null;
+let assistantSemanticMemory = createDashboardAssistantMemory();
+let bootstrapInitPromise = null;
+let uiEventsBound = false;
+const loadEditaisSingleFlight = createSingleFlight(() => loadEditais());
+const loadFavoritosSingleFlight = createSingleFlight(() => loadFavoritos());
 
 // Filtros aplicados (só mudam quando clicar em "Aplicar filtros")
 let applied = {
@@ -233,55 +276,197 @@ const assistantBackdrop = document.getElementById('assistantBackdrop');
 const ASSISTANT_OVERLAY_BREAKPOINT = '(max-width: 1279px)';
 
 let botIsTyping = false;
-let chatState = null;
+let chatState = createChatSessionState();
+let chatQuickPromptsTransitionCleanup = null;
+
+function persistChatState(nextState = chatState) {
+  chatState = saveChatSessionState(ensureChatSessionState(nextState));
+  return chatState;
+}
+
+function bootstrapChatSessionState() {
+  chatState = loadChatSessionState(window.sessionStorage);
+}
+
+function replayChatSessionHistory() {
+  if (!messageContainer || messageContainer.children.length > 0) return;
+  const history = restoreConversationHistory(chatState);
+  history.forEach((entry) => {
+    const sender = entry?.role === 'assistant' ? 'bot' : 'user';
+    addMessage(entry?.text || '', sender);
+  });
+}
+
+function clearChatQuickPromptsTransitionListener() {
+  if (typeof chatQuickPromptsTransitionCleanup === 'function') {
+    try {
+      chatQuickPromptsTransitionCleanup();
+    } catch (_) {}
+  }
+  chatQuickPromptsTransitionCleanup = null;
+}
+
+function setQuickPromptsCollapsedInstantly() {
+  if (!chatQuickPrompts) return;
+  clearChatQuickPromptsTransitionListener();
+  chatQuickPrompts.classList.remove('is-collapsing');
+  chatQuickPrompts.classList.add('is-collapsed');
+  chatQuickPrompts.hidden = true;
+}
+
+function revealQuickPromptsInstantly() {
+  if (!chatQuickPrompts) return;
+  clearChatQuickPromptsTransitionListener();
+  chatQuickPrompts.hidden = false;
+  chatQuickPrompts.classList.remove('is-collapsing');
+  chatQuickPrompts.classList.remove('is-collapsed');
+}
+
+function collapseQuickPromptsWithAnimation() {
+  if (!chatQuickPrompts) return;
+  if (chatQuickPrompts.hidden || chatQuickPrompts.classList.contains('is-collapsing') || chatQuickPrompts.classList.contains('is-collapsed')) {
+    setQuickPromptsCollapsedInstantly();
+    return;
+  }
+
+  if (prefersReducedMotion(window)) {
+    setQuickPromptsCollapsedInstantly();
+    return;
+  }
+
+  clearChatQuickPromptsTransitionListener();
+  const measuredHeight = Math.max(chatQuickPrompts.scrollHeight, chatQuickPrompts.offsetHeight, 1);
+  chatQuickPrompts.style.setProperty('--chat-quick-prompts-expanded-height', `${measuredHeight}px`);
+  chatQuickPrompts.hidden = false;
+  chatQuickPrompts.classList.add('is-collapsing');
+
+  const onTransitionEnd = (event) => {
+    if (event.target !== chatQuickPrompts || event.propertyName !== 'max-height') return;
+    clearChatQuickPromptsTransitionListener();
+    if (!chatQuickPrompts) return;
+    chatQuickPrompts.classList.remove('is-collapsing');
+    chatQuickPrompts.classList.add('is-collapsed');
+    chatQuickPrompts.hidden = true;
+  };
+
+  chatQuickPrompts.addEventListener('transitionend', onTransitionEnd);
+  chatQuickPromptsTransitionCleanup = () => {
+    chatQuickPrompts?.removeEventListener?.('transitionend', onTransitionEnd);
+  };
+
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      chatQuickPrompts?.classList?.add('is-collapsed');
+    });
+  });
+}
+
+function syncInitialQuickPromptsVisibility({ animate = false } = {}) {
+  if (!chatQuickPrompts) return;
+  const hasActiveContext = Boolean(getActiveEditalContext()?.editalId);
+  const shouldShow = shouldShowInitialChatSuggestions(chatState, { hasActiveContext });
+  if (shouldShow) {
+    revealQuickPromptsInstantly();
+    return;
+  }
+  if (animate) {
+    collapseQuickPromptsWithAnimation();
+    return;
+  }
+  setQuickPromptsCollapsedInstantly();
+}
+
+function markFirstChatInteraction(source = 'message_send', { animateSuggestions = true } = {}) {
+  const hadInteraction = Boolean(chatState?.hasUserInteracted);
+  chatState = markInitialChatInteraction(chatState, source);
+  persistChatState(chatState);
+  if (!hadInteraction) {
+    syncInitialQuickPromptsVisibility({ animate: animateSuggestions });
+  }
+}
 
 // =========================
 // INIT
 // =========================
-document.addEventListener('DOMContentLoaded', init);
+document.addEventListener('DOMContentLoaded', () => {
+  void init();
+});
 
 async function init() {
-  bootstrapAuthFromUrl();
-  window.AthosTheme?.bootstrap?.();
-  const me = await checkAuth();
-  if (!me) return;
+  if (bootstrapInitPromise) return bootstrapInitPromise;
 
-  hydrateSidebarUser(me);
-
-  try {
-    await loadEditais();
-    await loadFavoritos();
-    if (hasPersonalizedRelevance(editaisOriginais)) {
-      setSortField('relevancia', { resetDirection: true });
-    }
-    buildFuseIndex();
-    generateDynamicFilters();
-    setupFilterGroupsAccordion();
-    setupUIEvents();
-    setupConsentAwareOptionalFeatures();
-    syncKpiButtons();
-    setSearchVisualState();
-    renderChatQuickPrompts();
-    applyFiltersAndRender({ resetPage: true });
-
-    // deep link (?edital=slug ou ?id=)
-    const urlParams = new URLSearchParams(window.location.search);
-    const shareToken = normalizeShareTokenParam(urlParams.get('share_token'));
-    const editalSlug = urlParams.get('edital');
-    const editalId = urlParams.get('id');
-
-    if (shareToken) {
-      const target = editaisOriginais.find((e) => extractShareTokenFromLink(e.share_link) === shareToken);
-      if (target) openModal(target);
-    } else if (editalSlug) {
-      const target = editaisOriginais.find(e => e.slug === editalSlug);
-      if (target) openModal(target);
-    } else if (editalId) {
-      const target = editaisOriginais.find(e => String(e.id) === String(editalId));
-      if (target) openModal(target);
-    }
-  } finally {
+  bootstrapInitPromise = runDashboardBootstrapFlow({
+    bootstrapAuthFromUrl,
+    bootstrapChatSessionState,
+    bootstrapTheme: () => window.AthosTheme?.bootstrap?.(),
+    checkAuth,
+    hydrateSidebarUser,
+    prepareShell: () => {
+      if (!uiEventsBound) {
+        setupUIEvents();
+        uiEventsBound = true;
+      }
+      setupConsentAwareOptionalFeatures();
+      replayChatSessionHistory();
+      updateChatHeader();
+      persistChatState(chatState);
+      syncKpiButtons();
+      setSearchVisualState();
+      renderChatQuickPrompts();
+      syncInitialQuickPromptsVisibility({ animate: false });
+    },
+    markAppReady,
+    loadEditais: loadEditaisSingleFlight,
+    loadFavoritos: loadFavoritosSingleFlight,
+    onEditaisReady: async () => {
+      applyFavoritosToLoadedEditais();
+      if (hasPersonalizedRelevance(editaisOriginais)) {
+        setSortField('relevancia', { resetDirection: true });
+      }
+      buildFuseIndex();
+      generateDynamicFilters();
+      setupFilterGroupsAccordion();
+      applyFiltersAndRender({ resetPage: true });
+    },
+    onDeepLinkReady: openDeepLinkedEditalFromUrl,
+    onFavoritosReady: ({ editaisReady }) => {
+      applyFavoritosToLoadedEditais();
+      if (editaisReady) {
+        applyFiltersAndRender({ resetPage: false });
+      }
+    },
+    onFavoritosError: () => {
+      applyFavoritosToLoadedEditais();
+    },
+  }).catch((err) => {
+    console.error('Falha inesperada ao inicializar a aplicação:', err);
+    bootstrapInitPromise = null;
     markAppReady();
+    return null;
+  });
+
+  return bootstrapInitPromise;
+}
+
+async function openDeepLinkedEditalFromUrl() {
+  const urlParams = new URLSearchParams(window.location.search);
+  const shareToken = normalizeShareTokenParam(urlParams.get('share_token'));
+  const editalSlug = urlParams.get('edital');
+  const editalId = urlParams.get('id');
+
+  if (shareToken) {
+    const target = editaisOriginais.find((e) => extractShareTokenFromLink(e.share_link) === shareToken);
+    if (target) openModal(target);
+    return;
+  }
+  if (editalSlug) {
+    const target = editaisOriginais.find((e) => e.slug === editalSlug);
+    if (target) openModal(target);
+    return;
+  }
+  if (editalId) {
+    const target = editaisOriginais.find((e) => String(e.id) === String(editalId));
+    if (target) openModal(target);
   }
 }
 
@@ -296,22 +481,35 @@ function hasPersonalizedRelevance(items) {
 async function checkAuth() {
   try {
     const { res, data } = await apiFetchJson('/cliente/me', { method: 'GET' });
+    const passwordFallback = buildLoginUrlWithNext();
 
     if (!res.ok) {
-      if (res.status === 401 || res.status === 403) {
-        window.location.href = buildLoginUrlWithNext();
+      const decision = resolveAuthFailureRedirectTarget(res, data);
+      if (decision) {
+        redirectWithAuthGuard(decision.target, `main.checkAuth.${decision.reason}`);
         return null;
       }
       return {};
     }
 
+    if (isPasswordChangeRequiredPayload(data)) {
+      redirectWithAuthGuard(
+        resolvePasswordChangeRedirectTarget(data, passwordFallback),
+        'main.checkAuth.payload_password_change_required'
+      );
+      return null;
+    }
+
     if (data && typeof data === 'object' && 'logado' in data && !data.logado) {
-      window.location.href = buildLoginUrlWithNext();
+      redirectWithAuthGuard(buildLoginUrlWithNext(), 'main.checkAuth.logado_false');
       return null;
     }
 
     if (window.AthosTheme?.setPreference && data?.themePreference) {
-      window.AthosTheme.setPreference(data.themePreference);
+      const nextTheme = window.AthosTheme.resolveProfilePreference
+        ? window.AthosTheme.resolveProfilePreference(data.themePreference)
+        : data.themePreference;
+      window.AthosTheme.setPreference(nextTheme);
     }
 
     return data && typeof data === 'object' ? data : {};
@@ -320,7 +518,7 @@ async function checkAuth() {
 
     if (e instanceof TypeError) return {};
 
-    window.location.href = buildLoginUrlWithNext();
+    redirectWithAuthGuard(buildLoginUrlWithNext(), 'main.checkAuth.exception');
     return null;
   }
 }
@@ -343,7 +541,15 @@ function setInitials(el, name) {
 }
 
 function markAppReady() {
-  document.body.classList.remove('app-loading');
+  const body = document.body;
+  if (!body) return;
+  const wasLoading = body.classList.contains('app-loading');
+  body.classList.remove('app-loading');
+  if (wasLoading) {
+    try {
+      window.dispatchEvent(new CustomEvent('athos:app-ready', { detail: { source: 'dashboard' } }));
+    } catch (_) {}
+  }
 }
 
 function showToast(message, type = 'info', duration = 2200) {
@@ -453,7 +659,7 @@ function setChatOpen(nextOpen, { focusInput = false, skipWelcome = false } = {})
   const canUseChat = hasPersonalizationConsent();
 
   if (open && !canUseChat) {
-    showToast('Ative cookies de personalização em Perfil > Preferências > Cookies para usar o chat.', 'info');
+    showToast('Ative cookies de personalização em Perfil > Privacidade > Cookies para usar o chat.', 'info');
     return;
   }
 
@@ -642,6 +848,9 @@ function renderResultsStateHint(total) {
   const highlightedTotal = Array.isArray(lastFiltered)
     ? lastFiltered.filter((item) => item?.is_highlighted).length
     : 0;
+  const hasPersonalizedSignals = Array.isArray(lastFiltered)
+    ? hasPersonalizedRelevance(lastFiltered)
+    : false;
   const hasProfileRecommendations = highlightedTotal > 0;
 
   let text = '';
@@ -664,6 +873,16 @@ function renderResultsStateHint(total) {
     kpiFilter === 'all'
   ) {
     text = `Com base no seu perfil, ${highlightedTotal} edital${highlightedTotal > 1 ? 'is estão' : ' está'} em destaque.`;
+  } else if (
+    total > 0 &&
+    !hasProfileRecommendations &&
+    hasPersonalizedSignals &&
+    !hasSearch &&
+    !hasFilters &&
+    !onlyFavoritos &&
+    kpiFilter === 'all'
+  ) {
+    text = 'No momento, não há edital 100% aderente ao seu perfil em destaque.';
   } else if (total > 0 && hasFilters) {
     text = 'Filtros aplicados para resultados mais relevantes.';
   }
@@ -812,7 +1031,7 @@ function renderChatQuickPrompts() {
     btn.addEventListener('click', () => {
       if (!chatInput) return;
       chatInput.value = prompt;
-      handleChatSend();
+      handleChatSend({ source: 'quick_prompt' });
     });
     chatQuickPrompts.appendChild(btn);
   });
@@ -843,9 +1062,17 @@ async function loadEditais() {
   `;
 
   try {
-    const { res, data } = await apiFetchJson('/editais', { method: 'GET' });
+    const { res, data } = await apiFetchJson('/editais?modo=card&include_relevance=true&relevance_mode=fast', { method: 'GET' });
 
     if (!res.ok) {
+      if (isPasswordChangeRequiredResponse(res, data) || isPasswordChangeRequiredPayload(data)) {
+        const fallbackUrl = buildLoginUrlWithNext();
+        redirectWithAuthGuard(
+          resolvePasswordChangeRedirectTarget(data, fallbackUrl),
+          'main.loadEditais.password_change_required'
+        );
+        return;
+      }
       // Se não estiver logado, manda pro login.
       if (res.status === 401 || res.status === 403) {
         container.innerHTML = `
@@ -884,6 +1111,14 @@ async function loadEditais() {
 // =========================
 // FAVORITOS (carrega / salva / remove)
 // =========================
+function applyFavoritosToLoadedEditais() {
+  for (const edital of editaisOriginais) {
+    edital.is_favorite = favoritosSet.has(String(edital.id));
+  }
+  syncSavedBadge();
+  syncSavedToggleUI();
+}
+
 async function loadFavoritos() {
   // Se o endpoint ainda não existir no backend, a UI segue normalmente.
   favoritosSet = new Set();
@@ -896,14 +1131,7 @@ async function loadFavoritos() {
   } catch (_) {
     // silencioso de propósito (não quebra a listagem)
   }
-
-  // marca nos objetos (render usa isso)
-  for (const e of editaisOriginais) {
-    e.is_favorite = favoritosSet.has(String(e.id));
-  }
-
-  syncSavedBadge();
-  syncSavedToggleUI();
+  applyFavoritosToLoadedEditais();
 }
 
 function syncSavedBadge() {
@@ -1021,7 +1249,28 @@ function normalizeEdital(api) {
     relevance_score: normalizeRelevanceScore(api?.relevance_score),
     is_highlighted: !!api?.is_highlighted,
     relevance_reasons: Array.isArray(api?.relevance_reasons) ? api.relevance_reasons.map((item) => String(item || '').trim()).filter(Boolean) : [],
+    details_loaded: Boolean(api?.details_loaded) || arquivos.length > 0,
   };
+}
+
+async function ensureEditalDetailLoaded(edital) {
+  if (!edital || edital.id === null || edital.id === undefined) return edital;
+  if (edital.details_loaded) return edital;
+
+  try {
+    const path = `/editais/${encodeURIComponent(String(edital.id))}?include_relevance=true&relevance_mode=fast`;
+    const { res, data } = await apiFetchJson(path, { method: 'GET' });
+    if (!res.ok || !data || typeof data !== 'object') return edital;
+
+    const normalized = normalizeEdital(data);
+    const prevFavorite = Boolean(edital.is_favorite);
+    Object.assign(edital, normalized);
+    edital.is_favorite = prevFavorite;
+    edital.details_loaded = true;
+  } catch (err) {
+    console.warn('Falha ao carregar detalhes do edital:', err);
+  }
+  return edital;
 }
 
 function normalizeRelevanceScore(value) {
@@ -1519,6 +1768,240 @@ function clearAssistantPanelContext() {
   assistantPanelContext = null;
 }
 
+function rememberAssistantOpenedCard(editalId) {
+  const id = String(editalId || '').trim();
+  if (!id) return;
+  assistantSemanticMemory = createDashboardAssistantMemory({
+    ...assistantSemanticMemory,
+    lastOpenedCardId: id,
+    updatedAt: new Date().toISOString(),
+  });
+}
+
+function rememberAssistantResultSetFromPayload(payload, { question = '', intent = '' } = {}) {
+  if (!payload || typeof payload !== 'object') return;
+  const ids = Array.isArray(payload.result_ids)
+    ? payload.result_ids.map((id) => String(id || '').trim()).filter(Boolean)
+    : [];
+
+  if (!ids.length) return;
+
+  assistantSemanticMemory = createDashboardAssistantMemory({
+    ...assistantSemanticMemory,
+    lastResultIds: ids,
+    lastResultScope: 'all_loaded',
+    lastIntent: String(intent || payload.intent || '').trim() || assistantSemanticMemory?.lastIntent || '',
+    lastQuestion: String(question || payload.query || '').trim() || assistantSemanticMemory?.lastQuestion || '',
+    updatedAt: new Date().toISOString(),
+  });
+}
+
+function buildAssistantSemanticUiState() {
+  return {
+    appliedFilters: {
+      estado: Array.isArray(applied?.estado) ? [...applied.estado] : [],
+      instituicao: Array.isArray(applied?.instituicao) ? [...applied.instituicao] : [],
+      area: Array.isArray(applied?.area) ? [...applied.area] : [],
+    },
+    kpiFilter,
+    onlyFavoritos,
+    assistantFilterLabels: Array.isArray(assistantPanelContext?.filterLabels) ? [...assistantPanelContext.filterLabels] : [],
+    sortField,
+    sortDirection,
+  };
+}
+
+function runLocalDashboardSemanticAssistant(question) {
+  const outcome = runDashboardAssistantSemanticQuery({
+    question,
+    cards: Array.isArray(editaisOriginais) ? editaisOriginais : [],
+    visibleCards: Array.isArray(lastFiltered) ? lastFiltered : [],
+    uiState: buildAssistantSemanticUiState(),
+    memory: assistantSemanticMemory,
+    now: new Date(),
+  });
+
+  if (outcome?.nextMemory) {
+    assistantSemanticMemory = createDashboardAssistantMemory({
+      ...assistantSemanticMemory,
+      ...outcome.nextMemory,
+    });
+  }
+
+  return outcome;
+}
+
+function normalizeDashboardCardForIntelligence(rawCard) {
+  const status = isOpenEditalForChat(rawCard) ? 'aberto' : 'encerrado';
+  const estadoUf = String(rawCard?.estado || '').trim().toUpperCase();
+  const estadoLabel = formatEstadoLabel(estadoUf);
+  const prazoFinal = String(rawCard?.data_fechamento || '').trim();
+  const updatedAt = String(rawCard?.data_abertura || rawCard?.updated_at || '').trim();
+  const valorFomento = String(rawCard?.valor_total || rawCard?.valor || '').trim();
+  return {
+    id: String(rawCard?.id ?? '').trim(),
+    titulo: String(rawCard?.titulo || '').trim(),
+    instituicao: String(rawCard?.instituicao || '').trim(),
+    estado_uf: estadoUf,
+    estado_label: estadoLabel,
+    status,
+    prazo_final: prazoFinal,
+    updated_at: updatedAt,
+    valor_fomento: valorFomento,
+    area: String(rawCard?.area || '').trim(),
+    tags: Array.isArray(rawCard?.tags) ? rawCard.tags.slice(0, 12).map((tag) => String(tag || '').trim()).filter(Boolean) : [],
+    relevance_score: Number(rawCard?.relevance_score || 0) || 0,
+    is_highlighted: Boolean(rawCard?.is_highlighted),
+    is_open: status === 'aberto',
+  };
+}
+
+function buildDashboardFiltersAvailable(cards) {
+  const estados = Array.from(
+    new Set(
+      (Array.isArray(cards) ? cards : [])
+        .map((card) => String(card?.estado || '').trim().toUpperCase())
+        .filter(Boolean)
+    )
+  ).slice(0, 40);
+  const instituicoes = Array.from(
+    new Set(
+      (Array.isArray(cards) ? cards : [])
+        .map((card) => String(card?.instituicao || '').trim())
+        .filter(Boolean)
+    )
+  ).slice(0, 120);
+  const areas = Array.from(
+    new Set(
+      (Array.isArray(cards) ? cards : [])
+        .map((card) => String(card?.area || '').trim())
+        .filter(Boolean)
+    )
+  ).slice(0, 120);
+
+  return {
+    estado: estados,
+    instituicao: instituicoes,
+    area: areas,
+    status: ['aberto', 'encerrado'],
+  };
+}
+
+function buildDashboardHistoryContext(maxTurns = 8) {
+  const turns = Array.isArray(chatState?.conversationHistory) ? chatState.conversationHistory : [];
+  return turns
+    .slice(-Math.max(1, maxTurns))
+    .map((turn) => ({
+      role: turn?.role === 'user' ? 'user' : 'assistant',
+      text: String(turn?.text || '').trim().slice(0, 260),
+    }))
+    .filter((turn) => turn.text);
+}
+
+function buildDashboardIntelligenceContext() {
+  const allCards = Array.isArray(editaisOriginais) ? editaisOriginais : [];
+  const visibleCards = Array.isArray(lastFiltered) ? lastFiltered : [];
+  const normalizedAll = allCards.map(normalizeDashboardCardForIntelligence).filter((card) => card.id);
+  const normalizedVisible = visibleCards.map(normalizeDashboardCardForIntelligence).filter((card) => card.id);
+  const focusIds = Array.isArray(assistantSemanticMemory?.lastResultIds)
+    ? assistantSemanticMemory.lastResultIds.map((id) => String(id || '').trim()).filter(Boolean).slice(0, 20)
+    : [];
+  const openedCardId = String(assistantSemanticMemory?.lastOpenedCardId || '').trim();
+
+  return {
+    cards_loaded: normalizedAll,
+    visible_cards: normalizedVisible,
+    filters_available: buildDashboardFiltersAvailable(allCards),
+    filters_active: {
+      estado: Array.isArray(applied?.estado) ? [...applied.estado] : [],
+      instituicao: Array.isArray(applied?.instituicao) ? [...applied.instituicao] : [],
+      area: Array.isArray(applied?.area) ? [...applied.area] : [],
+      status: kpiFilter === 'abertos' ? ['aberto'] : (kpiFilter === 'fechados' ? ['encerrado'] : []),
+      kpi_filter: kpiFilter,
+      only_favoritos: Boolean(onlyFavoritos),
+      assistant_filter_labels: Array.isArray(assistantPanelContext?.filterLabels) ? [...assistantPanelContext.filterLabels] : [],
+    },
+    sort_active: {
+      field: String(sortField || '').trim() || 'prazoFinal',
+      direction: String(sortDirection || 'asc').toLowerCase() === 'desc' ? 'desc' : 'asc',
+    },
+    history_short: buildDashboardHistoryContext(8),
+    focus: {
+      card_ids: focusIds,
+      opened_card_id: openedCardId || '',
+    },
+  };
+}
+
+function normalizeDashboardPlanFromBackend(rawData) {
+  const rawPlan = rawData?.assistant_plan && typeof rawData.assistant_plan === 'object'
+    ? rawData.assistant_plan
+    : (rawData?.plan && typeof rawData.plan === 'object' ? rawData.plan : rawData);
+  const allowedIds = Array.isArray(editaisOriginais)
+    ? editaisOriginais.map((card) => String(card?.id || '').trim()).filter(Boolean)
+    : [];
+  return normalizeDashboardAssistantPlan(rawPlan, { allowedCardIds: allowedIds });
+}
+
+function buildDashboardPlanOptions(plan, query, backendOptions = []) {
+  const payload = dashboardPlanToLegacySearchPayload(plan);
+  const options = [];
+  const total = Number(plan?.result_summary?.total || 0);
+  const matchedIds = Array.isArray(plan?.matched_card_ids) ? plan.matched_card_ids.map((id) => String(id || '').trim()).filter(Boolean) : [];
+
+  const backendNormalized = normalizeBackendChatOptions(backendOptions);
+  if (backendNormalized.length && total <= 5) {
+    options.push(...backendNormalized.slice(0, 5));
+  } else if (!backendNormalized.length && total > 0 && total <= 5 && matchedIds.length) {
+    matchedIds.slice(0, 5).forEach((id) => {
+      const card = (Array.isArray(editaisOriginais) ? editaisOriginais : []).find((item) => String(item?.id) === id);
+      if (!card) return;
+      const metaParts = [];
+      if (card?.instituicao) metaParts.push(card.instituicao);
+      if (card?.estado) metaParts.push(formatEstadoLabel(card.estado));
+      if (card?.data_fechamento) metaParts.push(`Até ${formatChatDate(card.data_fechamento)}`);
+      options.push({
+        action: 'open_edital',
+        id: card.id,
+        title: card.titulo || 'Sem título',
+        meta: metaParts.join(' • ') || null,
+      });
+    });
+  }
+
+  if (total > 0 && payload) {
+    options.push({
+      action: 'view_all',
+      query,
+      title: total > 5 ? `Aplicar filtro no painel (${total})` : 'Aplicar recorte no painel',
+      meta: plan?.ui_action?.cta || 'Usar a IA para orientar os cards na interface',
+      payload,
+    });
+
+    if (total > 5 && matchedIds.length > 5) {
+      options.push({
+        action: 'view_all',
+        query,
+        title: 'Mostrar 5 mais urgentes',
+        meta: 'Recorte rápido por prazo',
+        payload: {
+          ...payload,
+          total: Math.min(5, matchedIds.length),
+          result_ids: matchedIds.slice(0, 5),
+        },
+      });
+    }
+  }
+
+  options.push({
+    action: 'ask_new',
+    title: 'Refinar busca',
+    meta: 'Mudar estado, instituição, prazo ou status',
+  });
+
+  return options;
+}
+
 function applyAssistantPayloadToDashboard(rawPayload, { fallbackQuery = '' } = {}) {
   const normalized = normalizeAssistantSearchPayload(rawPayload) || buildAssistantPayloadFromQuery(fallbackQuery);
   if (!normalized) return false;
@@ -1541,6 +2024,7 @@ function applyAssistantPayloadToDashboard(rawPayload, { fallbackQuery = '' } = {
     filterLabels: [],
   };
   assistantPanelContext.filterLabels = buildAssistantFilterLabels(assistantPanelContext);
+  rememberAssistantResultSetFromPayload(normalized, { question: fallbackQuery, intent: normalized.intent });
 
   if (searchInput) searchInput.value = '';
   setSearchVisualState();
@@ -2009,8 +2493,10 @@ const doLogout = async () => {
       try { window.dispatchEvent(new Event('athos:logout')); } catch (_) {}
       try { localStorage.removeItem('cliente_token'); } catch (_) {}
       try { sessionStorage.removeItem('cliente_token'); } catch (_) {}
+      clearChatSessionState(window.sessionStorage);
+      assistantSemanticMemory = createDashboardAssistantMemory();
       const sep = LOGIN_URL.includes('?') ? '&' : '?';
-      window.location.href = `${LOGIN_URL}${sep}logged_out=1`;
+      redirectWithAuthGuard(`${LOGIN_URL}${sep}logged_out=1`, 'main.logout');
     }
   };
   if (logoutIconBtn) logoutIconBtn.addEventListener('click', doLogout);
@@ -2199,11 +2685,11 @@ const doLogout = async () => {
   }
 
   if (sendButton && chatInput) {
-    sendButton.addEventListener('click', handleChatSend);
+    sendButton.addEventListener('click', () => handleChatSend({ source: 'message_send' }));
     chatInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {
         e.preventDefault();
-        handleChatSend();
+        handleChatSend({ source: 'message_send' });
       }
     });
   }
@@ -2225,8 +2711,7 @@ const doLogout = async () => {
       }
 
       if (action === 'view_all') {
-        chatState = null;
-        updateChatHeader();
+        clearActiveEditalContext();
         const q = btn.getAttribute('data-query') || '';
         const payload = btn._chatPayload || null;
         const appliedFromChat = applyAssistantPayloadToDashboard(payload, { fallbackQuery: q });
@@ -2242,8 +2727,7 @@ const doLogout = async () => {
       }
 
       if (action === 'ask_new') {
-        chatState = null;
-        updateChatHeader();
+        clearActiveEditalContext();
         if (chatInput) {
           chatInput.value = '';
           chatInput.focus();
@@ -2403,8 +2887,10 @@ function isNotInformedLabel(value) {
   );
 }
 
-function openModal(edital) {
+async function openModal(edital) {
   if (!modalOverlay || !modalContentContainer || !edital) return;
+  edital = await ensureEditalDetailLoaded(edital);
+  rememberAssistantOpenedCard(edital.id);
 
   const shareLink = String(edital.share_link || '').trim();
 
@@ -2634,33 +3120,78 @@ function closeModal() {
   document.body.style.overflow = '';
 }
 
+function getActiveEditalContext() {
+  chatState = ensureChatSessionState(chatState);
+  const editalId = chatState?.activeEntityId ?? chatState?.edital_id ?? chatState?.editalId ?? null;
+  if (editalId === null || editalId === undefined || editalId === '') return null;
+  const contextType = String(chatState?.activeContextType || chatState?.mode || '').trim().toLowerCase();
+  if (contextType && contextType !== 'edital') return null;
+  const titulo = chatState?.activeEntityTitle ?? chatState?.titulo ?? chatState?.edital_titulo ?? chatState?.editalTitulo ?? 'Edital';
+  return {
+    editalId: String(editalId),
+    titulo: String(titulo || 'Edital').trim() || 'Edital',
+  };
+}
+
+function clearActiveEditalContext({ clearAssistantContext = false } = {}) {
+  chatState = clearActiveContextInState(chatState);
+  persistChatState(chatState);
+  if (clearAssistantContext) {
+    clearAssistantPanelContext();
+  }
+  updateChatHeader();
+}
+
+function setActiveEditalContext(edital) {
+  if (!edital || edital.id === null || edital.id === undefined) return false;
+  chatState = setActiveEditalContextInState(chatState, edital);
+  persistChatState(chatState);
+  updateChatHeader();
+  return true;
+}
+
+function buildEditalContextIntroMessage(title) {
+  const safeTitle = truncateText(String(title || 'Edital').trim() || 'Edital', 92);
+  return `Estamos falando deste edital: ${safeTitle}. Se quiser sair desse edital e voltar a busca geral, e so digitar "sair".`;
+}
+
+function buildEditalContextExitMessage() {
+  return 'Beleza, sai desse edital. Agora voce pode buscar outro tema ou perguntar sobre outro edital.';
+}
+
+function buildEditalContextSwitchMessage(targetLabel) {
+  const safeTarget = truncateText(String(targetLabel || 'outro assunto').trim(), 92);
+  return `Entendi, saindo do edital atual. Agora vamos falar sobre: ${safeTarget}.`;
+}
+
 function updateChatHeader() {
   const target = chatHeaderTitle || chatHeader;
   if (!target) return;
-  const editalId = chatState?.edital_id ?? chatState?.editalId ?? null;
-  const titulo = chatState?.titulo ?? chatState?.edital_titulo ?? chatState?.editalTitulo ?? null;
-  if (editalId && titulo) {
-    target.textContent = `Athos • Edital: ${truncateText(titulo, 28)}`;
+  const active = getActiveEditalContext();
+  if (active?.editalId) {
+    target.textContent = `Athos • Edital: ${truncateText(active.titulo, 28)}`;
+    if (chatInput) {
+      chatInput.placeholder = 'Pergunte sobre este edital ou digite "sair" para voltar.';
+    }
   } else {
     target.textContent = 'Athos • Assistente';
+    if (chatInput) {
+      chatInput.placeholder = 'Digite sua mensagem...';
+    }
   }
+  syncInitialQuickPromptsVisibility({ animate: false });
 }
 
 function startEditalChat(edital) {
   if (!edital) return;
-  chatState = {
-    mode: 'edital',
-    edital_id: edital.id,
-    titulo: edital.titulo || 'Edital'
-  };
+  if (!setActiveEditalContext(edital)) return;
 
   setChatOpen(true, { focusInput: true, skipWelcome: true });
 
-  addMessage(
-    `Fechado. Vamos falar do edital: "${edital.titulo || 'Sem título'}".\n` +
-    `Manda sua pergunta (ex: prazo, quem pode participar, valor, documentos, como enviar).`,
-    'bot'
-  );
+  const introMessage = buildEditalContextIntroMessage(edital.titulo || 'Sem titulo');
+  addMessage(introMessage, 'bot');
+  chatState = appendConversationTurn(chatState, 'assistant', introMessage);
+  persistChatState(chatState);
 
   closeModal();
 }
@@ -2678,6 +3209,16 @@ function normalizeBotText(value) {
   if (!s) return '';
   if (s.includes('<') && s.includes('>')) return stripHtmlPreserveBreaks(s);
   return s;
+}
+
+function normalizeConciseBotText(value, { maxLines = 3 } = {}) {
+  const raw = normalizeBotText(value).replace(/https?:\/\/\S+/gi, '').trim();
+  if (!raw) return '';
+  const lines = raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  return lines.slice(0, Math.max(1, maxLines)).join('\n');
 }
 
 function renderSimpleMarkdown(text) {
@@ -2945,6 +3486,62 @@ const CHAT_GENERIC_QUERY_KEYWORDS = new Set([
   'algum', 'alguma', 'coisa', 'coisas', 'oportunidade', 'oportunidades',
   'buscar', 'busca', 'procura', 'procurar', 'mostrar', 'mostre', 'quero', 'tem', 'algo', 'qualquer',
 ]);
+
+const CHAT_EDITAL_EXIT_HINTS = [
+  'sair',
+  'voltar',
+  'sair do edital',
+  'sair desse edital',
+  'sair deste edital',
+  'voltar para busca',
+  'voltar para busca geral',
+  'fechar edital',
+  'encerrar edital',
+  'encerrar assunto',
+  'fechar assunto',
+  'modo geral',
+];
+
+const CHAT_EDITAL_SWITCH_HINTS = [
+  'outro edital',
+  'outro tema',
+  'outro assunto',
+  'mudar assunto',
+  'trocar assunto',
+  'trocar de edital',
+  'buscar outro tema',
+  'buscar outro edital',
+  'buscar editais',
+  'quero ver editais',
+  'quero buscar editais',
+  'me mostre editais',
+  'listar editais',
+  'voltar para busca',
+  'voltar para o painel',
+];
+
+const CHAT_EDITAL_CONFIRM_EXIT_HINTS = [
+  'sim',
+  'sair',
+  'voltar',
+  'pode sair',
+  'pode voltar',
+  'quero sair',
+  'quero voltar',
+  'fechar edital',
+  'encerrar assunto',
+];
+
+const CHAT_EDITAL_CONFIRM_STAY_HINTS = [
+  'nao',
+  'não',
+  'continuar',
+  'continuar neste edital',
+  'continuar nesse edital',
+  'ficar neste edital',
+  'ficar nesse edital',
+  'manter edital',
+];
 
 function normalizeAssistantQuery(value) {
   return String(value || '')
@@ -3256,6 +3853,173 @@ function searchEditaisForChat(query) {
   return deduped;
 }
 
+function extractDistinctiveContextTokens(value, maxItems = 8) {
+  return normalizeAssistantQuery(value)
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter(Boolean)
+    .filter((token) => token.length >= 4 && !CHAT_QUERY_STOPWORDS.has(token))
+    .slice(0, Math.max(1, Number(maxItems || 8)));
+}
+
+function isEditalContextExitCommand(question) {
+  const normalizedQuery = normalizeAssistantQuery(question);
+  if (!normalizedQuery) return false;
+  if (normalizedQuery === 'sair' || normalizedQuery === 'voltar') return true;
+  if (messageHasAnyPhrase(normalizedQuery, CHAT_EDITAL_EXIT_HINTS)) return true;
+  return /^(sair|voltar|fechar edital|encerrar edital|encerrar assunto|fechar assunto)$/.test(normalizedQuery);
+}
+
+function resolvePendingEditalContextDecision(question) {
+  if (!chatState?.pendingTopicExitConfirmation) return null;
+
+  const normalizedQuery = normalizeAssistantQuery(question);
+  if (!normalizedQuery) {
+    return {
+      action: 'ask_confirmation_repeat',
+      notice: 'Voce quer continuar neste edital ou quer sair para buscar outro?',
+    };
+  }
+
+  if (isEditalContextExitCommand(question) || messageHasAnyPhrase(normalizedQuery, CHAT_EDITAL_CONFIRM_EXIT_HINTS)) {
+    chatState = setPendingTopicExitConfirmation(chatState, false);
+    persistChatState(chatState);
+    return { action: 'exit_only' };
+  }
+
+  if (messageHasAnyPhrase(normalizedQuery, CHAT_EDITAL_CONFIRM_STAY_HINTS)) {
+    chatState = setPendingTopicExitConfirmation(chatState, false);
+    persistChatState(chatState);
+    return {
+      action: 'stay_ack',
+      notice: 'Perfeito, seguimos neste edital. Pode mandar sua pergunta.',
+    };
+  }
+
+  if (classifyAssistantIntent(question) === 'edital_search') {
+    chatState = setPendingTopicExitConfirmation(chatState, false);
+    persistChatState(chatState);
+    return {
+      action: 'exit_to_general',
+      notice: buildEditalContextSwitchMessage(question),
+    };
+  }
+
+  return {
+    action: 'ask_confirmation_repeat',
+    notice: 'Se quiser sair deste edital, digite "sair". Se quiser continuar nele, digite "continuar".',
+  };
+}
+
+function findClearlyMentionedDifferentEdital(question, currentEditalId) {
+  const normalizedQuery = normalizeAssistantQuery(question);
+  if (!normalizedQuery) return null;
+
+  const mentionsSpecificEdital = /(?:^|\s)(edital|chamada)\s+/.test(normalizedQuery);
+  if (!mentionsSpecificEdital) return null;
+
+  const candidates = searchEditaisForChat(question);
+  if (!Array.isArray(candidates) || !candidates.length) return null;
+
+  for (const candidate of candidates) {
+    const candidateId = String(candidate?.id ?? '');
+    if (!candidateId || String(currentEditalId) === candidateId) continue;
+
+    const titleTokens = extractDistinctiveContextTokens(candidate?.titulo, 6);
+    if (!titleTokens.length) continue;
+
+    const titleMatches = titleTokens.filter((token) => normalizedQuery.includes(token)).length;
+    const institutionTokens = extractDistinctiveContextTokens(candidate?.instituicao, 4);
+    const institutionMatches = institutionTokens.filter((token) => normalizedQuery.includes(token)).length;
+    const requiredTitleMatches = titleTokens.length >= 3 ? 2 : 1;
+
+    if (titleMatches >= requiredTitleMatches || (titleMatches >= 1 && institutionMatches >= 1)) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+function analyzeEditalContextTransition(question, currentEditalId) {
+  const normalizedQuery = normalizeAssistantQuery(question);
+  if (!normalizedQuery || !currentEditalId) {
+    return { action: 'stay' };
+  }
+
+  if (isEditalContextExitCommand(question)) {
+    return { action: 'exit_only' };
+  }
+
+  const mentionedOtherEdital = findClearlyMentionedDifferentEdital(question, currentEditalId);
+  if (mentionedOtherEdital) {
+    return {
+      action: 'switch_to_edital',
+      edital: mentionedOtherEdital,
+      notice: buildEditalContextSwitchMessage(mentionedOtherEdital?.titulo || 'outro edital'),
+    };
+  }
+
+  const intent = classifyAssistantIntent(question);
+  if (intent === 'edital_search') {
+    return {
+      action: 'exit_to_general',
+      notice: buildEditalContextSwitchMessage(question),
+    };
+  }
+
+  const hasSwitchHint = messageHasAnyPhrase(normalizedQuery, CHAT_EDITAL_SWITCH_HINTS);
+  if (hasSwitchHint) {
+    const keywords = extractChatKeywords(normalizedQuery);
+    const hasConcreteCriteria =
+      hasSpecificChatKeywords(keywords) ||
+      hasAnyChatHint(normalizedQuery, CHAT_OPEN_HINTS) ||
+      hasAnyChatHint(normalizedQuery, CHAT_DEADLINE_HINTS) ||
+      hasAnyChatHint(normalizedQuery, CHAT_WEEK_HINTS);
+
+    if (hasConcreteCriteria || /buscar|listar|mostre|quero ver/.test(normalizedQuery)) {
+      return {
+        action: 'exit_to_general',
+        notice: buildEditalContextSwitchMessage(question),
+      };
+    }
+
+    return {
+      action: 'ask_confirmation',
+      notice: 'Voce quer continuar falando deste edital ou quer sair para buscar outro?',
+    };
+  }
+
+  if (intent === 'out_of_scope') {
+    const hasClearOutsideSignal = messageHasAnyPhrase(normalizedQuery, [
+      'perfil',
+      'conta',
+      'preferencia',
+      'preferencias',
+      'notificacao',
+      'suporte',
+      'dashboard',
+      'painel',
+    ]);
+
+    if (hasClearOutsideSignal) {
+      return {
+        action: 'exit_to_general',
+        notice: buildEditalContextSwitchMessage(question),
+      };
+    }
+  }
+
+  if (intent === 'unknown' && messageHasAnyPhrase(normalizedQuery, ['outro tema', 'outro assunto', 'mudar assunto'])) {
+    return {
+      action: 'ask_confirmation',
+      notice: 'Voce quer continuar falando deste edital ou quer sair para buscar outro?',
+    };
+  }
+
+  return { action: 'stay' };
+}
+
 function truncateText(text, max = 80) {
   const s = String(text || '').replaceAll('\n', ' ').trim();
   if (s.length <= max) return s;
@@ -3270,6 +4034,23 @@ function normalizeBackendChatOptions(rawOptions) {
 
   rawOptions.forEach((opt) => {
     if (!opt || typeof opt !== 'object') return;
+    const explicitAction = String(opt.action || '').trim();
+    const explicitTitle = String(opt.title || '').trim();
+    if (explicitAction && explicitTitle) {
+      const explicitKey = `${explicitAction}::${explicitTitle.toLowerCase()}`;
+      if (seen.has(explicitKey)) return;
+      seen.add(explicitKey);
+      out.push({
+        action: explicitAction,
+        id: opt.id ?? opt.edital_id ?? opt.editalId ?? null,
+        query: opt.query ? String(opt.query) : null,
+        title: explicitTitle,
+        meta: String(opt.meta || '').trim() || null,
+        payload: (opt.payload && typeof opt.payload === 'object') ? opt.payload : null,
+      });
+      return;
+    }
+
     const id = opt.id ?? opt.edital_id ?? opt.editalId ?? null;
     if (id === null || id === undefined) return;
 
@@ -3312,8 +4093,9 @@ function attachEditaisOptions(msgEl, query, rawOptions = null, rawStructuredPayl
   if (hasBackendOptions) {
     const panelPayload = structuredPayload || buildAssistantPayloadFromQuery(query);
     const panelTotal = Number(panelPayload?.total) > 0 ? Number(panelPayload.total) : fromBackend.length;
-    options = fromBackend.slice(0, 5);
-    if (panelTotal > options.length) {
+    options = fromBackend.slice(0, 6);
+    const hasViewAllAction = options.some((opt) => String(opt?.action || '').trim() === 'view_all');
+    if (panelTotal > options.length && !hasViewAllAction) {
       options.push({
         action: 'view_all',
         query,
@@ -3321,6 +4103,23 @@ function attachEditaisOptions(msgEl, query, rawOptions = null, rawStructuredPayl
         meta: 'Aplicar filtros da IA no Dashboard',
         payload: panelPayload,
       });
+    }
+    if (panelPayload && panelTotal > 5) {
+      const hasTopUrgent = options.some((opt) => String(opt?.title || '').toLowerCase().includes('mais urgentes'));
+      const topIds = Array.isArray(panelPayload?.result_ids) ? panelPayload.result_ids.slice(0, 5) : [];
+      if (!hasTopUrgent && topIds.length > 0) {
+        options.push({
+          action: 'view_all',
+          query,
+          title: 'Mostrar os 5 mais urgentes',
+          meta: 'Recorte rápido por prazo',
+          payload: {
+            ...panelPayload,
+            total: topIds.length,
+            result_ids: topIds,
+          },
+        });
+      }
     }
   } else {
     const all = searchEditaisForChat(query);
@@ -3356,11 +4155,14 @@ function attachEditaisOptions(msgEl, query, rawOptions = null, rawStructuredPayl
     }
   }
 
-  options.push({
-    action: 'ask_new',
-    title: 'Buscar outro tema',
-    meta: 'Trocar a palavra-chave',
-  });
+  const hasAskNew = options.some((opt) => String(opt?.action || '').trim() === 'ask_new');
+  if (!hasAskNew) {
+    options.push({
+      action: 'ask_new',
+      title: 'Buscar outro tema',
+      meta: 'Trocar a palavra-chave',
+    });
+  }
 
   const wrap = document.createElement('div');
   wrap.className = 'chat-options';
@@ -3427,22 +4229,174 @@ function resolveBackendSearchDecision({ data, question, backendOptions, backendS
   };
 }
 
-async function handleChatSend() {
+async function handleChatSend(options = {}) {
   if (botIsTyping) return;
   if (!hasPersonalizationConsent()) {
-    showToast('Ative cookies de personalização em Perfil > Preferências > Cookies para usar o chat.', 'info');
+    showToast('Ative cookies de personalização em Perfil > Privacidade > Cookies para usar o chat.', 'info');
     return;
   }
 
   const question = (chatInput?.value || '').trim();
   if (!question) return;
 
+  const interactionSource = String(options?.source || 'message_send').trim() || 'message_send';
+  markFirstChatInteraction(interactionSource, { animateSuggestions: true });
+
   chatInput.value = '';
   addMessage(question, 'user');
+  chatState = appendConversationTurn(chatState, 'user', question);
+  persistChatState(chatState);
+
+  const activeContext = getActiveEditalContext();
+  if (activeContext?.editalId) {
+    const detection = detectTopicTransition({
+      message: question,
+      state: chatState,
+      topicThresholds: chatState?.topicThresholds,
+    });
+    chatState = updateTopicDetection(chatState, detection, 'edital_context_chat');
+    console.info('[CHAT][topic-detector][frontend]', {
+      context: { type: chatState?.activeContextType, entityId: chatState?.activeEntityId },
+      userMessage: String(question || '').slice(0, 180),
+      decision: detection?.decision,
+      confidence: Number(detection?.confidence || 0).toFixed(2),
+      reason: detection?.reason,
+    });
+
+    if (chatState?.pendingTopicExitConfirmation && isExplicitStayCommand(question)) {
+      chatState = setPendingTopicExitConfirmation(chatState, false);
+      persistChatState(chatState);
+      const stayNotice = 'Perfeito, seguimos no edital atual. Pode mandar sua pergunta.';
+      addMessage(stayNotice, 'bot');
+      chatState = appendConversationTurn(chatState, 'assistant', stayNotice);
+      persistChatState(chatState);
+      return;
+    }
+
+    if (detection.decision === 'ambiguous') {
+      chatState = setPendingTopicExitConfirmation(chatState, true);
+      persistChatState(chatState);
+      const notice = buildTopicDisambiguationNotice(chatState);
+      addMessage(notice, 'bot');
+      chatState = appendConversationTurn(chatState, 'assistant', notice);
+      persistChatState(chatState);
+      return;
+    }
+
+    if (detection.decision === 'switch_topic' && detection.confidence >= Number(detection?.thresholds?.autoSwitch || 0.9)) {
+      clearActiveEditalContext({ clearAssistantContext: true });
+      const isExplicitExit = detection.reason === 'explicit_exit';
+      const switchNotice = isExplicitExit ? buildEditalContextExitMessage() : buildEditalContextSwitchMessage(question);
+      addMessage(switchNotice, 'bot');
+      chatState = appendConversationTurn(chatState, 'assistant', switchNotice);
+      persistChatState(chatState);
+      if (isExplicitExit) {
+        return;
+      }
+    } else {
+      chatState = setPendingTopicExitConfirmation(chatState, false);
+      persistChatState(chatState);
+    }
+  }
+
+  const contextualEditalId = getActiveEditalContext()?.editalId ?? null;
+  if (!contextualEditalId) {
+    setChatBusy(true);
+    const typingMsg = addMessage('digitando...', 'bot', null, { isTyping: true });
+
+    try {
+      const dashboardContext = buildDashboardIntelligenceContext();
+      const { res, data } = await apiFetchJson('/chat/dashboard-intelligence', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: question,
+          question,
+          state: chatState,
+          dashboard_context: dashboardContext,
+        }),
+      });
+
+      if (!res.ok) throw new Error(`dashboard-intelligence-${res.status}`);
+
+      const hasBackendState = Boolean(data?.state && typeof data.state === 'object');
+      if (hasBackendState) {
+        chatState = ensureChatSessionState(data.state);
+        persistChatState(chatState);
+        updateChatHeader();
+      }
+
+      const plan = normalizeDashboardPlanFromBackend(data);
+      if (!plan) throw new Error('invalid-dashboard-plan');
+
+      const backendReply = normalizeConciseBotText(
+        data?.reply || plan?.suggested_reply || 'Nao consegui responder com os dados estruturados do dashboard.'
+      );
+      const finalReply = normalizeConciseBotText(plan?.suggested_reply || backendReply);
+      setMessageText(typingMsg, finalReply);
+
+      if (!hasBackendState) {
+        chatState = appendConversationTurn(chatState, 'assistant', finalReply);
+      }
+      persistChatState(chatState);
+
+      const planPayload = dashboardPlanToLegacySearchPayload(plan);
+      const normalizedPlanPayload = normalizeAssistantSearchPayload(planPayload);
+      if (normalizedPlanPayload) {
+        rememberAssistantResultSetFromPayload(normalizedPlanPayload, {
+          question,
+          intent: plan.intent || normalizedPlanPayload.intent || '',
+        });
+      }
+
+      if (plan?.ui_action?.auto_apply && normalizedPlanPayload) {
+        applyAssistantPayloadToDashboard(normalizedPlanPayload, { fallbackQuery: question });
+      }
+
+      const optionSeed = buildDashboardPlanOptions(plan, question, Array.isArray(data?.options) ? data.options : []);
+      if (Array.isArray(optionSeed) && optionSeed.length) {
+        attachEditaisOptions(
+          typingMsg,
+          question,
+          optionSeed,
+          normalizedPlanPayload || planPayload || null
+        );
+      }
+    } catch (err) {
+      console.warn('[CHAT][dashboard-intelligence] fallback local ativado', err);
+      const semanticOutcome = runLocalDashboardSemanticAssistant(question);
+      const semanticReply = normalizeConciseBotText(
+        semanticOutcome?.reply || 'Nao consegui responder com os dados estruturados do dashboard.'
+      );
+      setMessageText(typingMsg, semanticReply);
+      chatState = appendConversationTurn(chatState, 'assistant', semanticReply);
+      persistChatState(chatState);
+
+      const semanticPayload = normalizeAssistantSearchPayload(semanticOutcome?.structuredPayload || null);
+      if (semanticPayload) {
+        rememberAssistantResultSetFromPayload(semanticPayload, {
+          question,
+          intent: semanticOutcome?.intent || semanticPayload?.intent || '',
+        });
+      }
+
+      if (Array.isArray(semanticOutcome?.options) && semanticOutcome.options.length) {
+        attachEditaisOptions(
+          typingMsg,
+          question,
+          semanticOutcome.options,
+          semanticPayload || semanticOutcome?.structuredPayload || null
+        );
+      }
+    } finally {
+      setChatBusy(false);
+      scrollToBottom();
+    }
+    return;
+  }
 
   setChatBusy(true);
   const typingMsg = addMessage('digitando...', 'bot', null, { isTyping: true });
-  const contextualEditalId = chatState?.edital_id ?? chatState?.editalId ?? null;
   const canApplyDashboardSearch = !contextualEditalId;
 
   try {
@@ -3457,17 +4411,42 @@ async function handleChatSend() {
 
     if (!res.ok) {
       const localOutcome = buildLocalAssistantOutcome(question);
+      const fallbackText = localOutcome?.reply || 'O chat está indisponível no momento. Tenta de novo em alguns instantes.';
       setMessageText(
         typingMsg,
-        localOutcome?.reply || 'O chat está indisponível no momento. Tenta de novo em alguns instantes.'
+        fallbackText
       );
+      chatState = appendConversationTurn(chatState, 'assistant', fallbackText);
+      persistChatState(chatState);
       if (canApplyDashboardSearch && localOutcome?.shouldSearch) {
         attachEditaisOptions(typingMsg, question);
       }
       return;
     }
 
-    chatState = data?.state ?? chatState;
+    const hasBackendState = Boolean(data?.state && typeof data.state === 'object');
+    if (Object.prototype.hasOwnProperty.call(data || {}, 'state')) {
+      if (data?.state && typeof data.state === 'object') {
+        chatState = ensureChatSessionState(data.state);
+        persistChatState(chatState);
+        updateChatHeader();
+      } else {
+        clearActiveEditalContext({ clearAssistantContext: true });
+      }
+    }
+
+    if (data?.switch_to_general) {
+      clearActiveEditalContext({ clearAssistantContext: true });
+      const switchText = normalizeBotText(
+        data?.reply || 'Entendi, saindo do edital atual. Agora voce pode buscar outro tema.'
+      );
+      setMessageText(typingMsg, switchText);
+      if (!hasBackendState) {
+        chatState = appendConversationTurn(chatState, 'assistant', switchText);
+      }
+      persistChatState(chatState);
+      return;
+    }
 
     // tolera nomes diferentes de campo
     const answer =
@@ -3480,7 +4459,8 @@ async function handleChatSend() {
       null;
 
     const localOutcome = buildLocalAssistantOutcome(question);
-    const isLocalNonSearch = localOutcome?.intent !== 'edital_search';
+    const preferContextualAnswer = Boolean(contextualEditalId);
+    const isLocalNonSearch = !preferContextualAnswer && localOutcome?.intent !== 'edital_search';
     const rawText = isLocalNonSearch
       ? (localOutcome?.reply || 'Não consegui responder agora.')
       : ((answer && String(answer).trim())
@@ -3490,6 +4470,20 @@ async function handleChatSend() {
     const finalText = extracted.text || rawText;
     const finalSources = normalizeSources(data?.sources, extracted.names);
     setMessageText(typingMsg, finalText, finalSources);
+    if (!hasBackendState) {
+      chatState = appendConversationTurn(chatState, 'assistant', finalText);
+    }
+    if (data?.topic_detection && typeof data.topic_detection === 'object') {
+      chatState = updateTopicDetection(chatState, data.topic_detection);
+      console.info('[CHAT][topic-detector][backend]', {
+        context: { type: chatState?.activeContextType, entityId: chatState?.activeEntityId },
+        userMessage: String(question || '').slice(0, 180),
+        decision: data.topic_detection?.decision,
+        confidence: Number(data.topic_detection?.confidence || 0).toFixed(2),
+        reason: data.topic_detection?.reason,
+      });
+    }
+    persistChatState(chatState);
 
     const backendOptions = Array.isArray(data?.options) ? data.options : [];
     const backendStructuredPayload = normalizeAssistantSearchPayload(
@@ -3520,7 +4514,10 @@ async function handleChatSend() {
   } catch (e) {
     console.error('Erro no chat:', e);
     const localOutcome = buildLocalAssistantOutcome(question);
-    setMessageText(typingMsg, localOutcome?.reply || 'Deu ruim aqui do meu lado. Tenta de novo em alguns segundos.');
+    const fallbackText = localOutcome?.reply || 'Deu ruim aqui do meu lado. Tenta de novo em alguns segundos.';
+    setMessageText(typingMsg, fallbackText);
+    chatState = appendConversationTurn(chatState, 'assistant', fallbackText);
+    persistChatState(chatState);
     if (canApplyDashboardSearch && localOutcome?.shouldSearch) {
       attachEditaisOptions(typingMsg, question);
     }

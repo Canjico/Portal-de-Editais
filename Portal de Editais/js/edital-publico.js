@@ -25,7 +25,10 @@ async function initPublicSharePage() {
 
   const session = await resolveSessionStatus();
   if (session.authenticated && window.AthosTheme?.setPreference && session.profile?.themePreference) {
-    window.AthosTheme.setPreference(session.profile.themePreference);
+    const nextTheme = window.AthosTheme.resolveProfilePreference
+      ? window.AthosTheme.resolveProfilePreference(session.profile.themePreference)
+      : session.profile.themePreference;
+    window.AthosTheme.setPreference(nextTheme);
   }
   if (session.authenticated) {
     const redirected = redirectToAuthenticatedExperience(shareToken, session.profile);
@@ -401,8 +404,7 @@ function renderRestrictedDocumentsCallout() {
     <section class="docs-lock-callout" role="note" aria-label="Documentos restritos">
       <span class="docs-lock-badge">Acesso restrito</span>
       <h3>Documentos e análise com IA disponíveis apenas para usuários autenticados</h3>
-      <p>Entre na plataforma para acessar os anexos completos deste edital e usar os recursos de IA.</p>
-      <a class="btn btn-primary" href="${escapeAttr(LANDING_PAGE_URL)}">Acessar plataforma</a>
+      <p>Entre na plataforma para acessar os anexos completos deste edital e usar os recursos de IA. Use o botão "Acessar plataforma" no topo desta página.</p>
     </section>
   `;
 }

@@ -10,6 +10,8 @@
   const HEARTBEAT_INTERVAL_MS = 30000;
   const ACTIVE_GRACE_MS = 60000;
   const FAILED_RETRY_COOLDOWN_MS = 300000;
+  const START_AFTER_APP_READY_DELAY_MS = 1200;
+  const START_FALLBACK_DELAY_MS = 6000;
 
   const HEARTBEAT_ENDPOINTS = [
     '/cliente/presenca/heartbeat',
@@ -31,9 +33,12 @@
 
   let started = false;
   let intervalId = null;
+  let deferredStartTimerId = null;
+  let fallbackStartTimerId = null;
   let lastInteractionAt = Date.now();
   let resolvedEndpoint = null;
   let failedProbeUntil = 0;
+  let firstInteractionListeners = [];
 
   function getStoredToken() {
     try {
@@ -217,9 +222,88 @@
     });
   }
 
+  function clearDeferredStartTimers() {
+    if (deferredStartTimerId) {
+      clearTimeout(deferredStartTimerId);
+      deferredStartTimerId = null;
+    }
+    if (fallbackStartTimerId) {
+      clearTimeout(fallbackStartTimerId);
+      fallbackStartTimerId = null;
+    }
+  }
+
+  function removeFirstInteractionListeners() {
+    if (!firstInteractionListeners.length) return;
+    firstInteractionListeners.forEach(({ target, eventName, handler, options }) => {
+      try {
+        target.removeEventListener(eventName, handler, options);
+      } catch (_) {}
+    });
+    firstInteractionListeners = [];
+  }
+
+  function bindFirstInteractionStart() {
+    if (firstInteractionListeners.length) return;
+
+    const startOnInteraction = () => {
+      removeFirstInteractionListeners();
+      clearDeferredStartTimers();
+      start();
+    };
+
+    const bindings = [
+      { target: window, eventName: 'pointerdown', options: { once: true, passive: true } },
+      { target: window, eventName: 'keydown', options: { once: true } },
+      { target: window, eventName: 'touchstart', options: { once: true, passive: true } },
+    ];
+
+    bindings.forEach(({ target, eventName, options }) => {
+      target.addEventListener(eventName, startOnInteraction, options);
+      firstInteractionListeners.push({ target, eventName, handler: startOnInteraction, options });
+    });
+  }
+
+  function scheduleStartAfterBootstrapDelay(delayMs = START_AFTER_APP_READY_DELAY_MS) {
+    if (started || deferredStartTimerId) return;
+    const safeDelay = Number.isFinite(delayMs) ? Math.max(0, delayMs) : START_AFTER_APP_READY_DELAY_MS;
+    deferredStartTimerId = setTimeout(() => {
+      deferredStartTimerId = null;
+      removeFirstInteractionListeners();
+      start();
+    }, safeDelay);
+  }
+
+  function bootstrapDeferredStart() {
+    bindFirstInteractionStart();
+
+    const trySchedule = () => {
+      const appLoading = Boolean(document.body?.classList?.contains?.('app-loading'));
+      if (!appLoading) {
+        scheduleStartAfterBootstrapDelay();
+      }
+    };
+
+    window.addEventListener('athos:app-ready', () => {
+      scheduleStartAfterBootstrapDelay();
+    }, { once: true });
+
+    fallbackStartTimerId = setTimeout(() => {
+      scheduleStartAfterBootstrapDelay(0);
+    }, START_FALLBACK_DELAY_MS);
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', trySchedule, { once: true });
+      return;
+    }
+    trySchedule();
+  }
+
   function start() {
     if (started) return;
     started = true;
+    clearDeferredStartTimers();
+    removeFirstInteractionListeners();
     resolvedEndpoint = readCachedEndpoint();
     registerUserInteraction();
     bindActivityEvents();
@@ -235,6 +319,7 @@
   function stop() {
     if (!started) return;
     started = false;
+    clearDeferredStartTimers();
     if (intervalId) {
       clearInterval(intervalId);
       intervalId = null;
@@ -253,9 +338,5 @@
     },
   };
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', start, { once: true });
-  } else {
-    start();
-  }
+  bootstrapDeferredStart();
 })();

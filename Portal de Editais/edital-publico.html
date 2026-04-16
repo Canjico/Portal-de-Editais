@@ -9,8 +9,8 @@
       try {
         const key = 'athos_theme_preference';
         const valid = { light: true, dark: true, system: true };
-        let pref = String(localStorage.getItem(key) || 'system').toLowerCase().trim();
-        if (!valid[pref]) pref = 'system';
+        let pref = String(localStorage.getItem(key) || 'light').toLowerCase().trim();
+        if (!valid[pref]) pref = 'light';
         const effective = pref === 'system'
           ? (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
           : pref;
@@ -31,7 +31,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="./CSS/edital-publico.css?v=20260317.4" />
+  <link rel="stylesheet" href="./CSS/edital-publico.css?v=20260322.1" />
 </head>
 
 <body>
@@ -43,6 +43,8 @@
       </a>
 
       <div class="share-top-actions">
+        <a class="btn btn-outline" href="./termos-de-uso">Termos de Uso</a>
+        <a class="btn btn-outline" href="./politica-de-privacidade">Política de Privacidade</a>
         <a class="btn btn-primary" id="headerPlatformLink" href="/athos">Acessar plataforma</a>
       </div>
     </header>
@@ -55,12 +57,16 @@
       <section id="publicShareContent" aria-live="polite"></section>
     </main>
 
-    <footer class="share-footer">
-      Athos · Visualização pública limitada para edital compartilhado.
+    <footer class="share-footer legal-footer">
+      <span>Athos · Visualização pública limitada para edital compartilhado.</span>
+      <span class="share-footer-sep" aria-hidden="true">&bull;</span>
+      <a href="./termos-de-uso">Termos de Uso</a>
+      <span class="share-footer-sep" aria-hidden="true">&bull;</span>
+      <a href="./politica-de-privacidade">Política de Privacidade</a>
     </footer>
   </div>
 
   <script src="./js/theme-init.js?v=20260317.2"></script>
-  <script type="module" src="./js/edital-publico.js?v=20260317.5"></script>
+  <script type="module" src="./js/edital-publico.js?v=20260322.1"></script>
 </body>
 </html>

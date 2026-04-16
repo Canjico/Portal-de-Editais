@@ -9,14 +9,36 @@
   function normalizePreference(value) {
     const raw = String(value || '').trim().toLowerCase();
     if (raw === 'auto') return 'system';
-    return VALID.has(raw) ? raw : 'system';
+    return VALID.has(raw) ? raw : 'light';
+  }
+
+  function readStoredPreferenceRaw() {
+    try {
+      return String(localStorage.getItem(STORAGE_KEY) || '').trim().toLowerCase();
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function hasStoredPreference() {
+    const raw = readStoredPreferenceRaw();
+    return raw === 'auto' || VALID.has(raw);
+  }
+
+  function resolveProfilePreference(preferenceFromApi) {
+    const pref = normalizePreference(preferenceFromApi);
+    if (pref !== 'system') return pref;
+    if (hasStoredPreference()) {
+      return normalizePreference(readStoredPreferenceRaw());
+    }
+    return 'light';
   }
 
   function readStoredPreference() {
     try {
       return normalizePreference(localStorage.getItem(STORAGE_KEY));
     } catch (_) {
-      return 'system';
+      return 'light';
     }
   }
 
@@ -122,6 +144,7 @@
     STORAGE_KEY,
     normalizePreference,
     readStoredPreference,
+    resolveProfilePreference,
     resolveEffectiveTheme,
     applyTheme,
     setPreference(preference, options = {}) {

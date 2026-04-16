@@ -26,7 +26,7 @@ function normalizeThemePreference(value) {
   const raw = normalizeTextValue(value, { lower: true });
   if (raw === 'auto') return 'system';
   if (raw === 'light' || raw === 'dark' || raw === 'system') return raw;
-  return 'system';
+  return 'light';
 }
 
 function normalizeUf(value) {

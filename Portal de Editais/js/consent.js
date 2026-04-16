@@ -397,6 +397,7 @@
               <p>Finalidades: autenticação, segurança da conta, melhoria do produto e comunicação institucional.</p>
               <p>Base legal: execução de contrato/interesse legítimo para essenciais e consentimento para opcionais.</p>
               <p>Contato para privacidade e exercício de direitos: <a href="mailto:privacidade@atimus.agr.br">privacidade@atimus.agr.br</a>.</p>
+              <p>Documentos oficiais: <a href="./termos-de-uso">Termos de Uso</a> e <a href="./politica-de-privacidade">Política de Privacidade</a>.</p>
               <p>Recomendação: validar este texto com o jurídico da empresa antes da publicação final.</p>
             </div>
           </details>

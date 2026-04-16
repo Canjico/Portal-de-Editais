@@ -9,8 +9,8 @@
       try {
         const key = 'athos_theme_preference';
         const valid = { light: true, dark: true, system: true };
-        let pref = String(localStorage.getItem(key) || 'system').toLowerCase().trim();
-        if (!valid[pref]) pref = 'system';
+        let pref = String(localStorage.getItem(key) || 'light').toLowerCase().trim();
+        if (!valid[pref]) pref = 'light';
         const effective = pref === 'system'
           ? (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
           : pref;
@@ -241,7 +241,13 @@
 
             <div class="pagination" id="pagination"></div>
 
-            <footer class="app-footer">&copy; 2026 - desenvolvido pela Atimus</footer>
+            <footer class="app-footer">
+              <span>&copy; 2026 - desenvolvido pela Atimus</span>
+              <span class="app-footer-sep" aria-hidden="true">&bull;</span>
+              <a href="./termos-de-uso">Termos de Uso</a>
+              <span class="app-footer-sep" aria-hidden="true">&bull;</span>
+              <a href="./politica-de-privacidade">Política de Privacidade</a>
+            </footer>
           </section>
         </div>
 
@@ -285,6 +291,6 @@
   <script src="./js/theme-init.js?v=20260317.2"></script>
   <script src="./js/consent.js?v=20260310.1"></script>
   <script src="./js/presence.js?v=20260309.1"></script>
-  <script type="module" src="./js/main.js?v=20260318.3"></script>
+  <script type="module" src="./js/main.js?v=20260326.4"></script>
 </body>
 </html>
