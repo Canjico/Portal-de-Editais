@@ -68,6 +68,7 @@ const APP_BASE_URL = new URL('../', import.meta.url);
 const SHARE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{20,255}$/;
 const PERF_DEBUG_TAG = '[PERF][Dashboard]';
 const LIST_REQUEST_DEBUG_TAG = '[PERF][Dashboard][Listagem]';
+const FACET_REQUEST_DEBUG_TAG = '[PERF][Dashboard][Facets]';
 const PERF_DEBUG_STORAGE_KEY = 'athos_perf_debug';
 const SEARCH_INPUT_DEBOUNCE_MS = 300;
 
@@ -176,6 +177,8 @@ let applyFiltersRenderSeq = 0;
 let searchInputDebounceTimer = null;
 let listRequestCounter = 0;
 let activeListRequest = null;
+let facetRequestCounter = 0;
+let activeFacetRequest = null;
 let serverPageState = {
   total: 0,
   page: 1,
@@ -196,6 +199,8 @@ let serverFilterFacetsSignature = '';
 let lastRenderedFacetSignature = '__not_rendered__';
 let serverFacetContextSignature = '';
 let serverFacetsLoaded = false;
+let serverFacetUiState = 'ready';
+let serverFacetUiMessage = '';
 const loadEditaisSingleFlight = createSingleFlight(() => loadEditais());
 const loadFavoritosSingleFlight = createSingleFlight(() => loadFavoritos());
 
@@ -506,7 +511,6 @@ async function init() {
     loadEditais: loadEditaisSingleFlight,
     loadFavoritos: loadFavoritosSingleFlight,
     onEditaisReady: async () => {
-      applyFavoritosToLoadedEditais();
       if (hasPersonalizedRelevance(editaisOriginais)) {
         setSortField('relevancia', { resetDirection: true });
       }
@@ -764,6 +768,69 @@ function finishTrackedListRequest(requestMeta, { aborted = false, ok = false, er
     requestId: requestMeta.requestId,
     path: requestMeta.path,
     durationMs,
+    ok: Boolean(ok),
+  });
+}
+
+function beginTrackedFacetRequest(path, contextSignature = '') {
+  const targetPath = String(path || '').trim();
+  if (activeFacetRequest?.controller) {
+    activeFacetRequest.controller.abort('superseded_by_newer_facet_request');
+  }
+
+  const requestId = ++facetRequestCounter;
+  const controller = new AbortController();
+  const startedAt = performance.now();
+  activeFacetRequest = {
+    requestId,
+    controller,
+    path: targetPath,
+    startedAt,
+    contextSignature: String(contextSignature || ''),
+  };
+
+  if (isPerfDebugEnabled()) {
+    console.debug(`${FACET_REQUEST_DEBUG_TAG} start`, {
+      requestId,
+      path: targetPath,
+      contextSignature: String(contextSignature || ''),
+    });
+  }
+
+  return activeFacetRequest;
+}
+
+function finishTrackedFacetRequest(requestMeta, { aborted = false, ok = false, error = null } = {}) {
+  if (!requestMeta) return;
+  const isCurrent = activeFacetRequest?.requestId === requestMeta.requestId;
+  if (isCurrent) activeFacetRequest = null;
+
+  if (!isPerfDebugEnabled()) return;
+  const durationMs = Number((performance.now() - Number(requestMeta.startedAt || 0)).toFixed(1));
+  if (aborted) {
+    console.debug(`${FACET_REQUEST_DEBUG_TAG} canceled`, {
+      requestId: requestMeta.requestId,
+      path: requestMeta.path,
+      durationMs,
+      contextSignature: requestMeta.contextSignature,
+    });
+    return;
+  }
+  if (error) {
+    console.debug(`${FACET_REQUEST_DEBUG_TAG} failed`, {
+      requestId: requestMeta.requestId,
+      path: requestMeta.path,
+      durationMs,
+      contextSignature: requestMeta.contextSignature,
+      error: String(error?.message || error),
+    });
+    return;
+  }
+  console.debug(`${FACET_REQUEST_DEBUG_TAG} done`, {
+    requestId: requestMeta.requestId,
+    path: requestMeta.path,
+    durationMs,
+    contextSignature: requestMeta.contextSignature,
     ok: Boolean(ok),
   });
 }
@@ -1356,6 +1423,30 @@ function buildFacetContextSignature({ searchContext = null } = {}) {
   });
 }
 
+function setServerFacetUiState(state = 'ready', message = '') {
+  const normalizedState = String(state || '').trim().toLowerCase();
+  if (normalizedState === 'loading') {
+    serverFacetUiState = 'loading';
+  } else if (normalizedState === 'unavailable') {
+    serverFacetUiState = 'unavailable';
+  } else {
+    serverFacetUiState = 'ready';
+  }
+  serverFacetUiMessage = String(message || '').trim();
+}
+
+function setServerFilterFacetsUnavailable(
+  { contextSignature = '', uiState = 'unavailable', message = '' } = {},
+) {
+  serverFilterFacets = getEmptyServerFilterFacets();
+  serverFilterFacetsSignature = buildFacetSignature(serverFilterFacets);
+  if (contextSignature) {
+    serverFacetContextSignature = String(contextSignature);
+  }
+  serverFacetsLoaded = false;
+  setServerFacetUiState(uiState, message);
+}
+
 function setServerFilterFacets(rawFacets, { contextSignature = '' } = {}) {
   const normalized = normalizeServerFacetPayload(rawFacets) || getEmptyServerFilterFacets();
   const nextSignature = buildFacetSignature(normalized);
@@ -1366,7 +1457,86 @@ function setServerFilterFacets(rawFacets, { contextSignature = '' } = {}) {
     serverFacetContextSignature = String(contextSignature);
   }
   serverFacetsLoaded = true;
+  setServerFacetUiState('ready');
   return changed;
+}
+
+function buildCurrentFacetContextSignature() {
+  const termo = (searchInput?.value || '').trim();
+  const searchContext = buildSearchQueryContext(termo);
+  return buildFacetContextSignature({ searchContext });
+}
+
+async function recoverServerFacetsForContext({ searchContext = null, contextSignature = '' } = {}) {
+  const resolvedContextSignature = String(
+    contextSignature || buildFacetContextSignature({ searchContext }),
+  );
+  const path = buildEditaisFacetsPath({ searchContext });
+  const requestMeta = beginTrackedFacetRequest(path, resolvedContextSignature);
+  let aborted = false;
+  try {
+    const { res, data, facets } = await fetchEditaisFacetsFromApi({
+      searchContext,
+      path,
+      signal: requestMeta.controller.signal,
+    });
+
+    if (activeFacetRequest?.requestId !== requestMeta.requestId) {
+      finishTrackedFacetRequest(requestMeta, { aborted: true });
+      return false;
+    }
+    if (!res.ok) {
+      throw new Error(`Erro na API (${res.status})`);
+    }
+
+    const latestContextSignature = buildCurrentFacetContextSignature();
+    if (latestContextSignature !== resolvedContextSignature) {
+      finishTrackedFacetRequest(requestMeta, { aborted: true });
+      return false;
+    }
+
+    if (!facets) {
+      setServerFilterFacetsUnavailable({
+        contextSignature: resolvedContextSignature,
+        uiState: 'unavailable',
+        message: 'Os filtros do servidor estão indisponíveis no momento.',
+      });
+      generateDynamicFilters();
+      finishTrackedFacetRequest(requestMeta, { ok: false });
+      if (isPerfDebugEnabled()) {
+        console.debug(`${FACET_REQUEST_DEBUG_TAG} missing_facets_payload`, {
+          contextSignature: resolvedContextSignature,
+          path,
+          statusCode: Number(res?.status || 0),
+          hasData: Boolean(data),
+        });
+      }
+      return false;
+    }
+
+    setServerFilterFacets(facets, { contextSignature: resolvedContextSignature });
+    generateDynamicFilters();
+    finishTrackedFacetRequest(requestMeta, { ok: true });
+    return true;
+  } catch (err) {
+    if (isAbortError(err)) {
+      aborted = true;
+      finishTrackedFacetRequest(requestMeta, { aborted: true });
+      return false;
+    }
+    setServerFilterFacetsUnavailable({
+      contextSignature: resolvedContextSignature,
+      uiState: 'unavailable',
+      message: 'Não foi possível atualizar os filtros agora.',
+    });
+    generateDynamicFilters();
+    finishTrackedFacetRequest(requestMeta, { error: err });
+    return false;
+  } finally {
+    if (!aborted && activeFacetRequest?.requestId === requestMeta.requestId) {
+      activeFacetRequest = null;
+    }
+  }
 }
 
 function resolveServerStatusFilter(assistantStatusFilters = []) {
@@ -1428,6 +1598,16 @@ function collectEditaisServerQueryState({ searchContext = null } = {}) {
   };
 }
 
+function appendEditaisQueryStateToParams(params, queryState) {
+  if (!(params instanceof URLSearchParams) || !queryState || typeof queryState !== 'object') return;
+  if (queryState.q) params.set('q', queryState.q);
+  if (queryState.favoritosOnly) params.set('favoritos_only', 'true');
+  queryState.estado.forEach((value) => params.append('estado', value));
+  queryState.instituicao.forEach((value) => params.append('instituicao', value));
+  queryState.area.forEach((value) => params.append('area', value));
+  queryState.ids.forEach((value) => params.append('ids', value));
+}
+
 function buildEditaisListPath({ page = 1, pageSize = PAGE_SIZE, searchContext = null, includeFacets = false } = {}) {
   const params = new URLSearchParams();
   const queryState = collectEditaisServerQueryState({ searchContext });
@@ -1441,14 +1621,24 @@ function buildEditaisListPath({ page = 1, pageSize = PAGE_SIZE, searchContext = 
   params.set('sort_field', queryState.sortField || 'prazo');
   params.set('sort_direction', queryState.sortDirection || 'desc');
   if (includeFacets) params.set('include_facets', 'true');
+  appendEditaisQueryStateToParams(params, queryState);
 
-  if (queryState.q) params.set('q', queryState.q);
-  if (queryState.favoritosOnly) params.set('favoritos_only', 'true');
+  return `/editais?${params.toString()}`;
+}
 
-  queryState.estado.forEach((value) => params.append('estado', value));
-  queryState.instituicao.forEach((value) => params.append('instituicao', value));
-  queryState.area.forEach((value) => params.append('area', value));
-  queryState.ids.forEach((value) => params.append('ids', value));
+function buildEditaisFacetsPath({ searchContext = null } = {}) {
+  const params = new URLSearchParams();
+  const queryState = collectEditaisServerQueryState({ searchContext });
+
+  params.set('modo', 'card');
+  params.set('include_relevance', 'false');
+  params.set('page', '1');
+  params.set('page_size', '1');
+  params.set('status', queryState.status || 'todos');
+  params.set('sort_field', queryState.sortField || 'prazo');
+  params.set('sort_direction', queryState.sortDirection || 'desc');
+  params.set('include_facets', 'true');
+  appendEditaisQueryStateToParams(params, queryState);
 
   return `/editais?${params.toString()}`;
 }
@@ -1512,6 +1702,24 @@ async function fetchEditaisPageFromApi({
   return { path: resolvedPath, res, data, parsed: parseEditaisListPayload(data) };
 }
 
+function parseEditaisFacetsPayload(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  if (!Object.prototype.hasOwnProperty.call(raw, 'facets')) return null;
+  return parseServerFilterFacets(raw.facets);
+}
+
+async function fetchEditaisFacetsFromApi({
+  searchContext = null,
+  signal = null,
+  path = '',
+} = {}) {
+  const resolvedPath = String(path || '').trim() || buildEditaisFacetsPath({ searchContext });
+  const fetchOptions = { method: 'GET' };
+  if (signal) fetchOptions.signal = signal;
+  const { res, data } = await apiFetchJson(resolvedPath, fetchOptions);
+  return { path: resolvedPath, res, data, facets: parseEditaisFacetsPayload(data) };
+}
+
 function setServerPageState(parsedPage) {
   serverPageState = {
     total: Number(parsedPage?.total || 0) || 0,
@@ -1525,14 +1733,21 @@ function hydrateEditaisFromPagePayload(
   parsedPage,
   { includeFacetsRequested = false, facetContextSignature = '' } = {},
 ) {
+  let facetsStatus = 'skipped';
   editaisOriginais = (parsedPage?.items || []).map(normalizeEdital).filter(Boolean);
   setServerPageState(parsedPage);
   currentPage = serverPageState.page;
   if (includeFacetsRequested) {
     if (parsedPage?.facets) {
       setServerFilterFacets(parsedPage.facets, { contextSignature: facetContextSignature });
+      facetsStatus = 'loaded';
     } else {
-      setServerFilterFacets(getEmptyServerFilterFacets(), { contextSignature: facetContextSignature });
+      setServerFilterFacetsUnavailable({
+        contextSignature: facetContextSignature,
+        uiState: 'unavailable',
+        message: 'Os filtros do servidor não foram retornados nesta consulta.',
+      });
+      facetsStatus = 'missing';
       if (isPerfDebugEnabled()) {
         console.debug(`${LIST_REQUEST_DEBUG_TAG} facets_missing_in_response`, {
           contextSignature: String(facetContextSignature || ''),
@@ -1541,6 +1756,7 @@ function hydrateEditaisFromPagePayload(
     }
   }
   applyFavoritosToLoadedEditais();
+  return { facetsStatus };
 }
 
 async function loadServerPage(
@@ -1598,13 +1814,32 @@ async function loadServerPage(
       return false;
     }
 
-    hydrateEditaisFromPagePayload(parsed, {
+    const hydration = hydrateEditaisFromPagePayload(parsed, {
       includeFacetsRequested: includeFacets,
       facetContextSignature: resolvedFacetContextSignature,
     });
+    let facetsReadyForContext = hydration?.facetsStatus === 'loaded';
+    if (includeFacets && hydration?.facetsStatus === 'missing') {
+      setServerFilterFacetsUnavailable({
+        contextSignature: resolvedFacetContextSignature,
+        uiState: 'loading',
+        message: 'Atualizando opções de filtros...',
+      });
+      generateDynamicFilters();
+      facetsReadyForContext = await recoverServerFacetsForContext({
+        searchContext,
+        contextSignature: resolvedFacetContextSignature,
+      });
+      if (activeListRequest?.requestId !== requestMeta.requestId) {
+        finishTrackedListRequest(requestMeta, { aborted: true });
+        return false;
+      }
+    }
     lastLoadedListPath = path;
-    lastLoadedListIncludedFacets = Boolean(includeFacets);
-    generateDynamicFilters();
+    lastLoadedListIncludedFacets = Boolean(includeFacets && facetsReadyForContext);
+    if (includeFacets) {
+      generateDynamicFilters();
+    }
     finishTrackedListRequest(requestMeta, { ok: true });
     return true;
   } catch (err) {
@@ -1678,12 +1913,25 @@ async function loadEditais() {
       throw new Error(`Erro na API (${res.status})`);
     }
 
-    hydrateEditaisFromPagePayload(parsed, {
+    const hydration = hydrateEditaisFromPagePayload(parsed, {
       includeFacetsRequested: true,
       facetContextSignature,
     });
+    let facetsReadyForContext = hydration?.facetsStatus === 'loaded';
+    if (hydration?.facetsStatus === 'missing') {
+      setServerFilterFacetsUnavailable({
+        contextSignature: facetContextSignature,
+        uiState: 'loading',
+        message: 'Atualizando opções de filtros...',
+      });
+      generateDynamicFilters();
+      facetsReadyForContext = await recoverServerFacetsForContext({
+        searchContext: null,
+        contextSignature: facetContextSignature,
+      });
+    }
     lastLoadedListPath = path;
-    lastLoadedListIncludedFacets = true;
+    lastLoadedListIncludedFacets = Boolean(facetsReadyForContext);
   } catch (e) {
     console.error('Erro ao carregar editais:', e);
     container.innerHTML = `
@@ -2033,11 +2281,33 @@ function renderFacetOptions(type, values, selectedValues = []) {
   });
 }
 
+function renderFacetInfoState(type, message) {
+  const box = document.querySelector(`.filter-options[data-filter-type="${type}"]`);
+  if (!box) return;
+  box.innerHTML = `<div style="font-size:12px; color:#9CA3AF; padding:6px;">${escapeHtml(message)}</div>`;
+}
+
 function generateDynamicFilters() {
   const resolvedFacets = normalizeServerFacetPayload(serverFilterFacets) || getEmptyServerFilterFacets();
-  const currentSignature = buildFacetSignature(resolvedFacets);
+  const currentSignature = `${buildFacetSignature(resolvedFacets)}|${serverFacetUiState}|${serverFacetUiMessage}`;
   if (currentSignature === lastRenderedFacetSignature) return;
   lastRenderedFacetSignature = currentSignature;
+
+  if (serverFacetUiState === 'loading') {
+    const message = serverFacetUiMessage || 'Atualizando opções de filtros...';
+    renderFacetInfoState('estado', message);
+    renderFacetInfoState('instituicao', message);
+    renderFacetInfoState('area', message);
+    return;
+  }
+
+  if (serverFacetUiState === 'unavailable') {
+    const message = serverFacetUiMessage || 'Os filtros do servidor estão indisponíveis no momento.';
+    renderFacetInfoState('estado', message);
+    renderFacetInfoState('instituicao', message);
+    renderFacetInfoState('area', message);
+    return;
+  }
 
   renderFacetOptions('estado', resolvedFacets.estado, applied.estado);
   renderFacetOptions('instituicao', resolvedFacets.instituicao, applied.instituicao);
