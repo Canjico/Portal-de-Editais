@@ -163,8 +163,6 @@ let editaisOriginais = [];
 
 const PAGE_SIZE = 12;
 const INITIAL_PAGE_SIZE = 12;
-const BULK_PAGE_SIZE = 120;
-const ENABLE_FULL_DATASET_FALLBACK = false;
 let currentPage = 1;
 let lastFiltered = [];
 let kpiFilter = 'all';
@@ -172,8 +170,6 @@ let assistantPanelContext = null;
 let assistantSemanticMemory = createDashboardAssistantMemory();
 let bootstrapInitPromise = null;
 let uiEventsBound = false;
-let allEditaisLoaded = false;
-let fullDatasetLoadPromise = null;
 let lastLoadedListPath = '';
 let applyFiltersRenderSeq = 0;
 let searchInputDebounceTimer = null;
@@ -184,6 +180,11 @@ let serverPageState = {
   page: 1,
   pageSize: PAGE_SIZE,
   hasNext: false,
+};
+let serverFilterFacets = {
+  estado: [],
+  instituicao: [],
+  area: [],
 };
 const loadEditaisSingleFlight = createSingleFlight(() => loadEditais());
 const loadFavoritosSingleFlight = createSingleFlight(() => loadFavoritos());
@@ -1249,6 +1250,71 @@ function mergeUniqueListValues(...lists) {
   return out;
 }
 
+function normalizeServerFacetValue(type, value) {
+  if (type === 'estado') return normalizeEstadoValue(value);
+  if (type === 'area') return toCanonicalCategory(value);
+  return String(value || '').trim();
+}
+
+function buildFacetItemsFromCurrentPage(type) {
+  const counts = new Map();
+  for (const item of editaisOriginais) {
+    const raw = type === 'instituicao'
+      ? (item?.instituicao ?? '').toString().trim()
+      : item?.[type];
+    const clean = normalizeServerFacetValue(type, raw);
+    if (!clean) continue;
+    counts.set(clean, (counts.get(clean) || 0) + 1);
+  }
+
+  return Array.from(counts.entries())
+    .map(([value, count]) => ({ value, count }))
+    .sort((a, b) => {
+      const diff = (b.count || 0) - (a.count || 0);
+      if (diff !== 0) return diff;
+      return String(a.value || '').localeCompare(String(b.value || ''), 'pt-BR');
+    });
+}
+
+function normalizeServerFacetItems(type, rawItems) {
+  const list = Array.isArray(rawItems) ? rawItems : [];
+  const counts = new Map();
+
+  list.forEach((item) => {
+    const valueRaw = (item && typeof item === 'object') ? item.value : item;
+    const parsedCount = Number((item && typeof item === 'object') ? item.count : 0);
+    const value = normalizeServerFacetValue(type, valueRaw);
+    if (!value) return;
+    const safeCount = Number.isFinite(parsedCount) && parsedCount > 0 ? Math.floor(parsedCount) : 0;
+    counts.set(value, (counts.get(value) || 0) + safeCount);
+  });
+
+  return Array.from(counts.entries())
+    .map(([value, count]) => ({ value, count }))
+    .sort((a, b) => {
+      const diff = (b.count || 0) - (a.count || 0);
+      if (diff !== 0) return diff;
+      return String(a.value || '').localeCompare(String(b.value || ''), 'pt-BR');
+    });
+}
+
+function parseServerFilterFacets(rawFacets) {
+  if (!rawFacets || typeof rawFacets !== 'object') return null;
+  return {
+    estado: normalizeServerFacetItems('estado', rawFacets.estado),
+    instituicao: normalizeServerFacetItems('instituicao', rawFacets.instituicao),
+    area: normalizeServerFacetItems('area', rawFacets.area),
+  };
+}
+
+function hasServerFilterFacets() {
+  return Boolean(
+    (serverFilterFacets.estado && serverFilterFacets.estado.length) ||
+    (serverFilterFacets.instituicao && serverFilterFacets.instituicao.length) ||
+    (serverFilterFacets.area && serverFilterFacets.area.length)
+  );
+}
+
 function resolveServerStatusFilter(assistantStatusFilters = []) {
   if (kpiFilter === 'abertos') return 'aberto';
   if (kpiFilter === 'fechados') return 'encerrado';
@@ -1308,7 +1374,7 @@ function collectEditaisServerQueryState({ searchContext = null } = {}) {
   };
 }
 
-function buildEditaisListPath({ page = 1, pageSize = PAGE_SIZE, searchContext = null } = {}) {
+function buildEditaisListPath({ page = 1, pageSize = PAGE_SIZE, searchContext = null, includeFacets = false } = {}) {
   const params = new URLSearchParams();
   const queryState = collectEditaisServerQueryState({ searchContext });
 
@@ -1320,6 +1386,7 @@ function buildEditaisListPath({ page = 1, pageSize = PAGE_SIZE, searchContext = 
   params.set('status', queryState.status || 'todos');
   params.set('sort_field', queryState.sortField || 'prazo');
   params.set('sort_direction', queryState.sortDirection || 'desc');
+  if (includeFacets) params.set('include_facets', 'true');
 
   if (queryState.q) params.set('q', queryState.q);
   if (queryState.favoritosOnly) params.set('favoritos_only', 'true');
@@ -1343,6 +1410,9 @@ function parseEditaisListPayload(raw) {
   const parsedPageSize = Number(raw?.page_size);
   const parsedTotal = Number(raw?.total);
   const parsedHasNext = raw?.has_next;
+  const rawFacets = raw && typeof raw === 'object' && Object.prototype.hasOwnProperty.call(raw, 'facets')
+    ? parseServerFilterFacets(raw.facets)
+    : null;
 
   const page = Number.isFinite(parsedPage) && parsedPage > 0 ? Math.floor(parsedPage) : 1;
   const pageSize = Number.isFinite(parsedPageSize) && parsedPageSize > 0 ? Math.floor(parsedPageSize) : PAGE_SIZE;
@@ -1358,11 +1428,19 @@ function parseEditaisListPayload(raw) {
     page,
     pageSize,
     hasNext,
+    facets: rawFacets,
   };
 }
 
-async function fetchEditaisPageFromApi({ page = 1, pageSize = PAGE_SIZE, searchContext = null, signal = null, path = '' } = {}) {
-  const resolvedPath = String(path || '').trim() || buildEditaisListPath({ page, pageSize, searchContext });
+async function fetchEditaisPageFromApi({
+  page = 1,
+  pageSize = PAGE_SIZE,
+  searchContext = null,
+  includeFacets = false,
+  signal = null,
+  path = '',
+} = {}) {
+  const resolvedPath = String(path || '').trim() || buildEditaisListPath({ page, pageSize, searchContext, includeFacets });
   const fetchOptions = { method: 'GET' };
   if (signal) fetchOptions.signal = signal;
   const { res, data } = await apiFetchJson(resolvedPath, fetchOptions);
@@ -1378,17 +1456,19 @@ function setServerPageState(parsedPage) {
   };
 }
 
-function hydrateEditaisFromPagePayload(parsedPage, { markAsFull = false } = {}) {
+function hydrateEditaisFromPagePayload(parsedPage) {
   editaisOriginais = (parsedPage?.items || []).map(normalizeEdital).filter(Boolean);
   setServerPageState(parsedPage);
   currentPage = serverPageState.page;
-  allEditaisLoaded = Boolean(markAsFull);
+  if (parsedPage?.facets) {
+    serverFilterFacets = parsedPage.facets;
+  }
   applyFavoritosToLoadedEditais();
 }
 
-async function loadServerPage(page, { pageSize = PAGE_SIZE, searchContext = null } = {}) {
+async function loadServerPage(page, { pageSize = PAGE_SIZE, searchContext = null, includeFacets = false } = {}) {
   const targetPage = Math.max(1, Number(page) || 1);
-  const path = buildEditaisListPath({ page: targetPage, pageSize, searchContext });
+  const path = buildEditaisListPath({ page: targetPage, pageSize, searchContext, includeFacets });
   const requestMeta = beginTrackedListRequest(path);
   let aborted = false;
   try {
@@ -1396,6 +1476,7 @@ async function loadServerPage(page, { pageSize = PAGE_SIZE, searchContext = null
       page: targetPage,
       pageSize,
       searchContext,
+      includeFacets,
       path,
       signal: requestMeta.controller.signal,
     });
@@ -1424,7 +1505,7 @@ async function loadServerPage(page, { pageSize = PAGE_SIZE, searchContext = null
       throw new Error(`Erro na API (${res.status})`);
     }
 
-    hydrateEditaisFromPagePayload(parsed, { markAsFull: false });
+    hydrateEditaisFromPagePayload(parsed);
     lastLoadedListPath = path;
     generateDynamicFilters();
     finishTrackedListRequest(requestMeta, { ok: true });
@@ -1443,75 +1524,6 @@ async function loadServerPage(page, { pageSize = PAGE_SIZE, searchContext = null
     }
   }
 }
-
-async function ensureFullDatasetLoaded(reason = 'interactive_filters') {
-  if (!ENABLE_FULL_DATASET_FALLBACK) {
-    console.info(`[Dashboard] full dataset fallback desativado (${reason}).`);
-    return false;
-  }
-  if (allEditaisLoaded) return true;
-  if (fullDatasetLoadPromise) return fullDatasetLoadPromise;
-
-  fullDatasetLoadPromise = (async () => {
-    const merged = [];
-    let page = 1;
-    let hasNext = true;
-    let safety = 0;
-    const MAX_PAGES = 200;
-
-    while (hasNext && safety < MAX_PAGES) {
-      const { res, data, parsed } = await fetchEditaisPageFromApi({ page, pageSize: BULK_PAGE_SIZE });
-      if (!res.ok) {
-        throw new Error(`Falha ao carregar base completa (${res.status})`);
-      }
-
-      merged.push(...(parsed.items || []));
-      hasNext = Boolean(parsed.hasNext);
-      const totalPages = Math.max(1, Math.ceil((parsed.total || merged.length) / Math.max(1, parsed.pageSize || BULK_PAGE_SIZE)));
-      if (!hasNext && page < totalPages) {
-        hasNext = true;
-      }
-      page += 1;
-      safety += 1;
-    }
-
-    if (safety >= MAX_PAGES) {
-      throw new Error('Limite de paginação atingido ao ampliar a base de editais.');
-    }
-
-    const dedupe = new Map();
-    merged.forEach((raw) => {
-      const key = String(raw?.id ?? '').trim();
-      if (!key) return;
-      if (!dedupe.has(key)) dedupe.set(key, raw);
-    });
-
-    const normalized = Array.from(dedupe.values()).map(normalizeEdital).filter(Boolean);
-    editaisOriginais = normalized;
-    allEditaisLoaded = true;
-    currentPage = 1;
-    serverPageState = {
-      total: normalized.length,
-      page: 1,
-      pageSize: PAGE_SIZE,
-      hasNext: false,
-    };
-    applyFavoritosToLoadedEditais();
-    generateDynamicFilters();
-    applyFiltersAndRender({ resetPage: true });
-    return true;
-  })()
-    .catch((err) => {
-      console.warn(`Falha ao carregar base completa (${reason}):`, err);
-      return false;
-    })
-    .finally(() => {
-      fullDatasetLoadPromise = null;
-    });
-
-  return fullDatasetLoadPromise;
-}
-
 
 // =========================
 // DATA LOAD
@@ -1537,7 +1549,11 @@ async function loadEditais() {
   `;
 
   try {
-    const { path, res, data, parsed } = await fetchEditaisPageFromApi({ page: 1, pageSize: INITIAL_PAGE_SIZE });
+    const { path, res, data, parsed } = await fetchEditaisPageFromApi({
+      page: 1,
+      pageSize: INITIAL_PAGE_SIZE,
+      includeFacets: true,
+    });
 
     if (!res.ok) {
       if (isPasswordChangeRequiredResponse(res, data) || isPasswordChangeRequiredPayload(data)) {
@@ -1564,7 +1580,7 @@ async function loadEditais() {
       throw new Error(`Erro na API (${res.status})`);
     }
 
-    hydrateEditaisFromPagePayload(parsed, { markAsFull: false });
+    hydrateEditaisFromPagePayload(parsed);
     lastLoadedListPath = path;
   } catch (e) {
     console.error('Erro ao carregar editais:', e);
@@ -1858,109 +1874,104 @@ function toCanonicalInstrument(value) {
 }
 
 // =========================
-// CONTINGÊNCIA LOCAL (fora do fluxo server-driven)
-// =========================
-function buildFuseIndex() {
-  // Fluxo normal da dashboard não usa Fuse/indexação local.
-  // Mantido como ponto de contingência explícito para cenários de emergência.
-  return null;
-}
-
-// =========================
 // FILTROS (gera opções)
 // =========================
-function generateDynamicFilters() {
-  const types = [
-    { key: 'estado', type: 'estado' },
-    { key: 'instituicao', type: 'instituicao' },
-  ];
+function renderFacetOptions(type, values, selectedValues = []) {
+  const box = document.querySelector(`.filter-options[data-filter-type="${type}"]`);
+  if (!box) return;
 
-  types.forEach(({ key, type }) => {
-    const box = document.querySelector(`.filter-options[data-filter-type="${type}"]`);
-    if (!box) return;
+  const selectedSet = new Set((Array.isArray(selectedValues) ? selectedValues : [])
+    .map((value) => normalizeServerFacetValue(type, value))
+    .filter(Boolean));
 
-    const counts = new Map();
-    for (const e of editaisOriginais) {
-      const raw = type === 'estado'
-        ? normalizeEstadoValue(e?.[key])
-        : (e?.[key] ?? '').toString().trim();
-      if (!raw) continue;
-      counts.set(raw, (counts.get(raw) || 0) + 1);
+  box.innerHTML = '';
+  if (!Array.isArray(values) || values.length === 0) {
+    box.innerHTML = '<div style="font-size:12px; color:#9CA3AF; padding:6px;">Nenhuma opção</div>';
+    return;
+  }
+
+  values.forEach(({ value, count }) => {
+    const cleanValue = normalizeServerFacetValue(type, value);
+    if (!cleanValue) return;
+    const displayValue = type === 'estado' ? formatEstadoLabel(cleanValue) : cleanValue;
+
+    const label = document.createElement('label');
+    label.setAttribute('data-label', normalizeCategoryKey(`${cleanValue} ${displayValue}`));
+
+    const left = document.createElement('span');
+    left.className = 'label-left';
+
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.value = cleanValue;
+    input.checked = selectedSet.has(cleanValue);
+
+    const text = document.createElement('span');
+    text.textContent = displayValue;
+    text.style.minWidth = '0';
+    text.style.overflow = 'hidden';
+    text.style.textOverflow = 'ellipsis';
+    text.style.whiteSpace = 'nowrap';
+    if (type === 'estado') {
+      text.style.overflow = 'visible';
+      text.style.textOverflow = 'clip';
+      text.style.whiteSpace = 'normal';
     }
 
-    const values = Array.from(counts.keys())
-      .sort((a, b) => {
-        const diff = (counts.get(b) || 0) - (counts.get(a) || 0);
-        if (diff !== 0) return diff;
-        return a.localeCompare(b, 'pt-BR');
-      });
+    left.appendChild(input);
+    left.appendChild(text);
 
-    box.innerHTML = '';
-    if (values.length === 0) {
-      box.innerHTML = '<div style="font-size:12px; color:#9CA3AF; padding:6px;">Nenhuma opção</div>';
-      return;
-    }
+    const countEl = document.createElement('span');
+    countEl.className = 'filter-count';
+    countEl.textContent = Number.isFinite(Number(count)) ? Math.max(0, Math.floor(Number(count))) : 0;
 
-    for (const val of values) {
-      const displayVal = type === 'estado' ? formatEstadoLabel(val) : val;
-      const label = document.createElement('label');
-      label.setAttribute('data-label', normalizeCategoryKey(`${val} ${displayVal}`));
-
-      const left = document.createElement('span');
-      left.className = 'label-left';
-
-      const input = document.createElement('input');
-      input.type = 'checkbox';
-      input.value = val;
-
-      const text = document.createElement('span');
-      text.textContent = displayVal;
-      text.style.minWidth = '0';
-      text.style.overflow = 'hidden';
-      text.style.textOverflow = 'ellipsis';
-      text.style.whiteSpace = 'nowrap';
-      if (type === 'estado') {
-        text.style.overflow = 'visible';
-        text.style.textOverflow = 'clip';
-        text.style.whiteSpace = 'normal';
-      }
-
-      left.appendChild(input);
-      left.appendChild(text);
-
-      const count = document.createElement('span');
-      count.className = 'filter-count';
-      count.textContent = counts.get(val) || 0;
-
-      label.appendChild(left);
-      label.appendChild(count);
-      box.appendChild(label);
-    }
+    label.appendChild(left);
+    label.appendChild(countEl);
+    box.appendChild(label);
   });
+}
 
-  generateCategoryFilters();
+function generateDynamicFilters() {
+  const resolvedFacets = hasServerFilterFacets()
+    ? serverFilterFacets
+    : {
+      estado: buildFacetItemsFromCurrentPage('estado'),
+      instituicao: buildFacetItemsFromCurrentPage('instituicao'),
+      area: buildFacetItemsFromCurrentPage('area'),
+    };
+
+  renderFacetOptions('estado', resolvedFacets.estado, applied.estado);
+  renderFacetOptions('instituicao', resolvedFacets.instituicao, applied.instituicao);
+  generateCategoryFilters(resolvedFacets.area);
 
   wireFilterSearch(filterSearchEstado, document.querySelector('.filter-options[data-filter-type="estado"]'));
   wireFilterSearch(filterSearchInstituicao, document.querySelector('.filter-options[data-filter-type="instituicao"]'));
   wireFilterSearch(filterSearchArea, document.querySelector('.filter-options[data-filter-type="area"]'));
+  [filterSearchEstado, filterSearchInstituicao, filterSearchArea].forEach((inputEl) => {
+    if (!inputEl || !String(inputEl.value || '').trim()) return;
+    inputEl.dispatchEvent(new Event('input'));
+  });
 }
 
-function generateCategoryFilters() {
+function generateCategoryFilters(areaFacets = []) {
   const box = document.querySelector('.filter-options[data-filter-type="area"]');
   if (!box) return;
 
   const counts = new Map();
-  for (const e of editaisOriginais) {
-    const cat = toCanonicalCategory(e?.area);
+  (Array.isArray(areaFacets) ? areaFacets : []).forEach(({ value, count }) => {
+    const cat = toCanonicalCategory(value);
     if (!cat) continue;
-    counts.set(cat, (counts.get(cat) || 0) + 1);
-  }
-
-  const orderedCategories = CATEGORY_OPTIONS.slice().sort((a, b) => {
-    const diff = (counts.get(b.value) || 0) - (counts.get(a.value) || 0);
-    if (diff !== 0) return diff;
-    return a.label.localeCompare(b.label, 'pt-BR');
+    const parsedCount = Number(count);
+    const safeCount = Number.isFinite(parsedCount) && parsedCount > 0 ? Math.floor(parsedCount) : 0;
+    counts.set(cat, (counts.get(cat) || 0) + safeCount);
   });
+  const knownCategorySet = new Set(CATEGORY_OPTIONS.map((item) => item.value));
+  const extras = Array.from(counts.keys())
+    .filter((value) => !knownCategorySet.has(value))
+    .sort((a, b) => a.localeCompare(b, 'pt-BR'))
+    .map((value) => ({ value, label: value }));
+  const orderedCategories = [...CATEGORY_OPTIONS, ...extras];
+  const selectedSet = new Set((applied.area || []).map((value) => toCanonicalCategory(value)));
 
   box.innerHTML = '';
   for (const category of orderedCategories) {
@@ -1973,6 +1984,7 @@ function generateCategoryFilters() {
     const input = document.createElement('input');
     input.type = 'checkbox';
     input.value = category.value;
+    input.checked = selectedSet.has(category.value);
 
     const text = document.createElement('span');
     text.textContent = category.label;
@@ -1996,6 +2008,8 @@ function generateCategoryFilters() {
 
 function wireFilterSearch(inputEl, optionsEl) {
   if (!inputEl || !optionsEl) return;
+  if (inputEl.dataset.searchBound === '1') return;
+  inputEl.dataset.searchBound = '1';
   inputEl.addEventListener('input', () => {
     const q = normalizeCategoryKey(inputEl.value);
     let visible = 0;
@@ -2507,66 +2521,6 @@ function applyAssistantPayloadToDashboard(rawPayload, { fallbackQuery = '' } = {
   return true;
 }
 
-// Contingência local legacy: mantido isolado e fora do fluxo padrão server-driven.
-// A listagem normal da dashboard não chama este refinamento.
-function applyAssistantContextFilters(items) {
-  if (!assistantPanelContext || !Array.isArray(items) || !items.length) return items;
-
-  let scoped = [...items];
-  const context = assistantPanelContext;
-  const filters = context.filters || {};
-  const idSet = context.resultIdsSet instanceof Set ? context.resultIdsSet : new Set();
-
-  if (idSet.size > 0) {
-    scoped = scoped.filter((edital) => idSet.has(String(edital?.id)));
-    return scoped;
-  }
-
-  const status = Array.isArray(filters.status) ? filters.status : [];
-  const onlyOpen = status.includes('aberto') && !status.includes('encerrado');
-  const onlyClosed = status.includes('encerrado') && !status.includes('aberto');
-  if (onlyOpen) scoped = scoped.filter((edital) => isOpenEditalForChat(edital));
-  if (onlyClosed) scoped = scoped.filter((edital) => !isOpenEditalForChat(edital));
-
-  if (filters.deadline_range === 'next_7_days') {
-    scoped = scoped.filter((edital) => isOpenEditalForChat(edital) && isDeadlineWithinNextDays(edital, 7));
-  }
-
-  if (Array.isArray(filters.estado) && filters.estado.length) {
-    const ufSet = new Set(filters.estado.map((uf) => String(uf || '').trim().toUpperCase()).filter(Boolean));
-    scoped = scoped.filter((edital) => ufSet.has(String(edital?.estado || '').trim().toUpperCase()));
-  }
-
-  if (Array.isArray(filters.instituicoes) && filters.instituicoes.length) {
-    const wanted = filters.instituicoes.map((item) => normalizeAssistantQuery(item));
-    scoped = scoped.filter((edital) => {
-      const inst = normalizeAssistantQuery(edital?.instituicao || '');
-      return wanted.some((needle) => inst.includes(needle));
-    });
-  }
-
-  if (Array.isArray(filters.categories) && filters.categories.length) {
-    const wanted = new Set(filters.categories.map((item) => toCanonicalCategory(item)));
-    scoped = scoped.filter((edital) => wanted.has(toCanonicalCategory(edital?.area || '')));
-  }
-
-  if ((!idSet.size) && Array.isArray(filters.keywords) && filters.keywords.length) {
-    scoped = scoped.filter((edital) => {
-      const blob = normalizeAssistantQuery([
-        edital?.titulo,
-        edital?.descricao,
-        edital?.instituicao,
-        edital?.estado,
-        edital?.area,
-        ...(Array.isArray(edital?.tags) ? edital.tags : []),
-      ].filter(Boolean).join(' '));
-      return filters.keywords.some((keyword) => blob.includes(normalizeAssistantQuery(keyword)));
-    });
-  }
-
-  return scoped;
-}
-
 // =========================
 // APLICAÇÃO DE FILTROS
 // =========================
@@ -2579,10 +2533,12 @@ async function applyFiltersAndRender({ resetPage, forceReload = false } = { rese
   const termo = (searchInput?.value || '').trim();
   const searchContext = buildSearchQueryContext(termo);
   const targetPage = Math.max(1, Number(currentPage) || 1);
+  const shouldIncludeFacets = Boolean(forceReload || resetPage || targetPage === 1 || !hasServerFilterFacets());
   const targetPath = buildEditaisListPath({
     page: targetPage,
     pageSize: INITIAL_PAGE_SIZE,
     searchContext,
+    includeFacets: shouldIncludeFacets,
   });
   const requestSeq = ++applyFiltersRenderSeq;
 
@@ -2593,6 +2549,7 @@ async function applyFiltersAndRender({ resetPage, forceReload = false } = { rese
       const ok = await loadServerPage(targetPage, {
         pageSize: INITIAL_PAGE_SIZE,
         searchContext,
+        includeFacets: shouldIncludeFacets,
       });
       if (!ok) return;
     } catch (err) {
