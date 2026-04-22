@@ -1,4 +1,4 @@
-import test from 'node:test';
+﻿import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
@@ -47,7 +47,7 @@ test('perfil libera shell antes de concluir /cliente/perfil', async () => {
   assert.ok(events.indexOf('mark_ready') < events.indexOf('details_done'));
 });
 
-test('dashboard não bloqueia bootstrap principal por favoritos', async () => {
+test('dashboard nao bloqueia bootstrap principal por favoritos', async () => {
   const events = [];
   let resolveFavoritos;
   const favoritosGate = new Promise((resolve) => {
@@ -95,4 +95,61 @@ test('dashboard não bloqueia bootstrap principal por favoritos', async () => {
   assert.ok(events.includes('favoritos_ready'));
   assert.equal(Boolean(favoritosCallbackPayload?.editaisReady), true);
   assert.ok(events.indexOf('deep_link_ready') < events.indexOf('load_favoritos_start'));
+});
+
+test('dashboard segue para loadEditais mesmo com erro no prepareShell', async () => {
+  const events = [];
+
+  await runDashboardBootstrapFlow({
+    bootstrapAuthFromUrl: () => events.push('bootstrap_auth'),
+    bootstrapChatSessionState: () => events.push('bootstrap_chat'),
+    bootstrapTheme: () => events.push('bootstrap_theme'),
+    checkAuth: async () => ({ id: 3, nome: 'Resilient User' }),
+    hydrateSidebarUser: () => events.push('hydrate_sidebar'),
+    prepareShell: () => {
+      events.push('prepare_shell');
+      throw new Error('shell crashed');
+    },
+    markAppReady: () => events.push('mark_ready'),
+    loadEditais: async () => events.push('load_editais'),
+    onEditaisReady: async () => events.push('editais_ready'),
+    onDeepLinkReady: async () => events.push('deep_link_ready'),
+    loadFavoritos: async () => events.push('load_favoritos'),
+  });
+
+  assert.ok(events.includes('prepare_shell'));
+  assert.ok(events.includes('mark_ready'));
+  assert.ok(events.includes('load_editais'));
+  assert.ok(events.includes('editais_ready'));
+  assert.ok(events.includes('deep_link_ready'));
+});
+
+test('dashboard continua fluxo apos erro no onEditaisReady', async () => {
+  const events = [];
+
+  const result = await runDashboardBootstrapFlow({
+    bootstrapAuthFromUrl: () => events.push('bootstrap_auth'),
+    bootstrapChatSessionState: () => events.push('bootstrap_chat'),
+    bootstrapTheme: () => events.push('bootstrap_theme'),
+    checkAuth: async () => ({ id: 4, nome: 'Fallback User' }),
+    hydrateSidebarUser: () => events.push('hydrate_sidebar'),
+    prepareShell: () => events.push('prepare_shell'),
+    markAppReady: () => events.push('mark_ready'),
+    loadEditais: async () => events.push('load_editais'),
+    onEditaisReady: async () => {
+      events.push('editais_ready');
+      throw new Error('facets broke');
+    },
+    onDeepLinkReady: async () => events.push('deep_link_ready'),
+    loadFavoritos: async () => events.push('load_favoritos'),
+    onFavoritosReady: () => events.push('favoritos_ready'),
+  });
+
+  await result.favoritosPromise;
+
+  assert.ok(events.includes('load_editais'));
+  assert.ok(events.includes('editais_ready'));
+  assert.ok(events.includes('deep_link_ready'));
+  assert.ok(events.includes('load_favoritos'));
+  assert.ok(events.includes('favoritos_ready'));
 });
