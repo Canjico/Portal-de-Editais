@@ -6,6 +6,7 @@ import { renderEditais } from './render.js?v=20260318.3';
 import {
   parseAnyDateToTime,
   buildSearchQueryContext,
+  matchesDateIntent,
 } from './search-date-utils.js?v=20260313.1';
 import {
   appendConversationTurn,
@@ -38,12 +39,7 @@ import {
   dashboardPlanToLegacySearchPayload,
   normalizeDashboardAssistantPlan,
 } from './chat-dashboard-contract.js?v=20260403.1';
-import { createSingleFlight, runWhenIdle } from './bootstrap-utils.js?v=20260422.3';
-import { createAbortableRequestTracker } from './chat-stream-controller.js?v=20260421.1';
-import {
-  parseSseDataPayload,
-  readSsePayloadsFromBuffer,
-} from './chat-stream-sse.js?v=20260421.1';
+import { createSingleFlight } from './bootstrap-utils.js?v=20260415.1';
 
 // =========================
 // CONFIGURAÇÕES & SEGURANÇA
@@ -53,174 +49,18 @@ import {
   LOGIN_URL,
   bootstrapAuthFromUrl,
   buildLoginUrlWithNext,
-  getStoredToken,
-  readBootstrapUserFromSession,
-  apiFetch,
   apiFetchJson,
   isPasswordChangeRequiredPayload,
   isPasswordChangeRequiredResponse,
   resolvePasswordChangeRedirectTarget,
   resolveAuthFailureRedirectTarget,
   redirectWithAuthGuard,
-} from './auth.js?v=20260422.3';
-import { runDashboardBootstrapFlow } from './bootstrap-flows.js?v=20260422.3';
+} from './auth.js?v=20260416.1';
+import { runDashboardBootstrapFlow } from './bootstrap-flows.js?v=20260416.1';
+import { readAuthHandoff } from './auth-handoff.js?v=20260422.1';
 
 const APP_BASE_URL = new URL('../', import.meta.url);
 const SHARE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{20,255}$/;
-const PERF_DEBUG_TAG = '[PERF][Dashboard]';
-const BOOTSTRAP_DEBUG_TAG = '[BOOTSTRAP][Dashboard]';
-const LIST_REQUEST_DEBUG_TAG = '[PERF][Dashboard][Listagem]';
-const FACET_REQUEST_DEBUG_TAG = '[PERF][Dashboard][Facets]';
-const PERF_DEBUG_STORAGE_KEY = 'athos_perf_debug';
-const BOOTSTRAP_DEBUG_STORAGE_KEY = 'athos_bootstrap_debug';
-const SEARCH_INPUT_DEBOUNCE_MS = 300;
-let dashboardGlobalBootstrapErrorHandlersBound = false;
-let deferredFacetRefreshScheduled = false;
-
-function isPerfDebugEnabled() {
-  try {
-    if (window.ATHOS_PERF_DEBUG === true) return true;
-  } catch (_) {}
-
-  const host = String(window.location.hostname || '').toLowerCase();
-  if (host.includes('localhost') || host.includes('127.0.0.1')) {
-    return true;
-  }
-
-  try {
-    const value = String(
-      localStorage.getItem(PERF_DEBUG_STORAGE_KEY) ||
-      sessionStorage.getItem(PERF_DEBUG_STORAGE_KEY) ||
-      ''
-    )
-      .trim()
-      .toLowerCase();
-    return value === '1' || value === 'true' || value === 'yes' || value === 'on';
-  } catch (_) {
-    return false;
-  }
-}
-
-function isBootstrapDebugEnabled() {
-  try {
-    if (window.ATHOS_BOOTSTRAP_DEBUG === true) return true;
-  } catch (_) {}
-
-  const host = String(window.location.hostname || '').toLowerCase();
-  if (host.includes('localhost') || host.includes('127.0.0.1')) {
-    return true;
-  }
-
-  try {
-    const value = String(
-      localStorage.getItem(BOOTSTRAP_DEBUG_STORAGE_KEY) ||
-      sessionStorage.getItem(BOOTSTRAP_DEBUG_STORAGE_KEY) ||
-      ''
-    )
-      .trim()
-      .toLowerCase();
-    return value === '1' || value === 'true' || value === 'yes' || value === 'on';
-  } catch (_) {
-    return false;
-  }
-}
-
-function logBootstrapStep(event, details) {
-  if (!event || !isBootstrapDebugEnabled()) return;
-  if (details === undefined) {
-    console.info(`${BOOTSTRAP_DEBUG_TAG} ${event}`);
-    return;
-  }
-  console.info(`${BOOTSTRAP_DEBUG_TAG} ${event}`, details);
-}
-
-function logBootstrapError(event, error, details = {}) {
-  const payload = {
-    ...(details && typeof details === 'object' ? details : {}),
-    error,
-  };
-  console.error(`${BOOTSTRAP_DEBUG_TAG} ${event}`, payload);
-}
-
-function reportBootstrapFlowStep(event, details) {
-  const step = String(event || '').trim();
-  if (!step) return;
-
-  if (step.endsWith('_error')) {
-    logBootstrapStep(step, details);
-    return;
-  }
-
-  logBootstrapStep(step, details);
-}
-
-function ensureBootstrapGlobalErrorHandlersInDev() {
-  if (dashboardGlobalBootstrapErrorHandlersBound || !isBootstrapDebugEnabled()) return;
-  dashboardGlobalBootstrapErrorHandlersBound = true;
-
-  const previousOnError = window.onerror;
-  const previousOnUnhandledRejection = window.onunhandledrejection;
-
-  window.onerror = function onBootstrapWindowError(message, source, lineno, colno, error) {
-    logBootstrapError('window.onerror', error, {
-      message: String(message || ''),
-      source: String(source || ''),
-      lineno: Number(lineno || 0),
-      colno: Number(colno || 0),
-    });
-
-    if (typeof previousOnError === 'function') {
-      try {
-        return previousOnError.call(this, message, source, lineno, colno, error);
-      } catch (handlerError) {
-        logBootstrapError('window.onerror_handler_error', handlerError);
-      }
-    }
-    return false;
-  };
-
-  window.onunhandledrejection = function onBootstrapUnhandledRejection(event) {
-    const reason = event?.reason;
-    const rejectionError = reason instanceof Error
-      ? reason
-      : new Error(String(reason || 'Unhandled promise rejection'));
-    logBootstrapError('window.onunhandledrejection', rejectionError, { reason });
-
-    if (typeof previousOnUnhandledRejection === 'function') {
-      try {
-        return previousOnUnhandledRejection.call(this, event);
-      } catch (handlerError) {
-        logBootstrapError('window.onunhandledrejection_handler_error', handlerError);
-      }
-    }
-    return undefined;
-  };
-
-  logBootstrapStep('global_error_handlers_installed');
-}
-
-function perfMark(name) {
-  if (!name || typeof performance?.mark !== 'function') return;
-  try {
-    performance.mark(name);
-  } catch (_) {}
-}
-
-function perfMeasure(name, startMark, endMark) {
-  if (!name || !startMark || !endMark || typeof performance?.measure !== 'function') return;
-  try {
-    performance.measure(name, startMark, endMark);
-    if (!isPerfDebugEnabled()) return;
-    const measures = performance.getEntriesByName(name);
-    const latest = measures[measures.length - 1];
-    if (!latest) return;
-    console.debug(`${PERF_DEBUG_TAG} ${name}`, {
-      durationMs: Number(latest.duration || 0).toFixed(1),
-      startMark,
-      endMark,
-    });
-  } catch (_) {}
-}
 
 function normalizeShareTokenParam(value) {
   const token = String(value || '').trim();
@@ -264,9 +104,9 @@ function extractShareTokenFromLink(link) {
 // ESTADO
 // =========================
 let editaisOriginais = [];
+let fuseInstance = null;
 
 const PAGE_SIZE = 12;
-const INITIAL_PAGE_SIZE = 12;
 let currentPage = 1;
 let lastFiltered = [];
 let kpiFilter = 'all';
@@ -274,36 +114,6 @@ let assistantPanelContext = null;
 let assistantSemanticMemory = createDashboardAssistantMemory();
 let bootstrapInitPromise = null;
 let uiEventsBound = false;
-let lastLoadedListPath = '';
-let lastLoadedListIncludedFacets = false;
-let applyFiltersRenderSeq = 0;
-let searchInputDebounceTimer = null;
-let listRequestCounter = 0;
-let activeListRequest = null;
-let facetRequestCounter = 0;
-let activeFacetRequest = null;
-let serverPageState = {
-  total: 0,
-  page: 1,
-  pageSize: PAGE_SIZE,
-  hasNext: false,
-};
-const EMPTY_SERVER_FILTER_FACETS = Object.freeze({
-  estado: [],
-  instituicao: [],
-  area: [],
-});
-let serverFilterFacets = {
-  estado: [],
-  instituicao: [],
-  area: [],
-};
-let serverFilterFacetsSignature = '';
-let lastRenderedFacetSignature = '__not_rendered__';
-let serverFacetContextSignature = '';
-let serverFacetsLoaded = false;
-let serverFacetUiState = 'ready';
-let serverFacetUiMessage = '';
 const loadEditaisSingleFlight = createSingleFlight(() => loadEditais());
 const loadFavoritosSingleFlight = createSingleFlight(() => loadFavoritos());
 
@@ -469,9 +279,6 @@ const ASSISTANT_OVERLAY_BREAKPOINT = '(max-width: 1279px)';
 let botIsTyping = false;
 let chatState = createChatSessionState();
 let chatQuickPromptsTransitionCleanup = null;
-const chatRequestTracker = createAbortableRequestTracker();
-const CHAT_SEND_BUTTON_SEND_HTML = '<i class="fas fa-paper-plane" aria-hidden="true"></i>';
-const CHAT_SEND_BUTTON_STOP_HTML = '<i class="fas fa-stop" aria-hidden="true"></i>';
 
 function persistChatState(nextState = chatState) {
   chatState = saveChatSessionState(ensureChatSessionState(nextState));
@@ -588,14 +395,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
 async function init() {
   if (bootstrapInitPromise) return bootstrapInitPromise;
-  perfMark('dashboard_bootstrap_start');
-  ensureBootstrapGlobalErrorHandlersInDev();
 
   bootstrapInitPromise = runDashboardBootstrapFlow({
     bootstrapAuthFromUrl,
     bootstrapChatSessionState,
     bootstrapTheme: () => window.AthosTheme?.bootstrap?.(),
+    readAuthHandoff,
     checkAuth,
+    onAuthConfirmed: (confirmedMe) => {
+      hydrateSidebarUser(confirmedMe);
+    },
+    onAuthConfirmationError: (error) => {
+      console.warn('Falha na confirmação de autenticação em background:', error);
+    },
     hydrateSidebarUser,
     prepareShell: () => {
       if (!uiEventsBound) {
@@ -614,130 +426,34 @@ async function init() {
     markAppReady,
     loadEditais: loadEditaisSingleFlight,
     loadFavoritos: loadFavoritosSingleFlight,
-    onAuthError: (error) => {
-      logBootstrapError('checkAuth_error', error, { source: 'runDashboardBootstrapFlow' });
-      redirectWithAuthGuard(buildLoginUrlWithNext(), 'main.init.checkAuth_error');
-    },
-    logStep: reportBootstrapFlowStep,
     onEditaisReady: async () => {
+      applyFavoritosToLoadedEditais();
       if (hasPersonalizedRelevance(editaisOriginais)) {
-        try {
-          setSortField('relevancia', { resetDirection: true });
-        } catch (error) {
-          logBootstrapError('onEditaisReady_sort_relevance_error', error);
-        }
+        setSortField('relevancia', { resetDirection: true });
       }
-
-      let cardsRendered = false;
-      try {
-        await applyFiltersAndRender({ resetPage: true, deferFacets: true });
-        cardsRendered = true;
-      } catch (error) {
-        logBootstrapError('onEditaisReady_first_render_error', error);
-      }
-
-      if (!cardsRendered) {
-        renderEditaisCardsFallback({
-          source: 'onEditaisReady_first_render_fallback',
-        });
-      }
-
-      try {
-        generateDynamicFilters();
-        setupFilterGroupsAccordion();
-      } catch (error) {
-        logBootstrapError('onEditaisReady_facets_shell_error', error);
-      }
-
-      scheduleDeferredFacetRefresh();
+      buildFuseIndex();
+      generateDynamicFilters();
+      setupFilterGroupsAccordion();
+      applyFiltersAndRender({ resetPage: true });
     },
     onDeepLinkReady: openDeepLinkedEditalFromUrl,
     onFavoritosReady: ({ editaisReady }) => {
       applyFavoritosToLoadedEditais();
       if (editaisReady) {
-        void applyFiltersAndRender({ resetPage: false, deferFacets: true }).catch((error) => {
-          logBootstrapError('onFavoritosReady_render_error', error);
-          renderEditaisCardsFallback({
-            source: 'onFavoritosReady_render_fallback',
-          });
-        });
+        applyFiltersAndRender({ resetPage: false });
       }
     },
     onFavoritosError: () => {
       applyFavoritosToLoadedEditais();
     },
   }).catch((err) => {
-    logBootstrapError('init_error', err);
+    console.error('Falha inesperada ao inicializar a aplicação:', err);
     bootstrapInitPromise = null;
     markAppReady();
     return null;
   });
 
   return bootstrapInitPromise;
-}
-
-function scheduleDeferredFacetRefresh() {
-  if (deferredFacetRefreshScheduled) return;
-  deferredFacetRefreshScheduled = true;
-
-  void runWhenIdle(async () => {
-    logBootstrapStep('deferredFacets_start');
-    try {
-      await applyFiltersAndRender({
-        resetPage: false,
-        forceReload: false,
-        deferFacets: false,
-      });
-      logBootstrapStep('deferredFacets_done');
-    } catch (error) {
-      logBootstrapError('deferredFacets_error', error);
-    } finally {
-      deferredFacetRefreshScheduled = false;
-    }
-  }).catch((error) => {
-    deferredFacetRefreshScheduled = false;
-    logBootstrapError('deferredFacets_schedule_error', error);
-  });
-}
-
-function renderEditaisCardsFallback({ source = 'fallback' } = {}) {
-  if (!container) return;
-
-  try {
-    const pageItems = [...editaisOriginais];
-    lastFiltered = pageItems;
-
-    const total = Math.max(0, Number(serverPageState.total || pageItems.length || 0));
-    const pageSize = Math.max(1, Number(serverPageState.pageSize || INITIAL_PAGE_SIZE));
-    const totalPages = Math.max(1, Math.ceil(total / pageSize));
-    currentPage = Math.min(Math.max(1, Number(serverPageState.page || currentPage || 1)), totalPages);
-
-    const startIdx = total === 0 ? 0 : ((currentPage - 1) * pageSize);
-    const endIdx = total === 0 ? 0 : Math.min(startIdx + pageItems.length, total);
-    if (resultsMeta) {
-      const from = total === 0 ? 0 : startIdx + 1;
-      const label = onlyFavoritos ? 'salvos' : 'editais';
-      resultsMeta.textContent = `Mostrando ${from}-${endIdx} de ${total} ${label}`;
-    }
-
-    updateHeroStats(pageItems, { totalOverride: total });
-    syncKpiButtons();
-    renderResultsStateHint(total);
-    renderEditais(container, pageItems, {
-      emptyState: buildEmptyState({
-        total,
-        termo: (searchInput?.value || '').trim(),
-      }),
-    });
-    renderPagination(totalPages);
-    logBootstrapStep('cards_fallback_rendered', {
-      source,
-      total,
-      renderedItems: pageItems.length,
-    });
-  } catch (error) {
-    logBootstrapError('cards_fallback_render_error', error, { source });
-  }
 }
 
 async function openDeepLinkedEditalFromUrl() {
@@ -758,20 +474,7 @@ async function openDeepLinkedEditalFromUrl() {
   }
   if (editalId) {
     const target = editaisOriginais.find((e) => String(e.id) === String(editalId));
-    if (target) {
-      openModal(target);
-      return;
-    }
-    try {
-      const { res, data } = await apiFetchJson(`/editais/${encodeURIComponent(String(editalId))}?include_relevance=true&relevance_mode=fast`, { method: 'GET' });
-      if (!res.ok || !data || typeof data !== 'object') return;
-      const normalized = normalizeEdital(data);
-      if (!normalized) return;
-      editaisOriginais.unshift(normalized);
-      openModal(normalized);
-    } catch (_) {
-      // silencioso: mantém fallback de não abrir modal quando o ID não está acessível
-    }
+    if (target) openModal(target);
   }
 }
 
@@ -783,40 +486,10 @@ function hasPersonalizedRelevance(items) {
 // =========================
 // AUTH
 // =========================
-function applyThemePreferenceFromAuthPayload(payload) {
-  if (!window.AthosTheme?.setPreference || !payload?.themePreference) return;
-  const nextTheme = window.AthosTheme.resolveProfilePreference
-    ? window.AthosTheme.resolveProfilePreference(payload.themePreference)
-    : payload.themePreference;
-  window.AthosTheme.setPreference(nextTheme);
-}
-
-function readBootstrapAuthUser() {
-  return readBootstrapUserFromSession({
-    consume: true,
-    maxAgeMs: 10 * 60 * 1000,
-  });
-}
-
 async function checkAuth() {
-  const passwordFallback = buildLoginUrlWithNext();
-  const hasStoredToken = Boolean(getStoredToken());
-  logBootstrapStep('checkAuth_headers_presence', { hasStoredToken });
-  const bootstrapUser = readBootstrapAuthUser();
-  if (bootstrapUser) {
-    if (isPasswordChangeRequiredPayload(bootstrapUser)) {
-      redirectWithAuthGuard(
-        resolvePasswordChangeRedirectTarget(bootstrapUser, passwordFallback),
-        'main.checkAuth.bootstrap_password_change_required'
-      );
-      return null;
-    }
-    applyThemePreferenceFromAuthPayload(bootstrapUser);
-    return bootstrapUser;
-  }
-
   try {
-    const { res, data } = await apiFetchJson('/cliente/me', { method: 'GET' });
+    const { res, data } = await apiFetchJson('/cliente/me?minimal=1', { method: 'GET' });
+    const passwordFallback = buildLoginUrlWithNext();
 
     if (!res.ok) {
       const decision = resolveAuthFailureRedirectTarget(res, data);
@@ -840,7 +513,12 @@ async function checkAuth() {
       return null;
     }
 
-    applyThemePreferenceFromAuthPayload(data);
+    if (window.AthosTheme?.setPreference && data?.themePreference) {
+      const nextTheme = window.AthosTheme.resolveProfilePreference
+        ? window.AthosTheme.resolveProfilePreference(data.themePreference)
+        : data.themePreference;
+      window.AthosTheme.setPreference(nextTheme);
+    }
 
     return data && typeof data === 'object' ? data : {};
   } catch (e) {
@@ -875,8 +553,6 @@ function markAppReady() {
   if (!body) return;
   const wasLoading = body.classList.contains('app-loading');
   body.classList.remove('app-loading');
-  perfMark('dashboard_shell_ready');
-  perfMeasure('dashboard_bootstrap_to_shell_ms', 'dashboard_bootstrap_start', 'dashboard_shell_ready');
   if (wasLoading) {
     try {
       window.dispatchEvent(new CustomEvent('athos:app-ready', { detail: { source: 'dashboard' } }));
@@ -902,141 +578,6 @@ function setSearchVisualState() {
   if (!searchWrapper || !searchInput) return;
   const isActive = String(searchInput.value || '').trim().length > 0;
   searchWrapper.classList.toggle('is-active', isActive);
-}
-
-function isAbortError(err) {
-  if (!err) return false;
-  return err.name === 'AbortError' || String(err?.code || '') === '20';
-}
-
-function cancelPendingSearchInputDebounce() {
-  if (searchInputDebounceTimer === null) return;
-  window.clearTimeout(searchInputDebounceTimer);
-  searchInputDebounceTimer = null;
-}
-
-function scheduleDebouncedSearchRefresh() {
-  cancelPendingSearchInputDebounce();
-  searchInputDebounceTimer = window.setTimeout(() => {
-    searchInputDebounceTimer = null;
-    void applyFiltersAndRender({ resetPage: true });
-  }, SEARCH_INPUT_DEBOUNCE_MS);
-}
-
-function beginTrackedListRequest(path) {
-  const targetPath = String(path || '').trim();
-  if (activeListRequest?.controller) {
-    activeListRequest.controller.abort('superseded_by_newer_list_request');
-  }
-
-  const requestId = ++listRequestCounter;
-  const controller = new AbortController();
-  const startedAt = performance.now();
-  activeListRequest = { requestId, controller, path: targetPath, startedAt };
-
-  if (isPerfDebugEnabled()) {
-    console.debug(`${LIST_REQUEST_DEBUG_TAG} start`, {
-      requestId,
-      path: targetPath,
-    });
-  }
-
-  return activeListRequest;
-}
-
-function finishTrackedListRequest(requestMeta, { aborted = false, ok = false, error = null } = {}) {
-  if (!requestMeta) return;
-  const isCurrent = activeListRequest?.requestId === requestMeta.requestId;
-  if (isCurrent) activeListRequest = null;
-
-  if (!isPerfDebugEnabled()) return;
-  const durationMs = Number((performance.now() - Number(requestMeta.startedAt || 0)).toFixed(1));
-  if (aborted) {
-    console.debug(`${LIST_REQUEST_DEBUG_TAG} canceled`, {
-      requestId: requestMeta.requestId,
-      path: requestMeta.path,
-      durationMs,
-    });
-    return;
-  }
-  if (error) {
-    console.debug(`${LIST_REQUEST_DEBUG_TAG} failed`, {
-      requestId: requestMeta.requestId,
-      path: requestMeta.path,
-      durationMs,
-      error: String(error?.message || error),
-    });
-    return;
-  }
-  console.debug(`${LIST_REQUEST_DEBUG_TAG} done`, {
-    requestId: requestMeta.requestId,
-    path: requestMeta.path,
-    durationMs,
-    ok: Boolean(ok),
-  });
-}
-
-function beginTrackedFacetRequest(path, contextSignature = '') {
-  const targetPath = String(path || '').trim();
-  if (activeFacetRequest?.controller) {
-    activeFacetRequest.controller.abort('superseded_by_newer_facet_request');
-  }
-
-  const requestId = ++facetRequestCounter;
-  const controller = new AbortController();
-  const startedAt = performance.now();
-  activeFacetRequest = {
-    requestId,
-    controller,
-    path: targetPath,
-    startedAt,
-    contextSignature: String(contextSignature || ''),
-  };
-
-  if (isPerfDebugEnabled()) {
-    console.debug(`${FACET_REQUEST_DEBUG_TAG} start`, {
-      requestId,
-      path: targetPath,
-      contextSignature: String(contextSignature || ''),
-    });
-  }
-
-  return activeFacetRequest;
-}
-
-function finishTrackedFacetRequest(requestMeta, { aborted = false, ok = false, error = null } = {}) {
-  if (!requestMeta) return;
-  const isCurrent = activeFacetRequest?.requestId === requestMeta.requestId;
-  if (isCurrent) activeFacetRequest = null;
-
-  if (!isPerfDebugEnabled()) return;
-  const durationMs = Number((performance.now() - Number(requestMeta.startedAt || 0)).toFixed(1));
-  if (aborted) {
-    console.debug(`${FACET_REQUEST_DEBUG_TAG} canceled`, {
-      requestId: requestMeta.requestId,
-      path: requestMeta.path,
-      durationMs,
-      contextSignature: requestMeta.contextSignature,
-    });
-    return;
-  }
-  if (error) {
-    console.debug(`${FACET_REQUEST_DEBUG_TAG} failed`, {
-      requestId: requestMeta.requestId,
-      path: requestMeta.path,
-      durationMs,
-      contextSignature: requestMeta.contextSignature,
-      error: String(error?.message || error),
-    });
-    return;
-  }
-  console.debug(`${FACET_REQUEST_DEBUG_TAG} done`, {
-    requestId: requestMeta.requestId,
-    path: requestMeta.path,
-    durationMs,
-    contextSignature: requestMeta.contextSignature,
-    ok: Boolean(ok),
-  });
 }
 
 function countAppliedFilters() {
@@ -1139,10 +680,7 @@ function setChatOpen(nextOpen, { focusInput = false, skipWelcome = false } = {})
   syncChatLauncherVisibility();
   updateChatHeader();
 
-  if (!open) {
-    abortActiveChatRequest('chat_close');
-    return;
-  }
+  if (!open) return;
 
   scrollToBottom();
   if (!skipWelcome && messageContainer?.children.length === 0) {
@@ -1512,565 +1050,12 @@ function cssEscape(value) {
   return String(value ?? '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
-function mergeUniqueListValues(...lists) {
-  const out = [];
-  const seen = new Set();
-
-  lists.forEach((list) => {
-    const arr = Array.isArray(list) ? list : (list == null ? [] : [list]);
-    arr.forEach((item) => {
-      const clean = String(item || '').trim();
-      if (!clean) return;
-      const key = clean.toLowerCase();
-      if (seen.has(key)) return;
-      seen.add(key);
-      out.push(clean);
-    });
-  });
-
-  return out;
-}
-
-function normalizeServerFacetValue(type, value) {
-  if (type === 'estado') return normalizeEstadoValue(value);
-  if (type === 'area') return toCanonicalCategory(value);
-  return String(value || '').trim();
-}
-
-function normalizeServerFacetItems(type, rawItems) {
-  const list = Array.isArray(rawItems) ? rawItems : [];
-  const counts = new Map();
-
-  list.forEach((item) => {
-    const valueRaw = (item && typeof item === 'object') ? item.value : item;
-    const parsedCount = Number((item && typeof item === 'object') ? item.count : 0);
-    const value = normalizeServerFacetValue(type, valueRaw);
-    if (!value) return;
-    const safeCount = Number.isFinite(parsedCount) && parsedCount > 0 ? Math.floor(parsedCount) : 0;
-    counts.set(value, (counts.get(value) || 0) + safeCount);
-  });
-
-  return Array.from(counts.entries())
-    .map(([value, count]) => ({ value, count }))
-    .sort((a, b) => {
-      const diff = (b.count || 0) - (a.count || 0);
-      if (diff !== 0) return diff;
-      return String(a.value || '').localeCompare(String(b.value || ''), 'pt-BR');
-    });
-}
-
-function parseServerFilterFacets(rawFacets) {
-  if (!rawFacets || typeof rawFacets !== 'object') return null;
-  return {
-    estado: normalizeServerFacetItems('estado', rawFacets.estado),
-    instituicao: normalizeServerFacetItems('instituicao', rawFacets.instituicao),
-    area: normalizeServerFacetItems('area', rawFacets.area),
-  };
-}
-
-function getEmptyServerFilterFacets() {
-  return {
-    estado: [...EMPTY_SERVER_FILTER_FACETS.estado],
-    instituicao: [...EMPTY_SERVER_FILTER_FACETS.instituicao],
-    area: [...EMPTY_SERVER_FILTER_FACETS.area],
-  };
-}
-
-function normalizeServerFacetPayload(rawFacets) {
-  if (!rawFacets || typeof rawFacets !== 'object') return null;
-  return {
-    estado: Array.isArray(rawFacets.estado) ? rawFacets.estado : [],
-    instituicao: Array.isArray(rawFacets.instituicao) ? rawFacets.instituicao : [],
-    area: Array.isArray(rawFacets.area) ? rawFacets.area : [],
-  };
-}
-
-function buildFacetSignature(rawFacets) {
-  const facets = normalizeServerFacetPayload(rawFacets) || getEmptyServerFilterFacets();
-  const normalizeBucket = (type, items) => (Array.isArray(items) ? items : [])
-    .map((item) => ({
-      value: normalizeServerFacetValue(type, item?.value ?? item),
-      count: Number.isFinite(Number(item?.count)) ? Math.max(0, Math.floor(Number(item?.count))) : 0,
-    }))
-    .filter((item) => item.value)
-    .sort((a, b) => {
-      const diff = String(a.value || '').localeCompare(String(b.value || ''), 'pt-BR');
-      if (diff !== 0) return diff;
-      return (a.count || 0) - (b.count || 0);
-    })
-    .map((item) => `${item.value}:${item.count}`);
-
-  return JSON.stringify({
-    estado: normalizeBucket('estado', facets.estado),
-    instituicao: normalizeBucket('instituicao', facets.instituicao),
-    area: normalizeBucket('area', facets.area),
-  });
-}
-
-function normalizeFacetContextList(values, normalizer = (value) => String(value || '').trim()) {
-  return mergeUniqueListValues(values)
-    .map((value) => normalizer(value))
-    .filter(Boolean)
-    .sort((a, b) => String(a).localeCompare(String(b), 'pt-BR'));
-}
-
-function buildFacetContextSignature({ searchContext = null } = {}) {
-  const queryState = collectEditaisServerQueryState({ searchContext });
-  return JSON.stringify({
-    q: String(queryState.q || '').trim().toLowerCase(),
-    status: String(queryState.status || 'todos').trim().toLowerCase(),
-    favoritosOnly: Boolean(queryState.favoritosOnly),
-    estado: normalizeFacetContextList(queryState.estado, (value) => normalizeEstadoValue(value)),
-    instituicao: normalizeFacetContextList(queryState.instituicao, (value) => String(value || '').trim().toLowerCase()),
-    area: normalizeFacetContextList(queryState.area, (value) => toCanonicalCategory(value)),
-    ids: normalizeFacetContextList(queryState.ids, (value) => String(value || '').trim()),
-  });
-}
-
-function setServerFacetUiState(state = 'ready', message = '') {
-  const normalizedState = String(state || '').trim().toLowerCase();
-  if (normalizedState === 'loading') {
-    serverFacetUiState = 'loading';
-  } else if (normalizedState === 'unavailable') {
-    serverFacetUiState = 'unavailable';
-  } else {
-    serverFacetUiState = 'ready';
-  }
-  serverFacetUiMessage = String(message || '').trim();
-}
-
-function setServerFilterFacetsUnavailable(
-  { contextSignature = '', uiState = 'unavailable', message = '' } = {},
-) {
-  serverFilterFacets = getEmptyServerFilterFacets();
-  serverFilterFacetsSignature = buildFacetSignature(serverFilterFacets);
-  if (contextSignature) {
-    serverFacetContextSignature = String(contextSignature);
-  }
-  serverFacetsLoaded = false;
-  setServerFacetUiState(uiState, message);
-}
-
-function setServerFilterFacets(rawFacets, { contextSignature = '' } = {}) {
-  const normalized = normalizeServerFacetPayload(rawFacets) || getEmptyServerFilterFacets();
-  const nextSignature = buildFacetSignature(normalized);
-  const changed = nextSignature !== serverFilterFacetsSignature;
-  serverFilterFacets = normalized;
-  serverFilterFacetsSignature = nextSignature;
-  if (contextSignature) {
-    serverFacetContextSignature = String(contextSignature);
-  }
-  serverFacetsLoaded = true;
-  setServerFacetUiState('ready');
-  return changed;
-}
-
-function buildCurrentFacetContextSignature() {
-  const termo = (searchInput?.value || '').trim();
-  const searchContext = buildSearchQueryContext(termo);
-  return buildFacetContextSignature({ searchContext });
-}
-
-async function recoverServerFacetsForContext({ searchContext = null, contextSignature = '' } = {}) {
-  const resolvedContextSignature = String(
-    contextSignature || buildFacetContextSignature({ searchContext }),
-  );
-  const path = buildEditaisFacetsPath({ searchContext });
-  const requestMeta = beginTrackedFacetRequest(path, resolvedContextSignature);
-  let aborted = false;
-  try {
-    const { res, data, facets } = await fetchEditaisFacetsFromApi({
-      searchContext,
-      path,
-      signal: requestMeta.controller.signal,
-    });
-
-    if (activeFacetRequest?.requestId !== requestMeta.requestId) {
-      finishTrackedFacetRequest(requestMeta, { aborted: true });
-      return false;
-    }
-    if (!res.ok) {
-      throw new Error(`Erro na API (${res.status})`);
-    }
-
-    const latestContextSignature = buildCurrentFacetContextSignature();
-    if (latestContextSignature !== resolvedContextSignature) {
-      finishTrackedFacetRequest(requestMeta, { aborted: true });
-      return false;
-    }
-
-    if (!facets) {
-      setServerFilterFacetsUnavailable({
-        contextSignature: resolvedContextSignature,
-        uiState: 'unavailable',
-        message: 'Os filtros do servidor estão indisponíveis no momento.',
-      });
-      generateDynamicFilters();
-      finishTrackedFacetRequest(requestMeta, { ok: false });
-      if (isPerfDebugEnabled()) {
-        console.debug(`${FACET_REQUEST_DEBUG_TAG} missing_facets_payload`, {
-          contextSignature: resolvedContextSignature,
-          path,
-          statusCode: Number(res?.status || 0),
-          hasData: Boolean(data),
-        });
-      }
-      return false;
-    }
-
-    setServerFilterFacets(facets, { contextSignature: resolvedContextSignature });
-    generateDynamicFilters();
-    finishTrackedFacetRequest(requestMeta, { ok: true });
-    return true;
-  } catch (err) {
-    if (isAbortError(err)) {
-      aborted = true;
-      finishTrackedFacetRequest(requestMeta, { aborted: true });
-      return false;
-    }
-    setServerFilterFacetsUnavailable({
-      contextSignature: resolvedContextSignature,
-      uiState: 'unavailable',
-      message: 'Não foi possível atualizar os filtros agora.',
-    });
-    generateDynamicFilters();
-    finishTrackedFacetRequest(requestMeta, { error: err });
-    return false;
-  } finally {
-    if (!aborted && activeFacetRequest?.requestId === requestMeta.requestId) {
-      activeFacetRequest = null;
-    }
-  }
-}
-
-function resolveServerStatusFilter(assistantStatusFilters = []) {
-  if (kpiFilter === 'abertos') return 'aberto';
-  if (kpiFilter === 'fechados') return 'encerrado';
-
-  const statusList = Array.isArray(assistantStatusFilters) ? assistantStatusFilters : [];
-  const hasOpen = statusList.includes('aberto');
-  const hasClosed = statusList.includes('encerrado');
-  if (hasOpen && !hasClosed) return 'aberto';
-  if (hasClosed && !hasOpen) return 'encerrado';
-  return 'todos';
-}
-
-function collectEditaisServerQueryState({ searchContext = null } = {}) {
-  const context = searchContext || buildSearchQueryContext((searchInput?.value || '').trim());
-  const rawSearch = String(searchInput?.value || '').trim();
-  const assistantFilters = assistantPanelContext?.filters || {};
-  const assistantStatuses = mergeUniqueListValues(assistantFilters.status || [])
-    .map((value) => normalizeAssistantStatusToken(value))
-    .filter(Boolean);
-  const assistantEstado = mergeUniqueListValues(assistantFilters.estado || [])
-    .map((value) => normalizeEstadoValue(value))
-    .filter(Boolean);
-  const assistantInstituicoes = mergeUniqueListValues(assistantFilters.instituicoes || assistantFilters.instituicao || []);
-  const assistantAreas = mergeUniqueListValues(assistantFilters.categories || [])
-    .map((value) => toCanonicalCategory(value))
-    .filter(Boolean);
-  const assistantKeywords = mergeUniqueListValues(assistantFilters.keywords || []);
-  const assistantResultIds = assistantPanelContext?.resultIdsSet instanceof Set
-    ? Array.from(assistantPanelContext.resultIdsSet)
-        .map((id) => String(id || '').trim())
-        .filter(Boolean)
-    : [];
-
-  const estado = mergeUniqueListValues(applied.estado, assistantEstado)
-    .map((value) => normalizeEstadoValue(value))
-    .filter(Boolean);
-  const instituicao = mergeUniqueListValues(applied.instituicao, assistantInstituicoes).filter(Boolean);
-  const area = mergeUniqueListValues(applied.area, assistantAreas)
-    .map((value) => toCanonicalCategory(value))
-    .filter(Boolean);
-
-  let q = String(context?.textQuery || rawSearch || '').trim();
-  if (assistantKeywords.length) {
-    q = `${q} ${assistantKeywords.join(' ')}`.trim();
-  }
-
-  return {
-    q,
-    estado,
-    instituicao,
-    area,
-    favoritosOnly: Boolean(onlyFavoritos),
-    status: resolveServerStatusFilter(assistantStatuses),
-    sortField: normalizeSortValue(sortField || sortSelect?.value || 'prazo'),
-    sortDirection: String(sortDirection || 'asc').toLowerCase() === 'desc' ? 'desc' : 'asc',
-    ids: assistantResultIds,
-  };
-}
-
-function appendEditaisQueryStateToParams(params, queryState) {
-  if (!(params instanceof URLSearchParams) || !queryState || typeof queryState !== 'object') return;
-  if (queryState.q) params.set('q', queryState.q);
-  if (queryState.favoritosOnly) params.set('favoritos_only', 'true');
-  queryState.estado.forEach((value) => params.append('estado', value));
-  queryState.instituicao.forEach((value) => params.append('instituicao', value));
-  queryState.area.forEach((value) => params.append('area', value));
-  queryState.ids.forEach((value) => params.append('ids', value));
-}
-
-function buildEditaisListPath({ page = 1, pageSize = PAGE_SIZE, searchContext = null, includeFacets = false } = {}) {
-  const params = new URLSearchParams();
-  const queryState = collectEditaisServerQueryState({ searchContext });
-
-  params.set('modo', 'card');
-  params.set('include_relevance', 'true');
-  params.set('relevance_mode', 'fast');
-  params.set('page', String(Math.max(1, Number(page) || 1)));
-  params.set('page_size', String(Math.max(1, Number(pageSize) || PAGE_SIZE)));
-  params.set('status', queryState.status || 'todos');
-  params.set('sort_field', queryState.sortField || 'prazo');
-  params.set('sort_direction', queryState.sortDirection || 'desc');
-  if (includeFacets) params.set('include_facets', 'true');
-  appendEditaisQueryStateToParams(params, queryState);
-
-  return `/editais?${params.toString()}`;
-}
-
-function buildEditaisFacetsPath({ searchContext = null } = {}) {
-  const params = new URLSearchParams();
-  const queryState = collectEditaisServerQueryState({ searchContext });
-
-  params.set('modo', 'card');
-  params.set('include_relevance', 'false');
-  params.set('page', '1');
-  params.set('page_size', '1');
-  params.set('status', queryState.status || 'todos');
-  params.set('sort_field', queryState.sortField || 'prazo');
-  params.set('sort_direction', queryState.sortDirection || 'desc');
-  params.set('include_facets', 'true');
-  appendEditaisQueryStateToParams(params, queryState);
-
-  return `/editais?${params.toString()}`;
-}
-
-function normalizeListPathForComparison(path) {
-  const rawPath = String(path || '').trim();
-  if (!rawPath) return '';
-
-  const [pathname = '', queryString = ''] = rawPath.split('?');
-  const params = new URLSearchParams(queryString);
-  params.delete('include_facets');
-  const normalizedQuery = params.toString();
-  return normalizedQuery ? `${pathname}?${normalizedQuery}` : pathname;
-}
-
-function parseEditaisListPayload(raw) {
-  const items =
-    Array.isArray(raw) ? raw :
-    (Array.isArray(raw?.items) ? raw.items :
-    (Array.isArray(raw?.editais) ? raw.editais :
-    (Array.isArray(raw?.data) ? raw.data : [])));
-
-  const parsedPage = Number(raw?.page);
-  const parsedPageSize = Number(raw?.page_size);
-  const parsedTotal = Number(raw?.total);
-  const parsedHasNext = raw?.has_next;
-  const rawFacets = raw && typeof raw === 'object' && Object.prototype.hasOwnProperty.call(raw, 'facets')
-    ? parseServerFilterFacets(raw.facets)
-    : null;
-
-  const page = Number.isFinite(parsedPage) && parsedPage > 0 ? Math.floor(parsedPage) : 1;
-  const pageSize = Number.isFinite(parsedPageSize) && parsedPageSize > 0 ? Math.floor(parsedPageSize) : PAGE_SIZE;
-  const fallbackTotal = ((page - 1) * pageSize) + items.length;
-  const total = Number.isFinite(parsedTotal) && parsedTotal >= 0 ? Math.floor(parsedTotal) : fallbackTotal;
-  const hasNext = typeof parsedHasNext === 'boolean'
-    ? parsedHasNext
-    : (page * pageSize) < total;
-
-  return {
-    items,
-    total: Math.max(total, items.length),
-    page,
-    pageSize,
-    hasNext,
-    facets: rawFacets,
-  };
-}
-
-async function fetchEditaisPageFromApi({
-  page = 1,
-  pageSize = PAGE_SIZE,
-  searchContext = null,
-  includeFacets = false,
-  signal = null,
-  path = '',
-} = {}) {
-  const resolvedPath = String(path || '').trim() || buildEditaisListPath({ page, pageSize, searchContext, includeFacets });
-  const fetchOptions = { method: 'GET' };
-  if (signal) fetchOptions.signal = signal;
-  const { res, data } = await apiFetchJson(resolvedPath, fetchOptions);
-  return { path: resolvedPath, res, data, parsed: parseEditaisListPayload(data) };
-}
-
-function parseEditaisFacetsPayload(raw) {
-  if (!raw || typeof raw !== 'object') return null;
-  if (!Object.prototype.hasOwnProperty.call(raw, 'facets')) return null;
-  return parseServerFilterFacets(raw.facets);
-}
-
-async function fetchEditaisFacetsFromApi({
-  searchContext = null,
-  signal = null,
-  path = '',
-} = {}) {
-  const resolvedPath = String(path || '').trim() || buildEditaisFacetsPath({ searchContext });
-  const fetchOptions = { method: 'GET' };
-  if (signal) fetchOptions.signal = signal;
-  const { res, data } = await apiFetchJson(resolvedPath, fetchOptions);
-  return { path: resolvedPath, res, data, facets: parseEditaisFacetsPayload(data) };
-}
-
-function setServerPageState(parsedPage) {
-  serverPageState = {
-    total: Number(parsedPage?.total || 0) || 0,
-    page: Number(parsedPage?.page || 1) || 1,
-    pageSize: Number(parsedPage?.pageSize || PAGE_SIZE) || PAGE_SIZE,
-    hasNext: Boolean(parsedPage?.hasNext),
-  };
-}
-
-function hydrateEditaisFromPagePayload(
-  parsedPage,
-  { includeFacetsRequested = false, facetContextSignature = '' } = {},
-) {
-  let facetsStatus = 'skipped';
-  editaisOriginais = (parsedPage?.items || []).map(normalizeEdital).filter(Boolean);
-  setServerPageState(parsedPage);
-  currentPage = serverPageState.page;
-  if (includeFacetsRequested) {
-    if (parsedPage?.facets) {
-      setServerFilterFacets(parsedPage.facets, { contextSignature: facetContextSignature });
-      facetsStatus = 'loaded';
-    } else {
-      setServerFilterFacetsUnavailable({
-        contextSignature: facetContextSignature,
-        uiState: 'unavailable',
-        message: 'Os filtros do servidor não foram retornados nesta consulta.',
-      });
-      facetsStatus = 'missing';
-      if (isPerfDebugEnabled()) {
-        console.debug(`${LIST_REQUEST_DEBUG_TAG} facets_missing_in_response`, {
-          contextSignature: String(facetContextSignature || ''),
-        });
-      }
-    }
-  }
-  applyFavoritosToLoadedEditais();
-  return { facetsStatus };
-}
-
-async function loadServerPage(
-  page,
-  {
-    pageSize = PAGE_SIZE,
-    searchContext = null,
-    includeFacets = false,
-    facetContextSignature = '',
-  } = {},
-) {
-  const targetPage = Math.max(1, Number(page) || 1);
-  const resolvedFacetContextSignature = String(
-    facetContextSignature || buildFacetContextSignature({ searchContext }),
-  );
-  const path = buildEditaisListPath({ page: targetPage, pageSize, searchContext, includeFacets });
-  const requestMeta = beginTrackedListRequest(path);
-  let aborted = false;
-  try {
-    const { res, data, parsed } = await fetchEditaisPageFromApi({
-      page: targetPage,
-      pageSize,
-      searchContext,
-      includeFacets,
-      path,
-      signal: requestMeta.controller.signal,
-    });
-
-    if (!res.ok) {
-      if (isPasswordChangeRequiredResponse(res, data) || isPasswordChangeRequiredPayload(data)) {
-        const fallbackUrl = buildLoginUrlWithNext();
-        redirectWithAuthGuard(
-          resolvePasswordChangeRedirectTarget(data, fallbackUrl),
-          'main.loadServerPage.password_change_required'
-        );
-        finishTrackedListRequest(requestMeta, { ok: false });
-        return false;
-      }
-
-      if (res.status === 401 || res.status === 403) {
-        const fallbackUrl = buildLoginUrlWithNext();
-        redirectWithAuthGuard(
-          resolveAuthFailureRedirectTarget(data, fallbackUrl),
-          'main.loadServerPage.auth_failed'
-        );
-        finishTrackedListRequest(requestMeta, { ok: false });
-        return false;
-      }
-
-      throw new Error(`Erro na API (${res.status})`);
-    }
-
-    if (activeListRequest?.requestId !== requestMeta.requestId) {
-      finishTrackedListRequest(requestMeta, { aborted: true });
-      return false;
-    }
-
-    const hydration = hydrateEditaisFromPagePayload(parsed, {
-      includeFacetsRequested: includeFacets,
-      facetContextSignature: resolvedFacetContextSignature,
-    });
-    let facetsReadyForContext = hydration?.facetsStatus === 'loaded';
-    if (includeFacets && hydration?.facetsStatus === 'missing') {
-      setServerFilterFacetsUnavailable({
-        contextSignature: resolvedFacetContextSignature,
-        uiState: 'loading',
-        message: 'Atualizando opções de filtros...',
-      });
-      generateDynamicFilters();
-      facetsReadyForContext = await recoverServerFacetsForContext({
-        searchContext,
-        contextSignature: resolvedFacetContextSignature,
-      });
-      if (activeListRequest?.requestId !== requestMeta.requestId) {
-        finishTrackedListRequest(requestMeta, { aborted: true });
-        return false;
-      }
-    }
-    lastLoadedListPath = path;
-    lastLoadedListIncludedFacets = Boolean(includeFacets && facetsReadyForContext);
-    if (includeFacets) {
-      generateDynamicFilters();
-    }
-    finishTrackedListRequest(requestMeta, { ok: true });
-    return true;
-  } catch (err) {
-    if (isAbortError(err)) {
-      aborted = true;
-      finishTrackedListRequest(requestMeta, { aborted: true });
-      return false;
-    }
-    finishTrackedListRequest(requestMeta, { error: err });
-    throw err;
-  } finally {
-    if (!aborted && activeListRequest?.requestId === requestMeta.requestId) {
-      activeListRequest = null;
-    }
-  }
-}
 
 // =========================
 // DATA LOAD
 // =========================
 async function loadEditais() {
-  perfMark('editais_load_start');
-  if (!container) {
-    perfMark('editais_load_end');
-    perfMeasure('dashboard_editais_load_ms', 'editais_load_start', 'editais_load_end');
-    return;
-  }
+  if (!container) return;
 
   container.innerHTML = `
     <div class="loading-container">
@@ -2085,12 +1070,7 @@ async function loadEditais() {
   `;
 
   try {
-    const facetContextSignature = buildFacetContextSignature({ searchContext: null });
-    const { path, res, data, parsed } = await fetchEditaisPageFromApi({
-      page: 1,
-      pageSize: INITIAL_PAGE_SIZE,
-      includeFacets: false,
-    });
+    const { res, data } = await apiFetchJson('/editais?modo=card&include_relevance=true&relevance_mode=fast', { method: 'GET' });
 
     if (!res.ok) {
       if (isPasswordChangeRequiredResponse(res, data) || isPasswordChangeRequiredPayload(data)) {
@@ -2117,21 +1097,14 @@ async function loadEditais() {
       throw new Error(`Erro na API (${res.status})`);
     }
 
-    hydrateEditaisFromPagePayload(parsed, {
-      includeFacetsRequested: false,
-      facetContextSignature,
-    });
-    setServerFilterFacetsUnavailable({
-      contextSignature: facetContextSignature,
-      uiState: 'loading',
-      message: 'Carregando filtros em segundo plano...',
-    });
-    lastLoadedListPath = path;
-    lastLoadedListIncludedFacets = false;
-    renderEditaisCardsFallback({ source: 'loadEditais_first_render' });
+    const rawList =
+      Array.isArray(data) ? data :
+      (Array.isArray(data?.editais) ? data.editais :
+      (Array.isArray(data?.data) ? data.data : []));
+
+    editaisOriginais = rawList.map(normalizeEdital).filter(Boolean);
   } catch (e) {
     console.error('Erro ao carregar editais:', e);
-    logBootstrapError('loadEditais_error', e);
     container.innerHTML = `
       <section class="results-empty-state is-error">
         <div class="empty-icon"><i class="fas fa-exclamation-triangle" aria-hidden="true"></i></div>
@@ -2140,9 +1113,6 @@ async function loadEditais() {
         <button onclick="location.reload()" class="btn btn-primary">Tentar novamente</button>
       </section>
     `;
-  } finally {
-    perfMark('editais_load_end');
-    perfMeasure('dashboard_editais_load_ms', 'editais_load_start', 'editais_load_end');
   }
 }
 
@@ -2158,7 +1128,6 @@ function applyFavoritosToLoadedEditais() {
 }
 
 async function loadFavoritos() {
-  perfMark('favoritos_load_start');
   // Se o endpoint ainda não existir no backend, a UI segue normalmente.
   favoritosSet = new Set();
   try {
@@ -2169,9 +1138,6 @@ async function loadFavoritos() {
     }
   } catch (_) {
     // silencioso de propósito (não quebra a listagem)
-  } finally {
-    perfMark('favoritos_load_end');
-    perfMeasure('dashboard_favoritos_load_ms', 'favoritos_load_start', 'favoritos_load_end');
   }
   applyFavoritosToLoadedEditais();
 }
@@ -2253,23 +1219,22 @@ function updateSaveButtonUI(btn, isSaved) {
 function normalizeEdital(api) {
   const data = typeof api?.json_data === 'string' ? safeJsonParse(api.json_data, {}) : (api?.json_data || {});
   const arquivos = typeof api?.arquivos_json === 'string' ? safeJsonParse(api.arquivos_json, []) : (api?.arquivos_json || []);
-  const mergedTags = Array.isArray(api?.tags) && api.tags.length ? api.tags : (Array.isArray(data.tags) ? data.tags : []);
-  const rawArea = api?.area || data.area || (mergedTags.length ? mergedTags[0] : 'Geral');
-  const titulo = api?.titulo || data.titulo || 'Sem título';
+  const rawArea = data.area || (Array.isArray(data.tags) && data.tags.length ? data.tags[0] : 'Geral');
+  const titulo = data.titulo || api?.titulo || 'Sem título';
 
   return {
     id: api?.id,
     titulo,
     slug: generateSlug(titulo),
-    descricao: api?.descricao || data.objetivo || data.descricao || 'Sem descrição',
-    publico_alvo: api?.publico_alvo || data.publico_alvo || '',
-    icone: resolveIconPath(api?.icone_instituicao || data.icone_instituicao),
-    instituicao: api?.instituicao || data.instituicao || '',
-    estado: normalizeEstadoValue(api?.estado || data.estado || 'BR') || 'BR',
+    descricao: data.objetivo || data.descricao || 'Sem descrição',
+    publico_alvo: data.publico_alvo || '',
+    icone: resolveIconPath(data.icone_instituicao),
+    instituicao: data.instituicao || '',
+    estado: normalizeEstadoValue(data.estado || 'BR') || 'BR',
     area: String(rawArea || 'Geral'),
-    instrumento: toCanonicalInstrument(api?.instrumento || data.instrumento || data.apoio || 'Não informado'),
-    tipo: api?.tipo || data.tipo || 'Não informado',
-    valor_total: api?.valor_total || data.valor_total || '',
+    instrumento: toCanonicalInstrument(data.instrumento || data.apoio || 'Não informado'),
+    tipo: data.tipo || 'Não informado',
+    valor_total: data.valor_total || '',
     data_fechamento:
       api?.data_final_submissao ||
       api?.data_fechamento ||
@@ -2284,7 +1249,7 @@ function normalizeEdital(api) {
       data.data_publicacao_resultado ||
       api?.created_at ||
       null,
-    tags: mergedTags,
+    tags: data.tags || [],
     arquivos,
     is_favorite: false,
     share_link: api?.share_link || '',
@@ -2422,123 +1387,113 @@ function toCanonicalInstrument(value) {
 }
 
 // =========================
-// FILTROS (gera opções)
+// FUSE (relevância)
 // =========================
-function renderFacetOptions(type, values, selectedValues = []) {
-  const box = document.querySelector(`.filter-options[data-filter-type="${type}"]`);
-  if (!box) return;
-
-  const selectedSet = new Set((Array.isArray(selectedValues) ? selectedValues : [])
-    .map((value) => normalizeServerFacetValue(type, value))
-    .filter(Boolean));
-
-  box.innerHTML = '';
-  if (!Array.isArray(values) || values.length === 0) {
-    box.innerHTML = '<div style="font-size:12px; color:#9CA3AF; padding:6px;">Nenhuma opção</div>';
-    return;
-  }
-
-  values.forEach(({ value, count }) => {
-    const cleanValue = normalizeServerFacetValue(type, value);
-    if (!cleanValue) return;
-    const displayValue = type === 'estado' ? formatEstadoLabel(cleanValue) : cleanValue;
-
-    const label = document.createElement('label');
-    label.setAttribute('data-label', normalizeCategoryKey(`${cleanValue} ${displayValue}`));
-
-    const left = document.createElement('span');
-    left.className = 'label-left';
-
-    const input = document.createElement('input');
-    input.type = 'checkbox';
-    input.value = cleanValue;
-    input.checked = selectedSet.has(cleanValue);
-
-    const text = document.createElement('span');
-    text.textContent = displayValue;
-    text.style.minWidth = '0';
-    text.style.overflow = 'hidden';
-    text.style.textOverflow = 'ellipsis';
-    text.style.whiteSpace = 'nowrap';
-    if (type === 'estado') {
-      text.style.overflow = 'visible';
-      text.style.textOverflow = 'clip';
-      text.style.whiteSpace = 'normal';
-    }
-
-    left.appendChild(input);
-    left.appendChild(text);
-
-    const countEl = document.createElement('span');
-    countEl.className = 'filter-count';
-    countEl.textContent = Number.isFinite(Number(count)) ? Math.max(0, Math.floor(Number(count))) : 0;
-
-    label.appendChild(left);
-    label.appendChild(countEl);
-    box.appendChild(label);
+function buildFuseIndex() {
+  if (typeof Fuse === 'undefined') return;
+  fuseInstance = new Fuse(editaisOriginais, {
+    keys: ['titulo', 'descricao', 'instituicao', 'area', 'tags', 'data_fechamento', 'data_abertura', 'data_publicacao'],
+    threshold: 0.35,
+    ignoreLocation: true,
+    minMatchCharLength: 2,
   });
 }
 
-function renderFacetInfoState(type, message) {
-  const box = document.querySelector(`.filter-options[data-filter-type="${type}"]`);
-  if (!box) return;
-  box.innerHTML = `<div style="font-size:12px; color:#9CA3AF; padding:6px;">${escapeHtml(message)}</div>`;
-}
-
+// =========================
+// FILTROS (gera opções)
+// =========================
 function generateDynamicFilters() {
-  const resolvedFacets = normalizeServerFacetPayload(serverFilterFacets) || getEmptyServerFilterFacets();
-  const currentSignature = `${buildFacetSignature(resolvedFacets)}|${serverFacetUiState}|${serverFacetUiMessage}`;
-  if (currentSignature === lastRenderedFacetSignature) return;
-  lastRenderedFacetSignature = currentSignature;
+  const types = [
+    { key: 'estado', type: 'estado' },
+    { key: 'instituicao', type: 'instituicao' },
+  ];
 
-  if (serverFacetUiState === 'loading') {
-    const message = serverFacetUiMessage || 'Atualizando opções de filtros...';
-    renderFacetInfoState('estado', message);
-    renderFacetInfoState('instituicao', message);
-    renderFacetInfoState('area', message);
-    return;
-  }
+  types.forEach(({ key, type }) => {
+    const box = document.querySelector(`.filter-options[data-filter-type="${type}"]`);
+    if (!box) return;
 
-  if (serverFacetUiState === 'unavailable') {
-    const message = serverFacetUiMessage || 'Os filtros do servidor estão indisponíveis no momento.';
-    renderFacetInfoState('estado', message);
-    renderFacetInfoState('instituicao', message);
-    renderFacetInfoState('area', message);
-    return;
-  }
+    const counts = new Map();
+    for (const e of editaisOriginais) {
+      const raw = type === 'estado'
+        ? normalizeEstadoValue(e?.[key])
+        : (e?.[key] ?? '').toString().trim();
+      if (!raw) continue;
+      counts.set(raw, (counts.get(raw) || 0) + 1);
+    }
 
-  renderFacetOptions('estado', resolvedFacets.estado, applied.estado);
-  renderFacetOptions('instituicao', resolvedFacets.instituicao, applied.instituicao);
-  generateCategoryFilters(resolvedFacets.area);
+    const values = Array.from(counts.keys())
+      .sort((a, b) => {
+        const diff = (counts.get(b) || 0) - (counts.get(a) || 0);
+        if (diff !== 0) return diff;
+        return a.localeCompare(b, 'pt-BR');
+      });
+
+    box.innerHTML = '';
+    if (values.length === 0) {
+      box.innerHTML = '<div style="font-size:12px; color:#9CA3AF; padding:6px;">Nenhuma opção</div>';
+      return;
+    }
+
+    for (const val of values) {
+      const displayVal = type === 'estado' ? formatEstadoLabel(val) : val;
+      const label = document.createElement('label');
+      label.setAttribute('data-label', normalizeCategoryKey(`${val} ${displayVal}`));
+
+      const left = document.createElement('span');
+      left.className = 'label-left';
+
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.value = val;
+
+      const text = document.createElement('span');
+      text.textContent = displayVal;
+      text.style.minWidth = '0';
+      text.style.overflow = 'hidden';
+      text.style.textOverflow = 'ellipsis';
+      text.style.whiteSpace = 'nowrap';
+      if (type === 'estado') {
+        text.style.overflow = 'visible';
+        text.style.textOverflow = 'clip';
+        text.style.whiteSpace = 'normal';
+      }
+
+      left.appendChild(input);
+      left.appendChild(text);
+
+      const count = document.createElement('span');
+      count.className = 'filter-count';
+      count.textContent = counts.get(val) || 0;
+
+      label.appendChild(left);
+      label.appendChild(count);
+      box.appendChild(label);
+    }
+  });
+
+  generateCategoryFilters();
 
   wireFilterSearch(filterSearchEstado, document.querySelector('.filter-options[data-filter-type="estado"]'));
   wireFilterSearch(filterSearchInstituicao, document.querySelector('.filter-options[data-filter-type="instituicao"]'));
   wireFilterSearch(filterSearchArea, document.querySelector('.filter-options[data-filter-type="area"]'));
-  [filterSearchEstado, filterSearchInstituicao, filterSearchArea].forEach((inputEl) => {
-    if (!inputEl || !String(inputEl.value || '').trim()) return;
-    inputEl.dispatchEvent(new Event('input'));
-  });
 }
 
-function generateCategoryFilters(areaFacets = []) {
+function generateCategoryFilters() {
   const box = document.querySelector('.filter-options[data-filter-type="area"]');
   if (!box) return;
 
   const counts = new Map();
-  (Array.isArray(areaFacets) ? areaFacets : []).forEach(({ value, count }) => {
-    const cat = toCanonicalCategory(value);
+  for (const e of editaisOriginais) {
+    const cat = toCanonicalCategory(e?.area);
     if (!cat) continue;
-    const parsedCount = Number(count);
-    const safeCount = Number.isFinite(parsedCount) && parsedCount > 0 ? Math.floor(parsedCount) : 0;
-    counts.set(cat, (counts.get(cat) || 0) + safeCount);
+    counts.set(cat, (counts.get(cat) || 0) + 1);
+  }
+
+  const orderedCategories = CATEGORY_OPTIONS.slice().sort((a, b) => {
+    const diff = (counts.get(b.value) || 0) - (counts.get(a.value) || 0);
+    if (diff !== 0) return diff;
+    return a.label.localeCompare(b.label, 'pt-BR');
   });
-  const knownCategorySet = new Set(CATEGORY_OPTIONS.map((item) => item.value));
-  const extras = Array.from(counts.keys())
-    .filter((value) => !knownCategorySet.has(value))
-    .sort((a, b) => a.localeCompare(b, 'pt-BR'))
-    .map((value) => ({ value, label: value }));
-  const orderedCategories = [...CATEGORY_OPTIONS, ...extras];
-  const selectedSet = new Set((applied.area || []).map((value) => toCanonicalCategory(value)));
 
   box.innerHTML = '';
   for (const category of orderedCategories) {
@@ -2551,7 +1506,6 @@ function generateCategoryFilters(areaFacets = []) {
     const input = document.createElement('input');
     input.type = 'checkbox';
     input.value = category.value;
-    input.checked = selectedSet.has(category.value);
 
     const text = document.createElement('span');
     text.textContent = category.label;
@@ -2575,8 +1529,6 @@ function generateCategoryFilters(areaFacets = []) {
 
 function wireFilterSearch(inputEl, optionsEl) {
   if (!inputEl || !optionsEl) return;
-  if (inputEl.dataset.searchBound === '1') return;
-  inputEl.dataset.searchBound = '1';
   inputEl.addEventListener('input', () => {
     const q = normalizeCategoryKey(inputEl.value);
     let visible = 0;
@@ -3088,89 +2040,162 @@ function applyAssistantPayloadToDashboard(rawPayload, { fallbackQuery = '' } = {
   return true;
 }
 
+function applyAssistantContextFilters(items) {
+  if (!assistantPanelContext || !Array.isArray(items) || !items.length) return items;
+
+  let scoped = [...items];
+  const context = assistantPanelContext;
+  const filters = context.filters || {};
+  const idSet = context.resultIdsSet instanceof Set ? context.resultIdsSet : new Set();
+
+  if (idSet.size > 0) {
+    scoped = scoped.filter((edital) => idSet.has(String(edital?.id)));
+    return scoped;
+  }
+
+  const status = Array.isArray(filters.status) ? filters.status : [];
+  const onlyOpen = status.includes('aberto') && !status.includes('encerrado');
+  const onlyClosed = status.includes('encerrado') && !status.includes('aberto');
+  if (onlyOpen) scoped = scoped.filter((edital) => isOpenEditalForChat(edital));
+  if (onlyClosed) scoped = scoped.filter((edital) => !isOpenEditalForChat(edital));
+
+  if (filters.deadline_range === 'next_7_days') {
+    scoped = scoped.filter((edital) => isOpenEditalForChat(edital) && isDeadlineWithinNextDays(edital, 7));
+  }
+
+  if (Array.isArray(filters.estado) && filters.estado.length) {
+    const ufSet = new Set(filters.estado.map((uf) => String(uf || '').trim().toUpperCase()).filter(Boolean));
+    scoped = scoped.filter((edital) => ufSet.has(String(edital?.estado || '').trim().toUpperCase()));
+  }
+
+  if (Array.isArray(filters.instituicoes) && filters.instituicoes.length) {
+    const wanted = filters.instituicoes.map((item) => normalizeAssistantQuery(item));
+    scoped = scoped.filter((edital) => {
+      const inst = normalizeAssistantQuery(edital?.instituicao || '');
+      return wanted.some((needle) => inst.includes(needle));
+    });
+  }
+
+  if (Array.isArray(filters.categories) && filters.categories.length) {
+    const wanted = new Set(filters.categories.map((item) => toCanonicalCategory(item)));
+    scoped = scoped.filter((edital) => wanted.has(toCanonicalCategory(edital?.area || '')));
+  }
+
+  if ((!idSet.size) && Array.isArray(filters.keywords) && filters.keywords.length) {
+    scoped = scoped.filter((edital) => {
+      const blob = normalizeAssistantQuery([
+        edital?.titulo,
+        edital?.descricao,
+        edital?.instituicao,
+        edital?.estado,
+        edital?.area,
+        ...(Array.isArray(edital?.tags) ? edital.tags : []),
+      ].filter(Boolean).join(' '));
+      return filters.keywords.some((keyword) => blob.includes(normalizeAssistantQuery(keyword)));
+    });
+  }
+
+  return scoped;
+}
+
 // =========================
 // APLICAÇÃO DE FILTROS
 // =========================
 
-async function applyFiltersAndRender(
-  { resetPage, forceReload = false, deferFacets = false } = { resetPage: false, forceReload: false, deferFacets: false },
-) {
-  if (!container) return;
-  cancelPendingSearchInputDebounce();
+function applyFiltersAndRender({ resetPage } = { resetPage: false }) {
   if (resetPage) currentPage = 1;
 
   const termo = (searchInput?.value || '').trim();
   const searchContext = buildSearchQueryContext(termo);
-  const targetPage = Math.max(1, Number(currentPage) || 1);
-  const facetContextSignature = buildFacetContextSignature({ searchContext });
-  const shouldIncludeFacets = !deferFacets && Boolean(
-    forceReload ||
-    !serverFacetsLoaded ||
-    facetContextSignature !== serverFacetContextSignature
-  );
-  const targetPath = buildEditaisListPath({
-    page: targetPage,
-    pageSize: INITIAL_PAGE_SIZE,
-    searchContext,
-    includeFacets: shouldIncludeFacets,
-  });
-  const normalizedTargetPath = normalizeListPathForComparison(targetPath);
-  const normalizedLoadedPath = normalizeListPathForComparison(lastLoadedListPath);
-  const pathChanged = normalizedTargetPath !== normalizedLoadedPath;
-  const facetsRefreshPending = shouldIncludeFacets && !lastLoadedListIncludedFacets;
-  const isFacetRefreshOnly = facetsRefreshPending && !forceReload && !pathChanged;
-  const requestSeq = ++applyFiltersRenderSeq;
-
+  const textQuery = searchContext.textQuery;
+  const textQueryLower = textQuery.toLowerCase();
   setSearchVisualState();
 
-  if (forceReload || pathChanged || facetsRefreshPending) {
-    try {
-      const ok = await loadServerPage(targetPage, {
-        pageSize: INITIAL_PAGE_SIZE,
-        searchContext,
-        includeFacets: shouldIncludeFacets,
-        facetContextSignature,
-      });
-      if (!ok) return;
-    } catch (err) {
-      console.error('Falha ao carregar resultados refinados no backend:', err);
-      if (isFacetRefreshOnly) {
-        setServerFilterFacetsUnavailable({
-          contextSignature: facetContextSignature,
-          uiState: 'unavailable',
-          message: 'Não foi possível atualizar os filtros agora.',
-        });
-        try {
-          generateDynamicFilters();
-        } catch (facetRenderError) {
-          logBootstrapError('applyFiltersAndRender_facets_render_error', facetRenderError);
-        }
-        logBootstrapError('applyFiltersAndRender_facets_refresh_error', err);
-        return;
-      }
-      renderEditais(container, [], {
-        emptyState: {
-          icon: 'fa-triangle-exclamation',
-          title: 'Falha ao atualizar resultados',
-          message: escapeHtml(err?.message || 'Tente novamente em instantes.'),
-        },
-      });
-      return;
+  // 1) Base por relevância (Fuse) quando existir busca
+  let base = [...editaisOriginais];
+
+  if (textQuery && fuseInstance) {
+    base = fuseInstance.search(textQuery).map(r => r.item);
+  } else if (textQuery) {
+    base = base.filter(e =>
+      (e.titulo || '').toLowerCase().includes(textQueryLower) ||
+      (e.descricao || '').toLowerCase().includes(textQueryLower) ||
+      (e.instituicao || '').toLowerCase().includes(textQueryLower) ||
+      (e.area || '').toLowerCase().includes(textQueryLower) ||
+      (Array.isArray(e.tags) && e.tags.some(t => String(t).toLowerCase().includes(textQueryLower)))
+    );
+  }
+
+  if (searchContext.dateIntent) {
+    const dateMatches = editaisOriginais.filter((edital) => matchesDateIntent(edital, searchContext.dateIntent));
+    if (searchContext.hasMeaningfulText && textQuery) {
+      const dateIds = new Set(dateMatches.map((edital) => String(edital.id)));
+      base = base.filter((edital) => dateIds.has(String(edital.id)));
+    } else {
+      base = dateMatches;
     }
   }
 
-  if (requestSeq !== applyFiltersRenderSeq) return;
+  // 2) Filtros aplicados (checkboxes)
+  let filtered = base;
+  if (applied.estado.length) filtered = filtered.filter(e => applied.estado.includes(e.estado));
+  if (applied.instituicao.length) filtered = filtered.filter(e => applied.instituicao.includes(e.instituicao));
+  if (applied.area.length) filtered = filtered.filter(e => applied.area.includes(toCanonicalCategory(e.area)));
+  filtered = applyAssistantContextFilters(filtered);
+  const statsBase = [...filtered];
 
-  const pageItems = [...editaisOriginais];
-  lastFiltered = pageItems;
+  // 2.4) Recorte por KPI clicado
+  if (kpiFilter === 'abertos') filtered = filtered.filter((edital) => !isClosedEdital(edital));
+  if (kpiFilter === 'fechados') filtered = filtered.filter((edital) => isClosedEdital(edital));
 
-  const total = Math.max(0, Number(serverPageState.total || 0));
-  const pageSize = Math.max(1, Number(serverPageState.pageSize || INITIAL_PAGE_SIZE));
-  const totalPages = Math.max(1, Math.ceil(total / pageSize));
-  currentPage = Math.min(Math.max(1, Number(serverPageState.page || targetPage)), totalPages);
+  // 2.5) Só salvos
+  if (onlyFavoritos) filtered = filtered.filter(e => !!e.is_favorite);
 
-  const startIdx = total === 0 ? 0 : ((currentPage - 1) * pageSize);
-  const endIdx = total === 0 ? 0 : Math.min(startIdx + pageItems.length, total);
+  // 3) Ordenação
+  const sort = normalizeSortValue(sortField || sortSelect?.value || 'prazo');
+  const directionFactor = sortDirection === 'desc' ? -1 : 1;
+
+  const collate = (a, b) => String(a || '').localeCompare(String(b || ''), 'pt-BR', { sensitivity: 'base' });
+
+  if (sort === 'prazo') {
+    filtered = [...filtered].sort((a, b) => compareIsoDate(a.data_fechamento, b.data_fechamento) * directionFactor);
+  } else if (sort === 'atualizado' || sort === 'atualizacao') {
+    filtered = [...filtered].sort((a, b) => compareIsoDate(a.data_abertura, b.data_abertura) * directionFactor);
+  } else if (sort === 'titulo') {
+    filtered = [...filtered].sort((a, b) => collate(a.titulo, b.titulo) * directionFactor);
+  } else if (sort === 'instituicao') {
+    filtered = [...filtered].sort((a, b) => collate(a.instituicao, b.instituicao) * directionFactor);
+  } else if (sort === 'estado') {
+    filtered = [...filtered].sort((a, b) => collate(a.estado, b.estado) * directionFactor);
+  } else if (sort === 'relevancia') {
+    const compareRelevance = (a, b) => {
+      const relDiff = normalizeRelevanceScore(a?.relevance_score) - normalizeRelevanceScore(b?.relevance_score);
+      if (relDiff !== 0) return relDiff;
+
+      const highlightDiff = (a?.is_highlighted ? 1 : 0) - (b?.is_highlighted ? 1 : 0);
+      if (highlightDiff !== 0) return highlightDiff;
+
+      const openDiff = (isClosedEdital(a) ? 0 : 1) - (isClosedEdital(b) ? 0 : 1);
+      if (openDiff !== 0) return openDiff;
+
+      return collate(a?.titulo, b?.titulo) * -1;
+    };
+    filtered = [...filtered].sort((a, b) => compareRelevance(a, b) * directionFactor);
+  } else {
+    // fallback
+    filtered = filtered;
+  }
+
+  lastFiltered = filtered;
+
+  // 4) Paginação + render
+  const total = filtered.length;
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  if (currentPage > totalPages) currentPage = totalPages;
+
+  const startIdx = (currentPage - 1) * PAGE_SIZE;
+  const endIdx = Math.min(startIdx + PAGE_SIZE, total);
+  const pageItems = filtered.slice(startIdx, endIdx);
 
   if (resultsMeta) {
     const a = total === 0 ? 0 : startIdx + 1;
@@ -3179,7 +2204,7 @@ async function applyFiltersAndRender(
     resultsMeta.textContent = `Mostrando ${a}-${b} de ${total} ${label}`;
   }
 
-  updateHeroStats(pageItems, { totalOverride: total });
+  updateHeroStats(statsBase);
   syncKpiButtons();
   renderActiveFilters();
   renderResultsStateHint(total);
@@ -3267,10 +2292,8 @@ function compareIsoDate(a, b) {
   return da < db ? -1 : da > db ? 1 : 0;
 }
 
-function updateHeroStats(filtered, { totalOverride = null } = {}) {
-  const totalValue = Number(totalOverride);
-  const resolvedTotal = Number.isFinite(totalValue) && totalValue >= 0 ? Math.round(totalValue) : filtered.length;
-  if (statTotal) statTotal.textContent = String(resolvedTotal);
+function updateHeroStats(filtered) {
+  if (statTotal) statTotal.textContent = String(filtered.length);
 
   const now = new Date();
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
@@ -3498,7 +2521,7 @@ const doLogout = async () => {
         clearAssistantPanelContext();
       }
       setSearchVisualState();
-      scheduleDebouncedSearchRefresh();
+      applyFiltersAndRender({ resetPage: true });
     });
   }
 
@@ -3594,13 +2617,13 @@ const doLogout = async () => {
 
   // paginação click
   if (paginationEl) {
-    paginationEl.addEventListener('click', async (e) => {
+    paginationEl.addEventListener('click', (e) => {
       const btn = e.target.closest('button[data-page]');
       if (!btn) return;
       const p = Number(btn.getAttribute('data-page'));
       if (!Number.isFinite(p) || p === currentPage) return;
       currentPage = p;
-      await applyFiltersAndRender({ resetPage: false });
+      applyFiltersAndRender({ resetPage: false });
       window.scrollTo({ top: 0, behavior: 'smooth' });
     });
   }
@@ -3627,7 +2650,7 @@ const doLogout = async () => {
             showToast(r.is_favorite ? 'Edital salvo na sua lista.' : 'Edital removido dos salvos.', 'success', 1800);
             // Se estiver vendo só salvos e removeu, some do grid
             if (onlyFavoritos && !r.is_favorite) {
-              applyFiltersAndRender({ resetPage: true, forceReload: true });
+              applyFiltersAndRender({ resetPage: true });
             }
           }
         } catch (err) {
@@ -3670,18 +2693,11 @@ const doLogout = async () => {
   }
 
   if (sendButton && chatInput) {
-    sendButton.addEventListener('click', () => {
-      if (isChatStreamActive()) {
-        abortActiveChatRequest('stop_button');
-        return;
-      }
-      void handleChatSend({ source: 'message_send' });
-    });
+    sendButton.addEventListener('click', () => handleChatSend({ source: 'message_send' }));
     chatInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {
         e.preventDefault();
-        if (isChatStreamActive()) return;
-        void handleChatSend({ source: 'message_send' });
+        handleChatSend({ source: 'message_send' });
       }
     });
   }
@@ -4057,7 +3073,7 @@ async function openModal(edital) {
           showToast(r.is_favorite ? 'Edital salvo com sucesso.' : 'Edital removido dos salvos.', 'success', 1800);
 
           if (onlyFavoritos && !r.is_favorite) {
-            applyFiltersAndRender({ resetPage: true, forceReload: true });
+            applyFiltersAndRender({ resetPage: true });
           }
         }
       } catch (err) {
@@ -4359,16 +3375,14 @@ function addMessage(text, sender = 'bot', sources = null, opts = {}) {
   return msg;
 }
 
-function setMessageText(msgEl, text, sources = null, options = {}) {
+function setMessageText(msgEl, text, sources = null) {
   if (!msgEl) return;
   const bubble = msgEl.querySelector('.bubble');
   if (bubble) bubble.innerHTML = renderSimpleMarkdown(text);
   if (msgEl.classList.contains('bot')) {
     applySourcesDetails(msgEl, sources);
   }
-  if (!options?.keepTyping) {
-    msgEl.classList.remove('is-typing');
-  }
+  msgEl.classList.remove('is-typing');
 }
 
 function buildSourcesDetails(sources) {
@@ -4804,7 +3818,9 @@ function searchEditaisForChat(query) {
 
   let items = [];
 
-  if (keywords.length) {
+  if (keywords.length && fuseInstance) {
+    items = fuseInstance.search(keywords.join(' ')).map((r) => r.item);
+  } else if (keywords.length) {
     items = editaisOriginais.filter((e) => {
       const hay = [
         e.titulo, e.descricao, e.instituicao, e.estado, e.area,
@@ -5221,52 +4237,6 @@ function resolveBackendSearchDecision({ data, question, backendOptions, backendS
   };
 }
 
-function setActiveChatRequestController(controller) {
-  chatRequestTracker.setActiveController(controller);
-}
-
-function clearActiveChatRequestController(controller) {
-  chatRequestTracker.clearActiveController(controller);
-}
-
-function isChatStreamActive() {
-  return chatRequestTracker.hasActiveController();
-}
-
-function abortActiveChatRequest(reason = 'manual') {
-  const aborted = chatRequestTracker.abortActiveController();
-  if (aborted) {
-    console.info('[CHAT][stream] requisicao abortada pelo cliente', { reason });
-  }
-  return aborted;
-}
-
-async function readResponsePayloadFallback(res) {
-  if (!res) return null;
-  const contentType = String(res.headers?.get('content-type') || '').toLowerCase();
-  let rawText = '';
-  try {
-    rawText = await res.text();
-  } catch (_) {
-    rawText = '';
-  }
-
-  if (!rawText) return null;
-  if (contentType.includes('application/json')) {
-    try {
-      return JSON.parse(rawText);
-    } catch (_) {
-      return { _rawText: rawText };
-    }
-  }
-
-  try {
-    return JSON.parse(rawText);
-  } catch (_) {
-    return { _rawText: rawText };
-  }
-}
-
 async function handleChatSend(options = {}) {
   if (botIsTyping) return;
   if (!hasPersonalizationConsent()) {
@@ -5433,275 +4403,142 @@ async function handleChatSend(options = {}) {
     return;
   }
 
-  setChatBusy(true, { streaming: true });
-  const typingMsg = addMessage('', 'bot', null, { isTyping: true });
-  const streamController = new AbortController();
-  setActiveChatRequestController(streamController);
-  let streamedText = '';
-  let streamedSources = [];
-  let streamTopicDetection = null;
-  let hasBackendState = false;
-  let streamErrorMessage = '';
-  let streamDoneReceived = false;
+  setChatBusy(true);
+  const typingMsg = addMessage('digitando...', 'bot', null, { isTyping: true });
+  const canApplyDashboardSearch = !contextualEditalId;
 
   try {
-    const endpoint = `/chat/edital/${encodeURIComponent(contextualEditalId)}/stream`;
-    const res = await apiFetch(endpoint, {
+    const endpoint = contextualEditalId ? `/chat/edital/${encodeURIComponent(contextualEditalId)}` : '/chat';
+
+    const { res, data } = await apiFetchJson(endpoint, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'text/event-stream',
-      },
+      headers: { 'Content-Type': 'application/json' },
+      // manda "message" (backend) e "question" (compat)
       body: JSON.stringify({ message: question, question, state: chatState }),
-      signal: streamController.signal,
     });
 
-    const contentType = String(res.headers?.get('content-type') || '').toLowerCase();
-    const isSseResponse = Boolean(res.ok && res.body && contentType.includes('text/event-stream'));
+    if (!res.ok) {
+      const localOutcome = buildLocalAssistantOutcome(question);
+      const fallbackText = localOutcome?.reply || 'O chat está indisponível no momento. Tenta de novo em alguns instantes.';
+      setMessageText(
+        typingMsg,
+        fallbackText
+      );
+      chatState = appendConversationTurn(chatState, 'assistant', fallbackText);
+      persistChatState(chatState);
+      if (canApplyDashboardSearch && localOutcome?.shouldSearch) {
+        attachEditaisOptions(typingMsg, question);
+      }
+      return;
+    }
 
-    if (!isSseResponse) {
-      const data = await readResponsePayloadFallback(res);
-
-      if (!res.ok) {
-        const localOutcome = buildLocalAssistantOutcome(question);
-        const fallbackText = localOutcome?.reply || 'O chat está indisponível no momento. Tenta de novo em alguns instantes.';
-        setMessageText(typingMsg, fallbackText);
-        chatState = appendConversationTurn(chatState, 'assistant', fallbackText);
+    const hasBackendState = Boolean(data?.state && typeof data.state === 'object');
+    if (Object.prototype.hasOwnProperty.call(data || {}, 'state')) {
+      if (data?.state && typeof data.state === 'object') {
+        chatState = ensureChatSessionState(data.state);
         persistChatState(chatState);
-        return;
-      }
-
-      hasBackendState = Boolean(data?.state && typeof data.state === 'object');
-      if (Object.prototype.hasOwnProperty.call(data || {}, 'state')) {
-        if (data?.state && typeof data.state === 'object') {
-          chatState = ensureChatSessionState(data.state);
-          persistChatState(chatState);
-          updateChatHeader();
-        } else {
-          clearActiveEditalContext({ clearAssistantContext: true });
-        }
-      }
-
-      if (data?.switch_to_general) {
+        updateChatHeader();
+      } else {
         clearActiveEditalContext({ clearAssistantContext: true });
-        const switchText = normalizeBotText(
-          data?.reply || 'Entendi, saindo do edital atual. Agora voce pode buscar outro tema.'
-        );
-        setMessageText(typingMsg, switchText);
-        if (!hasBackendState) {
-          chatState = appendConversationTurn(chatState, 'assistant', switchText);
-        }
-        persistChatState(chatState);
-        return;
       }
+    }
 
-      const answer =
-        data?.answer ??
-        data?.reply ??
-        data?.resposta ??
-        data?.message ??
-        data?.text ??
-        data?._rawText ??
-        null;
-      const rawText = (answer && String(answer).trim())
-        ? normalizeBotText(answer)
-        : 'Nao consegui responder agora.';
-      const extracted = extractEmbeddedSources(rawText);
-      const finalText = extracted.text || rawText;
-      const finalSources = normalizeSources(data?.sources, extracted.names);
-      setMessageText(typingMsg, finalText, finalSources);
+    if (data?.switch_to_general) {
+      clearActiveEditalContext({ clearAssistantContext: true });
+      const switchText = normalizeBotText(
+        data?.reply || 'Entendi, saindo do edital atual. Agora voce pode buscar outro tema.'
+      );
+      setMessageText(typingMsg, switchText);
       if (!hasBackendState) {
-        chatState = appendConversationTurn(chatState, 'assistant', finalText);
-      }
-      if (data?.topic_detection && typeof data.topic_detection === 'object') {
-        chatState = updateTopicDetection(chatState, data.topic_detection);
-        console.info('[CHAT][topic-detector][backend]', {
-          context: { type: chatState?.activeContextType, entityId: chatState?.activeEntityId },
-          userMessage: String(question || '').slice(0, 180),
-          decision: data.topic_detection?.decision,
-          confidence: Number(data.topic_detection?.confidence || 0).toFixed(2),
-          reason: data.topic_detection?.reason,
-        });
+        chatState = appendConversationTurn(chatState, 'assistant', switchText);
       }
       persistChatState(chatState);
       return;
     }
 
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder('utf-8');
-    let buffer = '';
-    const sseParseOptions = {
-      onInvalidJson(payloadText, err) {
-        console.warn('[CHAT][stream] evento SSE invalido', { payloadText, err });
-      },
-    };
+    // tolera nomes diferentes de campo
+    const answer =
+      data?.answer ??
+      data?.reply ??
+      data?.resposta ??
+      data?.message ??
+      data?.text ??
+      data?._rawText ??
+      null;
 
-    const applyStreamDelta = (deltaText) => {
-      const nextChunk = String(deltaText || '');
-      if (!nextChunk) return;
-      streamedText += nextChunk;
-      setMessageText(typingMsg, streamedText, streamedSources, { keepTyping: true });
-      scrollToBottom();
-    };
-
-    const handleStreamPayload = (payload) => {
-      if (!payload || typeof payload !== 'object') return;
-      const type = String(payload.type || '').trim().toLowerCase();
-      if (!type || type === 'start') return;
-
-      if (type === 'delta') {
-        applyStreamDelta(payload.text || '');
-        return;
-      }
-
-      if (type === 'sources') {
-        const extracted = extractEmbeddedSources(streamedText);
-        streamedSources = normalizeSources(payload.sources, extracted.names);
-        setMessageText(typingMsg, streamedText, streamedSources, { keepTyping: true });
-        scrollToBottom();
-        return;
-      }
-
-      if (type === 'state') {
-        if (payload.state && typeof payload.state === 'object') {
-          chatState = ensureChatSessionState(payload.state);
-          persistChatState(chatState);
-          updateChatHeader();
-          hasBackendState = true;
-        }
-        if (payload.topic_detection && typeof payload.topic_detection === 'object') {
-          streamTopicDetection = payload.topic_detection;
-          chatState = updateTopicDetection(chatState, payload.topic_detection);
-          persistChatState(chatState);
-          console.info('[CHAT][topic-detector][backend]', {
-            context: { type: chatState?.activeContextType, entityId: chatState?.activeEntityId },
-            userMessage: String(question || '').slice(0, 180),
-            decision: payload.topic_detection?.decision,
-            confidence: Number(payload.topic_detection?.confidence || 0).toFixed(2),
-            reason: payload.topic_detection?.reason,
-          });
-        }
-        return;
-      }
-
-      if (type === 'error') {
-        streamErrorMessage = normalizeBotText(
-          payload.message || 'Ocorreu um erro ao consultar a IA. Tente novamente em instantes.'
-        );
-        return;
-      }
-
-      if (type === 'done') {
-        streamDoneReceived = true;
-      }
-    };
-
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-
-      const chunkText = decoder.decode(value, { stream: true });
-      const parsed = readSsePayloadsFromBuffer(buffer, chunkText, sseParseOptions);
-      buffer = parsed.remainder;
-
-      for (const payload of parsed.payloads) {
-        handleStreamPayload(payload);
-        if (streamDoneReceived || streamErrorMessage) break;
-      }
-
-      if (streamDoneReceived || streamErrorMessage) break;
-    }
-
-    const flushChunk = decoder.decode();
-    if (flushChunk) {
-      const parsedFlush = readSsePayloadsFromBuffer(buffer, flushChunk, sseParseOptions);
-      buffer = parsedFlush.remainder;
-      for (const payload of parsedFlush.payloads) {
-        handleStreamPayload(payload);
-        if (streamDoneReceived || streamErrorMessage) break;
-      }
-    }
-
-    if (buffer.trim()) {
-      const tailPayload = parseSseDataPayload(buffer, sseParseOptions);
-      if (tailPayload) {
-        handleStreamPayload(tailPayload);
-      }
-    }
-
-    if (streamErrorMessage) {
-      const fallbackText = streamErrorMessage || 'Ocorreu um erro ao consultar a IA. Tente novamente em instantes.';
-      setMessageText(typingMsg, fallbackText, streamedSources);
-      if (!hasBackendState) {
-        chatState = appendConversationTurn(chatState, 'assistant', fallbackText);
-        if (streamTopicDetection && typeof streamTopicDetection === 'object') {
-          chatState = updateTopicDetection(chatState, streamTopicDetection);
-        }
-        persistChatState(chatState);
-      }
-      return;
-    }
-
-    const extracted = extractEmbeddedSources(streamedText);
-    const fallbackText = normalizeBotText(streamedText) || 'Nao consegui responder agora.';
-    const finalText = extracted.text || fallbackText;
-    const finalSources = normalizeSources(streamedSources, extracted.names);
+    const localOutcome = buildLocalAssistantOutcome(question);
+    const preferContextualAnswer = Boolean(contextualEditalId);
+    const isLocalNonSearch = !preferContextualAnswer && localOutcome?.intent !== 'edital_search';
+    const rawText = isLocalNonSearch
+      ? (localOutcome?.reply || 'Não consegui responder agora.')
+      : ((answer && String(answer).trim())
+        ? normalizeBotText(answer)
+        : (localOutcome?.reply || 'Não consegui responder agora.'));
+    const extracted = extractEmbeddedSources(rawText);
+    const finalText = extracted.text || rawText;
+    const finalSources = normalizeSources(data?.sources, extracted.names);
     setMessageText(typingMsg, finalText, finalSources);
-
     if (!hasBackendState) {
       chatState = appendConversationTurn(chatState, 'assistant', finalText);
-      if (streamTopicDetection && typeof streamTopicDetection === 'object') {
-        chatState = updateTopicDetection(chatState, streamTopicDetection);
-      }
-      persistChatState(chatState);
+    }
+    if (data?.topic_detection && typeof data.topic_detection === 'object') {
+      chatState = updateTopicDetection(chatState, data.topic_detection);
+      console.info('[CHAT][topic-detector][backend]', {
+        context: { type: chatState?.activeContextType, entityId: chatState?.activeEntityId },
+        userMessage: String(question || '').slice(0, 180),
+        decision: data.topic_detection?.decision,
+        confidence: Number(data.topic_detection?.confidence || 0).toFixed(2),
+        reason: data.topic_detection?.reason,
+      });
+    }
+    persistChatState(chatState);
+
+    const backendOptions = Array.isArray(data?.options) ? data.options : [];
+    const backendStructuredPayload = normalizeAssistantSearchPayload(
+      data?.search_payload ||
+      data?.intent_payload ||
+      data?.searchPayload ||
+      null
+    );
+
+    const chatDecision = isLocalNonSearch
+      ? { intent: localOutcome?.intent || 'unknown', shouldSearch: false }
+      : resolveBackendSearchDecision({
+        data,
+        question,
+        backendOptions,
+        backendStructuredPayload,
+      });
+
+    if (canApplyDashboardSearch && chatDecision.shouldSearch) {
+      attachEditaisOptions(
+        typingMsg,
+        question,
+        backendOptions.length ? backendOptions : null,
+        backendStructuredPayload
+      );
     }
 
   } catch (e) {
-    if (e?.name === 'AbortError') {
-      console.info('[CHAT][stream] requisicao abortada', e);
-      const abortedText = normalizeBotText(streamedText) || 'Conversa interrompida. Voce pode enviar novamente.';
-      const extracted = extractEmbeddedSources(abortedText);
-      const finalText = extracted.text || abortedText;
-      const finalSources = normalizeSources(streamedSources, extracted.names);
-      setMessageText(typingMsg, finalText, finalSources);
-      if (!hasBackendState) {
-        chatState = appendConversationTurn(chatState, 'assistant', finalText);
-        persistChatState(chatState);
-      }
-      return;
-    }
-
     console.error('Erro no chat:', e);
     const localOutcome = buildLocalAssistantOutcome(question);
     const fallbackText = localOutcome?.reply || 'Deu ruim aqui do meu lado. Tenta de novo em alguns segundos.';
     setMessageText(typingMsg, fallbackText);
     chatState = appendConversationTurn(chatState, 'assistant', fallbackText);
     persistChatState(chatState);
+    if (canApplyDashboardSearch && localOutcome?.shouldSearch) {
+      attachEditaisOptions(typingMsg, question);
+    }
   } finally {
-    clearActiveChatRequestController(streamController);
     setChatBusy(false);
     scrollToBottom();
   }
 }
 
-function setChatBusy(isBusy, options = {}) {
-  const busy = Boolean(isBusy);
-  const streaming = busy && Boolean(options?.streaming);
-
-  botIsTyping = busy;
-
-  if (chatInput) chatInput.disabled = busy;
-  if (sendButton) {
-    sendButton.disabled = busy && !streaming;
-    sendButton.classList.toggle('is-stop-mode', streaming);
-    sendButton.dataset.mode = streaming ? 'stop' : 'send';
-    sendButton.setAttribute('aria-label', streaming ? 'Parar geração' : 'Enviar');
-    sendButton.title = streaming ? 'Parar geração' : 'Enviar';
-    const nextIcon = streaming ? CHAT_SEND_BUTTON_STOP_HTML : CHAT_SEND_BUTTON_SEND_HTML;
-    if (sendButton.innerHTML !== nextIcon) {
-      sendButton.innerHTML = nextIcon;
-    }
-  }
+function setChatBusy(isBusy) {
+  botIsTyping = !!isBusy;
+  if (chatInput) chatInput.disabled = !!isBusy;
+  if (sendButton) sendButton.disabled = !!isBusy;
 }
 
 

@@ -6,6 +6,7 @@ const CACHE_VERSION_FALLBACK = 'v1';
 const IDB_NAME = 'athos_cache_store';
 const IDB_VERSION = 1;
 const IDB_STORE = 'entries';
+const DEFAULT_IDB_TIMEOUT_MS = 1200;
 
 const memoryFallback = {
   local: new Map(),
@@ -24,6 +25,20 @@ function getGlobalContext() {
 
 function nowMs() {
   return Date.now();
+}
+
+function resolveSafeTimeoutMs(rawValue, fallbackMs = DEFAULT_IDB_TIMEOUT_MS) {
+  const parsed = Number(rawValue);
+  if (!Number.isFinite(parsed)) return Math.max(50, Number(fallbackMs) || DEFAULT_IDB_TIMEOUT_MS);
+  return Math.max(50, Math.floor(parsed));
+}
+
+function getIdbTimeoutMs() {
+  const ctx = getGlobalContext();
+  return resolveSafeTimeoutMs(
+    ctx?.__ATHOS_CACHE_IDB_TIMEOUT_MS ?? ctx?.__ATHOS_CACHE_IDB_OPEN_TIMEOUT_MS,
+    DEFAULT_IDB_TIMEOUT_MS
+  );
 }
 
 function safeJsonParse(raw, fallback = null) {
@@ -364,26 +379,47 @@ async function openIdb() {
   const indexedDb = ctx.indexedDB;
   if (!indexedDb || typeof indexedDb.open !== 'function') return null;
 
-  idbOpenPromise = await new Promise((resolve) => {
+  idbOpenPromise = new Promise((resolve) => {
+    let settled = false;
+    let timeoutId = null;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+        timeoutId = null;
+      }
+      resolve(value || null);
+    };
+
     try {
       const request = indexedDb.open(IDB_NAME, IDB_VERSION);
+      timeoutId = setTimeout(() => finish(null), getIdbTimeoutMs());
 
       request.onupgradeneeded = () => {
-        const db = request.result;
-        if (!db.objectStoreNames.contains(IDB_STORE)) {
-          db.createObjectStore(IDB_STORE, { keyPath: 'storage_key' });
+        try {
+          const db = request.result;
+          if (db && !db.objectStoreNames.contains(IDB_STORE)) {
+            db.createObjectStore(IDB_STORE, { keyPath: 'storage_key' });
+          }
+        } catch (_) {
+          finish(null);
         }
       };
 
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => resolve(null);
-      request.onblocked = () => resolve(null);
+      request.onsuccess = () => finish(request.result);
+      request.onerror = () => finish(null);
+      request.onblocked = () => finish(null);
     } catch (_) {
-      resolve(null);
+      finish(null);
     }
   });
 
-  return idbOpenPromise;
+  const db = await idbOpenPromise;
+  if (!db) {
+    idbOpenPromise = null;
+  }
+  return db;
 }
 
 function withIdbStore(db, mode, executor) {
@@ -392,15 +428,35 @@ function withIdbStore(db, mode, executor) {
       resolve(null);
       return;
     }
+
+    let settled = false;
+    let timeoutId = null;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+        timeoutId = null;
+      }
+      resolve(value);
+    };
+
     try {
       const tx = db.transaction(IDB_STORE, mode);
       const store = tx.objectStore(IDB_STORE);
-      const result = executor(store, tx, resolve);
+      timeoutId = setTimeout(() => finish(null), getIdbTimeoutMs());
+
+      if (typeof tx.addEventListener === 'function') {
+        tx.addEventListener('abort', () => finish(null), { once: true });
+        tx.addEventListener('error', () => finish(null), { once: true });
+      }
+
+      const result = executor(store, tx, finish);
       if (result !== undefined) {
-        resolve(result);
+        finish(result);
       }
     } catch (_) {
-      resolve(null);
+      finish(null);
     }
   });
 }

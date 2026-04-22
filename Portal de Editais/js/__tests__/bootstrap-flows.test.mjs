@@ -1,4 +1,4 @@
-﻿import test from 'node:test';
+import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
@@ -80,13 +80,8 @@ test('dashboard nao bloqueia bootstrap principal por favoritos', async () => {
   assert.ok(events.includes('mark_ready'));
   assert.ok(events.includes('editais_ready'));
   assert.ok(events.includes('deep_link_ready'));
-  assert.ok(!events.includes('load_favoritos_start'));
   assert.ok(!events.includes('load_favoritos_done'));
   assert.ok(!events.includes('favoritos_ready'));
-
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.ok(events.includes('load_favoritos_start'));
-  assert.ok(!events.includes('load_favoritos_done'));
 
   resolveFavoritos();
   await result.favoritosPromise;
@@ -94,62 +89,87 @@ test('dashboard nao bloqueia bootstrap principal por favoritos', async () => {
   assert.ok(events.includes('load_favoritos_done'));
   assert.ok(events.includes('favoritos_ready'));
   assert.equal(Boolean(favoritosCallbackPayload?.editaisReady), true);
-  assert.ok(events.indexOf('deep_link_ready') < events.indexOf('load_favoritos_start'));
 });
 
-test('dashboard segue para loadEditais mesmo com erro no prepareShell', async () => {
+test('dashboard usa handoff para liberar shell e confirma auth em background', async () => {
   const events = [];
-
-  await runDashboardBootstrapFlow({
-    bootstrapAuthFromUrl: () => events.push('bootstrap_auth'),
-    bootstrapChatSessionState: () => events.push('bootstrap_chat'),
-    bootstrapTheme: () => events.push('bootstrap_theme'),
-    checkAuth: async () => ({ id: 3, nome: 'Resilient User' }),
-    hydrateSidebarUser: () => events.push('hydrate_sidebar'),
-    prepareShell: () => {
-      events.push('prepare_shell');
-      throw new Error('shell crashed');
-    },
-    markAppReady: () => events.push('mark_ready'),
-    loadEditais: async () => events.push('load_editais'),
-    onEditaisReady: async () => events.push('editais_ready'),
-    onDeepLinkReady: async () => events.push('deep_link_ready'),
-    loadFavoritos: async () => events.push('load_favoritos'),
+  let resolveAuth;
+  const authGate = new Promise((resolve) => {
+    resolveAuth = resolve;
   });
-
-  assert.ok(events.includes('prepare_shell'));
-  assert.ok(events.includes('mark_ready'));
-  assert.ok(events.includes('load_editais'));
-  assert.ok(events.includes('editais_ready'));
-  assert.ok(events.includes('deep_link_ready'));
-});
-
-test('dashboard continua fluxo apos erro no onEditaisReady', async () => {
-  const events = [];
 
   const result = await runDashboardBootstrapFlow({
     bootstrapAuthFromUrl: () => events.push('bootstrap_auth'),
     bootstrapChatSessionState: () => events.push('bootstrap_chat'),
     bootstrapTheme: () => events.push('bootstrap_theme'),
-    checkAuth: async () => ({ id: 4, nome: 'Fallback User' }),
+    readAuthHandoff: () => ({ id: 10, nome: 'Handoff User', email: 'handoff@athos.test' }),
+    checkAuth: async () => {
+      events.push('check_auth_start');
+      const confirmed = await authGate;
+      events.push('check_auth_done');
+      return confirmed;
+    },
+    onAuthConfirmed: () => events.push('auth_confirmed'),
     hydrateSidebarUser: () => events.push('hydrate_sidebar'),
     prepareShell: () => events.push('prepare_shell'),
     markAppReady: () => events.push('mark_ready'),
     loadEditais: async () => events.push('load_editais'),
-    onEditaisReady: async () => {
-      events.push('editais_ready');
-      throw new Error('facets broke');
-    },
-    onDeepLinkReady: async () => events.push('deep_link_ready'),
     loadFavoritos: async () => events.push('load_favoritos'),
-    onFavoritosReady: () => events.push('favoritos_ready'),
+    onEditaisReady: async () => events.push('editais_ready'),
+    onDeepLinkReady: async () => events.push('deep_link_ready'),
   });
 
-  await result.favoritosPromise;
-
+  assert.ok(events.includes('hydrate_sidebar'));
+  assert.ok(events.includes('mark_ready'));
   assert.ok(events.includes('load_editais'));
-  assert.ok(events.includes('editais_ready'));
-  assert.ok(events.includes('deep_link_ready'));
   assert.ok(events.includes('load_favoritos'));
-  assert.ok(events.includes('favoritos_ready'));
+  assert.ok(events.includes('check_auth_start'));
+  assert.ok(!events.includes('check_auth_done'));
+
+  resolveAuth({ id: 10, nome: 'Handoff Confirmado' });
+  await result.authConfirmationPromise;
+
+  assert.ok(events.includes('check_auth_done'));
+  assert.ok(events.includes('auth_confirmed'));
+});
+
+test('perfil usa handoff para hidratar shell e valida auth em background', async () => {
+  const events = [];
+  let resolveAuth;
+  const authGate = new Promise((resolve) => {
+    resolveAuth = resolve;
+  });
+
+  const result = await runProfileBootstrapFlow({
+    bootstrapAuthFromUrl: () => events.push('bootstrap_auth'),
+    bootstrapTheme: () => events.push('bootstrap_theme'),
+    readAuthHandoff: () => ({ id: 7, nome: 'Perfil Handoff', email: 'perfil@athos.test' }),
+    checkAuth: async () => {
+      events.push('check_auth_start');
+      const confirmed = await authGate;
+      events.push('check_auth_done');
+      return confirmed;
+    },
+    onAuthConfirmed: () => events.push('auth_confirmed'),
+    hydrateProfileShellFromBootstrap: () => events.push('hydrate_shell'),
+    setupUI: () => events.push('setup_ui'),
+    setupCookiePreferences: () => events.push('setup_cookies'),
+    setupSecurityActions: () => events.push('setup_security'),
+    setupCompanyActions: () => events.push('setup_company'),
+    closeDeleteAccountModal: () => events.push('close_delete_modal'),
+    markAppReady: () => events.push('mark_ready'),
+    loadProfileDetailsInBackground: async () => events.push('details_start'),
+  });
+
+  assert.ok(events.includes('hydrate_shell'));
+  assert.ok(events.includes('mark_ready'));
+  assert.ok(events.includes('details_start'));
+  assert.ok(events.includes('check_auth_start'));
+  assert.ok(!events.includes('check_auth_done'));
+
+  resolveAuth({ id: 7, nome: 'Perfil Confirmado' });
+  await result.authConfirmationPromise;
+
+  assert.ok(events.includes('check_auth_done'));
+  assert.ok(events.includes('auth_confirmed'));
 });

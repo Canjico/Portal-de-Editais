@@ -185,3 +185,25 @@ test('cache-store limpa cache do usuario ativo quando recebe evento athos:logout
   assert.equal(after.hit, false);
 });
 
+test('cache-store nao bloqueia quando indexedDB.open fica pendente', async () => {
+  setupBrowserStubs();
+  window.__ATHOS_CACHE_IDB_TIMEOUT_MS = 60;
+  window.indexedDB = {
+    open() {
+      return {};
+    },
+  };
+
+  const cache = await loadCacheModule();
+  cache.setActiveCacheNamespace('u:999');
+
+  const startedAt = Date.now();
+  const result = await cache.cacheGet('dashboard.idb.timeout', {
+    scope: 'idb',
+    version: 'v1',
+  });
+  const elapsedMs = Date.now() - startedAt;
+
+  assert.equal(result.hit, false);
+  assert.ok(elapsedMs < 450, `cacheGet demorou demais com indexedDB pendente: ${elapsedMs}ms`);
+});

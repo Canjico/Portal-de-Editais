@@ -171,4 +171,5 @@ test('presence tracker aguarda app ready para iniciar heartbeat', async () => {
   await Promise.resolve();
 
   assert.ok(fetchCalls.length >= 1);
+  assert.equal(fetchCalls.some((call) => String(call.url || '').includes('/cliente/me')), false);
 });

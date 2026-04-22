@@ -5,9 +5,6 @@
 
 export const API_BASE = 'https://atimus-api-acb4gfgagefcevb5.brazilsouth-01.azurewebsites.net';
 const CLIENTE_TOKEN_KEY = 'cliente_token';
-const BOOTSTRAP_ME_KEY = 'athos_bootstrap_me';
-const BOOTSTRAP_ME_SAVED_AT_KEY = 'athos_bootstrap_me_saved_at';
-const BOOTSTRAP_HANDOFF_QUERY_KEY = 'boot';
 const AUTH_DEBUG_TAG = '[DEBUG_AUTH][Portal]';
 const AUTH_DEBUG_STORAGE_KEY = 'athos_auth_debug';
 let authRedirectInProgress = false;
@@ -130,79 +127,6 @@ export function persistClienteToken(tokenValue, { remember = true } = {}) {
   return saved;
 }
 
-function normalizeBootstrapUserCandidate(raw) {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
-  const candidate = (
-    raw.bootstrap_user &&
-    typeof raw.bootstrap_user === 'object' &&
-    !Array.isArray(raw.bootstrap_user)
-  )
-    ? raw.bootstrap_user
-    : raw;
-
-  if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return null;
-  const hasMinimumIdentity = Boolean(
-    candidate.id ||
-    String(candidate.nome || '').trim() ||
-    String(candidate.email || '').trim()
-  );
-  if (!hasMinimumIdentity) return null;
-  return candidate;
-}
-
-export function persistBootstrapUserInSession(bootstrapUser, { savedAt = Date.now() } = {}) {
-  const normalized = normalizeBootstrapUserCandidate(bootstrapUser);
-  if (!normalized) return false;
-
-  try {
-    sessionStorage.setItem(BOOTSTRAP_ME_KEY, JSON.stringify(normalized));
-    sessionStorage.setItem(BOOTSTRAP_ME_SAVED_AT_KEY, String(Number(savedAt) || Date.now()));
-    debugAuth('bootstrap_user_saved', {
-      hasId: Boolean(normalized.id),
-      hasEmail: Boolean(normalized.email),
-    });
-    return true;
-  } catch (_) {
-    return false;
-  }
-}
-
-export function clearBootstrapUserFromSession() {
-  try {
-    sessionStorage.removeItem(BOOTSTRAP_ME_KEY);
-    sessionStorage.removeItem(BOOTSTRAP_ME_SAVED_AT_KEY);
-  } catch (_) {}
-}
-
-export function readBootstrapUserFromSession({ consume = true, maxAgeMs = 10 * 60 * 1000 } = {}) {
-  try {
-    const raw = sessionStorage.getItem(BOOTSTRAP_ME_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    const normalized = normalizeBootstrapUserCandidate(parsed);
-    if (!normalized) {
-      clearBootstrapUserFromSession();
-      return null;
-    }
-
-    const savedAt = Number(sessionStorage.getItem(BOOTSTRAP_ME_SAVED_AT_KEY) || 0);
-    if (savedAt > 0 && Number(maxAgeMs) > 0 && (Date.now() - savedAt) > Number(maxAgeMs)) {
-      debugAuth('bootstrap_user_expired', { ageMs: Date.now() - savedAt, maxAgeMs: Number(maxAgeMs) });
-      clearBootstrapUserFromSession();
-      return null;
-    }
-
-    if (consume) {
-      clearBootstrapUserFromSession();
-      debugAuth('bootstrap_user_consumed', { consume: true });
-    }
-    return normalized;
-  } catch (_) {
-    clearBootstrapUserFromSession();
-    return null;
-  }
-}
-
 export function authHeaders(extra = {}) {
   const t = getStoredToken();
   const base = { ...extra };
@@ -214,145 +138,21 @@ export function authHeaders(extra = {}) {
   return base;
 }
 
-function decodeBase64Url(value) {
-  const raw = String(value || '').trim();
-  if (!raw) return '';
-  try {
-    const padded = raw.replace(/-/g, '+').replace(/_/g, '/');
-    const remainder = padded.length % 4;
-    const normalized = remainder === 0 ? padded : `${padded}${'='.repeat(4 - remainder)}`;
-    const binary = atob(normalized);
-    const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
-    if (typeof TextDecoder !== 'undefined') {
-      return new TextDecoder('utf-8').decode(bytes);
-    }
-    return decodeURIComponent(
-      Array.from(bytes, (b) => `%${b.toString(16).padStart(2, '0')}`).join('')
-    );
-  } catch (_) {
-    return '';
-  }
-}
-
-function parseBootstrapHandoffToken(rawToken) {
-  const token = String(rawToken || '').trim();
-  if (!token) return null;
-
-  let payloadEncoded = token;
-  const parts = token.split('.');
-  if (parts.length >= 3 && String(parts[0] || '').toLowerCase() === 'v1') {
-    payloadEncoded = parts[1];
-  }
-
-  const payloadJson = decodeBase64Url(payloadEncoded);
-  if (!payloadJson) return null;
-
-  try {
-    const parsed = JSON.parse(payloadJson);
-    if (!parsed || typeof parsed !== 'object') return null;
-    const expiresAt = Number(parsed.exp || parsed.expires_at || 0);
-    const nowSec = Math.floor(Date.now() / 1000);
-    if (expiresAt > 0 && nowSec > expiresAt) {
-      debugAuth('bootstrap_handoff_expired', { nowSec, expiresAt });
-      return null;
-    }
-
-    const bootstrapUser = normalizeBootstrapUserCandidate(
-      parsed.bootstrap_user || parsed.bootstrapUser || parsed.user || parsed.b || null
-    );
-    if (!bootstrapUser) return null;
-
-    const sessionTokenCandidates = [
-      parsed.token,
-      parsed.cliente_token,
-      parsed.session_token,
-      parsed.auth_token,
-      parsed.access_token,
-      parsed.accessToken,
-      parsed.authToken,
-    ];
-    let sessionToken = '';
-    for (const candidate of sessionTokenCandidates) {
-      const value = String(candidate || '').trim();
-      if (!value) continue;
-      sessionToken = value;
-      break;
-    }
-
-    const issuedAtMs = Number(parsed.iat || 0) > 0 ? Number(parsed.iat) * 1000 : Date.now();
-    return { bootstrapUser, issuedAtMs, sessionToken };
-  } catch (_) {
-    return null;
-  }
-}
-
 export function bootstrapAuthFromUrl() {
-  // Consome handoff transitório de bootstrap e, por compatibilidade, token legado na URL.
+  // Se vier ?token= na URL (ex.: vindo do login), salva e limpa a query.
   try {
     const params = new URLSearchParams(window.location.search);
-    const rawTokenInQuery = String(params.get('token') || '').trim();
-    const rawBootToken = String(params.get(BOOTSTRAP_HANDOFF_QUERY_KEY) || '').trim();
-    debugAuth('bootstrap_token_from_url_start', {
-      hasTokenInQuery: Boolean(rawTokenInQuery),
-      hasBootInQuery: Boolean(rawBootToken),
-      hasStoredToken: Boolean(getStoredToken()),
-    });
+    const t = params.get('token');
+    if (!t) return;
 
-    let shouldCleanUrl = false;
-    let persistedToken = '';
-    let tokenSource = '';
+    persistClienteToken(t, { remember: true });
+    debugAuth('bootstrap_token_from_url', { hasToken: true });
 
-    const bootToken = rawBootToken;
-    let parsedHandoff = null;
-    if (bootToken) {
-      parsedHandoff = parseBootstrapHandoffToken(bootToken);
-      if (parsedHandoff?.bootstrapUser) {
-        persistBootstrapUserInSession(parsedHandoff.bootstrapUser, {
-          savedAt: parsedHandoff.issuedAtMs,
-        });
-        debugAuth('bootstrap_handoff_from_url', { hasBootstrapUser: true });
-      } else {
-        clearBootstrapUserFromSession();
-        debugAuth('bootstrap_handoff_invalid_or_expired', { hasBootstrapUser: false });
-      }
-      params.delete(BOOTSTRAP_HANDOFF_QUERY_KEY);
-      shouldCleanUrl = true;
-    }
-
-    const t = rawTokenInQuery;
-    if (t) {
-      persistClienteToken(t, { remember: true });
-      persistedToken = t;
-      tokenSource = 'query';
-      params.delete('token');
-      shouldCleanUrl = true;
-    } else if (parsedHandoff?.sessionToken) {
-      persistClienteToken(parsedHandoff.sessionToken, { remember: true });
-      persistedToken = String(parsedHandoff.sessionToken || '').trim();
-      tokenSource = 'boot_payload';
-      debugAuth('bootstrap_token_from_handoff_fallback', {
-        hasToken: Boolean(persistedToken),
-      });
-    } else {
-      debugAuth('bootstrap_auth_missing_token_in_url', {
-        hasBootInQuery: Boolean(rawBootToken),
-        hasStoredToken: Boolean(getStoredToken()),
-      });
-    }
-
-    debugAuth('bootstrap_token_from_url_done', {
-      hasToken: Boolean(persistedToken || getStoredToken()),
-      tokenSource: tokenSource || (getStoredToken() ? 'storage' : 'none'),
-    });
-
-    if (!shouldCleanUrl) return;
+    params.delete('token');
     const newQuery = params.toString();
-    const newUrl = window.location.pathname + (newQuery ? `?${newQuery}` : '') + (window.location.hash || '');
+    const newUrl = window.location.pathname + (newQuery ? `?${newQuery}` : '');
     window.history.replaceState({}, document.title, newUrl);
-    debugAuth('bootstrap_token_query_cleaned', {
-      hadTokenInQuery: Boolean(rawTokenInQuery),
-      hadBootInQuery: Boolean(rawBootToken),
-    });
+    debugAuth('bootstrap_token_query_cleaned', { newUrl });
   } catch (_) {}
 }
 
@@ -443,35 +243,104 @@ function absolutize(pathOrUrl) {
   return `${API_BASE}${s}`;
 }
 
+function normalizeMethod(method) {
+  const value = String(method || 'GET').trim().toUpperCase();
+  return value || 'GET';
+}
+
+function hasExplicitAuthHeaders(headers = {}) {
+  return Object.keys(headers || {}).some((key) => {
+    const normalized = String(key || '').trim().toLowerCase();
+    return normalized === 'authorization' || normalized === 'x-cliente-token';
+  });
+}
+
+function buildTokenHeaders(tokenValue = '') {
+  const token = String(tokenValue || '').trim();
+  if (!token) return {};
+  return {
+    Authorization: `Bearer ${token}`,
+    'X-Cliente-Token': token,
+  };
+}
+
 /**
- * Fetch "forte": tenta com cookies (credentials=include) e, se der erro de CORS/rede,
- * tenta sem credentials.
+ * Estratégia de fetch:
+ * - GET autenticado: cookie-first (sem headers customizados) para reduzir preflight.
+ * - Fallback para headers de token apenas em 401/403 ou falha de rede.
  */
 export async function apiFetch(pathOrUrl, options = {}) {
   const url = absolutize(pathOrUrl);
+  const method = normalizeMethod(options.method);
 
   const baseHeaders = options.headers instanceof Headers
     ? Object.fromEntries(options.headers.entries())
     : (options.headers || {});
 
-  // Sempre injeta token (se houver) por cima do que veio.
-  const mergedHeaders = authHeaders(baseHeaders);
-
-  const attempts = [
-    { ...options, headers: mergedHeaders, credentials: 'include' },
-    { ...options, headers: mergedHeaders },
-  ];
-
+  const storedToken = String(getStoredToken() || '').trim();
+  const hasManualAuthHeader = hasExplicitAuthHeaders(baseHeaders);
+  const mergedHeaders = hasManualAuthHeader
+    ? { ...baseHeaders }
+    : { ...baseHeaders, ...buildTokenHeaders(storedToken) };
   let lastErr = null;
 
-  for (const opt of attempts) {
+  const tryFetchOnce = async (requestOptions) => {
     try {
-      const res = await fetch(url, opt);
+      const res = await fetch(url, requestOptions);
       return res;
     } catch (e) {
       lastErr = e;
-      // tenta o próximo
+      return null;
     }
+  };
+
+  const shouldUseCookieFirstGet = method === 'GET' && !hasManualAuthHeader;
+  if (shouldUseCookieFirstGet) {
+    const cookieFirstResponse = await tryFetchOnce({
+      ...options,
+      method,
+      headers: { ...baseHeaders },
+      credentials: 'include',
+    });
+
+    const needsTokenFallback = Boolean(
+      storedToken &&
+      cookieFirstResponse &&
+      (cookieFirstResponse.status === 401 || cookieFirstResponse.status === 403)
+    );
+
+    if (!needsTokenFallback && cookieFirstResponse) {
+      return cookieFirstResponse;
+    }
+
+    const fallbackWithToken = storedToken ? mergedHeaders : { ...baseHeaders };
+    const cookieFallbackResponse = await tryFetchOnce({
+      ...options,
+      method,
+      headers: fallbackWithToken,
+      credentials: 'include',
+    });
+    if (cookieFallbackResponse) return cookieFallbackResponse;
+
+    const noCredentialsFallbackResponse = await tryFetchOnce({
+      ...options,
+      method,
+      headers: fallbackWithToken,
+    });
+    if (noCredentialsFallbackResponse) return noCredentialsFallbackResponse;
+
+    if (cookieFirstResponse) return cookieFirstResponse;
+    throw lastErr || new Error('Falha ao fazer requisição.');
+  }
+
+  const attempts = [
+    { ...options, method, headers: mergedHeaders, credentials: 'include' },
+    { ...options, method, headers: mergedHeaders },
+  ];
+
+  for (const attempt of attempts) {
+    const response = await tryFetchOnce(attempt);
+    if (response) return response;
   }
 
   throw lastErr || new Error('Falha ao fazer requisição.');

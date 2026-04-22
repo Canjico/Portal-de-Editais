@@ -1,4 +1,4 @@
-/* =========================================================
+﻿/* =========================================================
    Athos / Atimus - Perfil
    ========================================================= */
 
@@ -14,7 +14,7 @@ import {
   resolvePasswordChangeRedirectTarget,
   resolveAuthFailureRedirectTarget,
   redirectWithAuthGuard,
-} from './auth.js?v=20260422.3';
+} from './auth.js?v=20260416.1';
 import {
   normalizeTextValue,
   normalizeDigits,
@@ -23,7 +23,8 @@ import {
   isComparableFormDirty,
   resolveDirtyTrackingState,
 } from './perfil-dirty-state.js';
-import { runProfileBootstrapFlow } from './bootstrap-flows.js?v=20260422.3';
+import { runProfileBootstrapFlow } from './bootstrap-flows.js?v=20260416.1';
+import { readAuthHandoff } from './auth-handoff.js?v=20260422.1';
 
 const sidebarToggle = document.getElementById('sidebarToggle');
 const appSidebar = document.getElementById('appSidebar');
@@ -132,7 +133,14 @@ async function init() {
     await runProfileBootstrapFlow({
       bootstrapAuthFromUrl,
       bootstrapTheme: () => window.AthosTheme?.bootstrap?.(),
+      readAuthHandoff,
       checkAuth,
+      onAuthConfirmed: (confirmedMe) => {
+        hydrateProfileShellFromBootstrap(confirmedMe);
+      },
+      onAuthConfirmationError: (error) => {
+        console.warn('Falha na confirmação de autenticação em background (perfil):', error);
+      },
       hydrateProfileShellFromBootstrap,
       setupUI,
       setupCookiePreferences,
@@ -181,7 +189,7 @@ function redirectToLoginForAuthFailure(res, data, reasonPrefix = 'perfil.redirec
 
 async function checkAuth() {
   try {
-    const { res, data } = await apiFetchJson('/cliente/me', { method: 'GET' });
+    const { res, data } = await apiFetchJson('/cliente/me?minimal=1', { method: 'GET' });
     if (!res.ok) {
       const decision = resolveAuthFailureRedirectTarget(res, data);
       if (decision) {

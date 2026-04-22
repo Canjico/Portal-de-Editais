@@ -105,27 +105,6 @@
     return fetch(url, request);
   }
 
-  async function touchSessionActivity() {
-    const headers = {};
-    const token = getStoredToken();
-
-    if (token) {
-      headers.Authorization = `Bearer ${token}`;
-      headers['X-Cliente-Token'] = token;
-    }
-
-    try {
-      const res = await fetch(`${API_BASE}/cliente/me`, {
-        method: 'GET',
-        credentials: 'include',
-        headers,
-      });
-      return res.ok;
-    } catch (_) {
-      return false;
-    }
-  }
-
   async function tryPresenceRequest(kind, options = {}) {
     const now = Date.now();
     const payload = {
@@ -163,14 +142,14 @@
   async function markOnline() {
     const now = Date.now();
     if (!resolvedEndpoint && failedProbeUntil > now) {
-      return touchSessionActivity();
+      return false;
     }
 
     const ok = await tryPresenceRequest('online');
-    if (ok) return true;
-
-    const touched = await touchSessionActivity();
-    if (touched) return true;
+    if (ok) {
+      failedProbeUntil = 0;
+      return true;
+    }
 
     if (!resolvedEndpoint) {
       failedProbeUntil = now + FAILED_RETRY_COOLDOWN_MS;

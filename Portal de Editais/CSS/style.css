@@ -5036,17 +5036,6 @@ body.chat-open .e-contact-buttons__chat-button-container {
   transform: translateY(-1px);
 }
 
-.chat-input-area button.is-stop-mode,
-#send-button.is-stop-mode {
-  background: #b42318;
-  color: #fff;
-}
-
-.chat-input-area button.is-stop-mode:hover,
-#send-button.is-stop-mode:hover {
-  background: #9f1f17;
-}
-
 .chat-input-area button:active,
 #send-button:active {
   transform: translateY(0);
@@ -6091,17 +6080,6 @@ body.chat-open .e-contact-buttons__chat-button-container {
 :root[data-theme='dark'] .chat-input-area button:hover,
 :root[data-theme='dark'] #send-button:hover {
   background: var(--chat-send-bg-hover);
-}
-
-:root[data-theme='dark'] .chat-input-area button.is-stop-mode,
-:root[data-theme='dark'] #send-button.is-stop-mode {
-  background: #c93a2f;
-  color: #fff;
-}
-
-:root[data-theme='dark'] .chat-input-area button.is-stop-mode:hover,
-:root[data-theme='dark'] #send-button.is-stop-mode:hover {
-  background: #b33228;
 }
 
 :root[data-theme='dark'] .chat-source-item a,
