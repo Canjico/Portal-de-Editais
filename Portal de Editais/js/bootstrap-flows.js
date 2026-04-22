@@ -1,4 +1,4 @@
-import { runAfterFirstPaint, runWhenIdle } from './bootstrap-utils.js';
+import { runAfterFirstPaint, runWhenIdle } from './bootstrap-utils.js?v=20260422.3';
 
 const DASHBOARD_BOOTSTRAP_DEBUG_TAG = '[BOOTSTRAP][Dashboard]';
 const DASHBOARD_BOOTSTRAP_DEBUG_STORAGE_KEY = 'athos_bootstrap_debug';

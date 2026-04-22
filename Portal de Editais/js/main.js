@@ -38,7 +38,7 @@ import {
   dashboardPlanToLegacySearchPayload,
   normalizeDashboardAssistantPlan,
 } from './chat-dashboard-contract.js?v=20260403.1';
-import { createSingleFlight, runWhenIdle } from './bootstrap-utils.js?v=20260420.2';
+import { createSingleFlight, runWhenIdle } from './bootstrap-utils.js?v=20260422.3';
 import { createAbortableRequestTracker } from './chat-stream-controller.js?v=20260421.1';
 import {
   parseSseDataPayload,
@@ -53,6 +53,7 @@ import {
   LOGIN_URL,
   bootstrapAuthFromUrl,
   buildLoginUrlWithNext,
+  getStoredToken,
   readBootstrapUserFromSession,
   apiFetch,
   apiFetchJson,
@@ -61,8 +62,8 @@ import {
   resolvePasswordChangeRedirectTarget,
   resolveAuthFailureRedirectTarget,
   redirectWithAuthGuard,
-} from './auth.js?v=20260420.2';
-import { runDashboardBootstrapFlow } from './bootstrap-flows.js?v=20260420.2';
+} from './auth.js?v=20260422.3';
+import { runDashboardBootstrapFlow } from './bootstrap-flows.js?v=20260422.3';
 
 const APP_BASE_URL = new URL('../', import.meta.url);
 const SHARE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{20,255}$/;
@@ -799,6 +800,8 @@ function readBootstrapAuthUser() {
 
 async function checkAuth() {
   const passwordFallback = buildLoginUrlWithNext();
+  const hasStoredToken = Boolean(getStoredToken());
+  logBootstrapStep('checkAuth_headers_presence', { hasStoredToken });
   const bootstrapUser = readBootstrapAuthUser();
   if (bootstrapUser) {
     if (isPasswordChangeRequiredPayload(bootstrapUser)) {

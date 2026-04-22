@@ -261,8 +261,26 @@ function parseBootstrapHandoffToken(rawToken) {
       parsed.bootstrap_user || parsed.bootstrapUser || parsed.user || parsed.b || null
     );
     if (!bootstrapUser) return null;
+
+    const sessionTokenCandidates = [
+      parsed.token,
+      parsed.cliente_token,
+      parsed.session_token,
+      parsed.auth_token,
+      parsed.access_token,
+      parsed.accessToken,
+      parsed.authToken,
+    ];
+    let sessionToken = '';
+    for (const candidate of sessionTokenCandidates) {
+      const value = String(candidate || '').trim();
+      if (!value) continue;
+      sessionToken = value;
+      break;
+    }
+
     const issuedAtMs = Number(parsed.iat || 0) > 0 ? Number(parsed.iat) * 1000 : Date.now();
-    return { bootstrapUser, issuedAtMs };
+    return { bootstrapUser, issuedAtMs, sessionToken };
   } catch (_) {
     return null;
   }
@@ -272,11 +290,22 @@ export function bootstrapAuthFromUrl() {
   // Consome handoff transitório de bootstrap e, por compatibilidade, token legado na URL.
   try {
     const params = new URLSearchParams(window.location.search);
-    let shouldCleanUrl = false;
+    const rawTokenInQuery = String(params.get('token') || '').trim();
+    const rawBootToken = String(params.get(BOOTSTRAP_HANDOFF_QUERY_KEY) || '').trim();
+    debugAuth('bootstrap_token_from_url_start', {
+      hasTokenInQuery: Boolean(rawTokenInQuery),
+      hasBootInQuery: Boolean(rawBootToken),
+      hasStoredToken: Boolean(getStoredToken()),
+    });
 
-    const bootToken = String(params.get(BOOTSTRAP_HANDOFF_QUERY_KEY) || '').trim();
+    let shouldCleanUrl = false;
+    let persistedToken = '';
+    let tokenSource = '';
+
+    const bootToken = rawBootToken;
+    let parsedHandoff = null;
     if (bootToken) {
-      const parsedHandoff = parseBootstrapHandoffToken(bootToken);
+      parsedHandoff = parseBootstrapHandoffToken(bootToken);
       if (parsedHandoff?.bootstrapUser) {
         persistBootstrapUserInSession(parsedHandoff.bootstrapUser, {
           savedAt: parsedHandoff.issuedAtMs,
@@ -290,19 +319,40 @@ export function bootstrapAuthFromUrl() {
       shouldCleanUrl = true;
     }
 
-    const t = params.get('token');
+    const t = rawTokenInQuery;
     if (t) {
       persistClienteToken(t, { remember: true });
-      debugAuth('bootstrap_token_from_url', { hasToken: true });
+      persistedToken = t;
+      tokenSource = 'query';
       params.delete('token');
       shouldCleanUrl = true;
+    } else if (parsedHandoff?.sessionToken) {
+      persistClienteToken(parsedHandoff.sessionToken, { remember: true });
+      persistedToken = String(parsedHandoff.sessionToken || '').trim();
+      tokenSource = 'boot_payload';
+      debugAuth('bootstrap_token_from_handoff_fallback', {
+        hasToken: Boolean(persistedToken),
+      });
+    } else {
+      debugAuth('bootstrap_auth_missing_token_in_url', {
+        hasBootInQuery: Boolean(rawBootToken),
+        hasStoredToken: Boolean(getStoredToken()),
+      });
     }
+
+    debugAuth('bootstrap_token_from_url_done', {
+      hasToken: Boolean(persistedToken || getStoredToken()),
+      tokenSource: tokenSource || (getStoredToken() ? 'storage' : 'none'),
+    });
 
     if (!shouldCleanUrl) return;
     const newQuery = params.toString();
     const newUrl = window.location.pathname + (newQuery ? `?${newQuery}` : '') + (window.location.hash || '');
     window.history.replaceState({}, document.title, newUrl);
-    debugAuth('bootstrap_auth_query_cleaned', { newUrl });
+    debugAuth('bootstrap_token_query_cleaned', {
+      hadTokenInQuery: Boolean(rawTokenInQuery),
+      hadBootInQuery: Boolean(rawBootToken),
+    });
   } catch (_) {}
 }
 
