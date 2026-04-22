@@ -171,6 +171,7 @@ let assistantSemanticMemory = createDashboardAssistantMemory();
 let bootstrapInitPromise = null;
 let uiEventsBound = false;
 let lastLoadedListPath = '';
+let lastLoadedListIncludedFacets = false;
 let applyFiltersRenderSeq = 0;
 let searchInputDebounceTimer = null;
 let listRequestCounter = 0;
@@ -181,11 +182,20 @@ let serverPageState = {
   pageSize: PAGE_SIZE,
   hasNext: false,
 };
+const EMPTY_SERVER_FILTER_FACETS = Object.freeze({
+  estado: [],
+  instituicao: [],
+  area: [],
+});
 let serverFilterFacets = {
   estado: [],
   instituicao: [],
   area: [],
 };
+let serverFilterFacetsSignature = '';
+let lastRenderedFacetSignature = '__not_rendered__';
+let serverFacetContextSignature = '';
+let serverFacetsLoaded = false;
 const loadEditaisSingleFlight = createSingleFlight(() => loadEditais());
 const loadFavoritosSingleFlight = createSingleFlight(() => loadFavoritos());
 
@@ -1256,26 +1266,6 @@ function normalizeServerFacetValue(type, value) {
   return String(value || '').trim();
 }
 
-function buildFacetItemsFromCurrentPage(type) {
-  const counts = new Map();
-  for (const item of editaisOriginais) {
-    const raw = type === 'instituicao'
-      ? (item?.instituicao ?? '').toString().trim()
-      : item?.[type];
-    const clean = normalizeServerFacetValue(type, raw);
-    if (!clean) continue;
-    counts.set(clean, (counts.get(clean) || 0) + 1);
-  }
-
-  return Array.from(counts.entries())
-    .map(([value, count]) => ({ value, count }))
-    .sort((a, b) => {
-      const diff = (b.count || 0) - (a.count || 0);
-      if (diff !== 0) return diff;
-      return String(a.value || '').localeCompare(String(b.value || ''), 'pt-BR');
-    });
-}
-
 function normalizeServerFacetItems(type, rawItems) {
   const list = Array.isArray(rawItems) ? rawItems : [];
   const counts = new Map();
@@ -1307,12 +1297,76 @@ function parseServerFilterFacets(rawFacets) {
   };
 }
 
-function hasServerFilterFacets() {
-  return Boolean(
-    (serverFilterFacets.estado && serverFilterFacets.estado.length) ||
-    (serverFilterFacets.instituicao && serverFilterFacets.instituicao.length) ||
-    (serverFilterFacets.area && serverFilterFacets.area.length)
-  );
+function getEmptyServerFilterFacets() {
+  return {
+    estado: [...EMPTY_SERVER_FILTER_FACETS.estado],
+    instituicao: [...EMPTY_SERVER_FILTER_FACETS.instituicao],
+    area: [...EMPTY_SERVER_FILTER_FACETS.area],
+  };
+}
+
+function normalizeServerFacetPayload(rawFacets) {
+  if (!rawFacets || typeof rawFacets !== 'object') return null;
+  return {
+    estado: Array.isArray(rawFacets.estado) ? rawFacets.estado : [],
+    instituicao: Array.isArray(rawFacets.instituicao) ? rawFacets.instituicao : [],
+    area: Array.isArray(rawFacets.area) ? rawFacets.area : [],
+  };
+}
+
+function buildFacetSignature(rawFacets) {
+  const facets = normalizeServerFacetPayload(rawFacets) || getEmptyServerFilterFacets();
+  const normalizeBucket = (type, items) => (Array.isArray(items) ? items : [])
+    .map((item) => ({
+      value: normalizeServerFacetValue(type, item?.value ?? item),
+      count: Number.isFinite(Number(item?.count)) ? Math.max(0, Math.floor(Number(item?.count))) : 0,
+    }))
+    .filter((item) => item.value)
+    .sort((a, b) => {
+      const diff = String(a.value || '').localeCompare(String(b.value || ''), 'pt-BR');
+      if (diff !== 0) return diff;
+      return (a.count || 0) - (b.count || 0);
+    })
+    .map((item) => `${item.value}:${item.count}`);
+
+  return JSON.stringify({
+    estado: normalizeBucket('estado', facets.estado),
+    instituicao: normalizeBucket('instituicao', facets.instituicao),
+    area: normalizeBucket('area', facets.area),
+  });
+}
+
+function normalizeFacetContextList(values, normalizer = (value) => String(value || '').trim()) {
+  return mergeUniqueListValues(values)
+    .map((value) => normalizer(value))
+    .filter(Boolean)
+    .sort((a, b) => String(a).localeCompare(String(b), 'pt-BR'));
+}
+
+function buildFacetContextSignature({ searchContext = null } = {}) {
+  const queryState = collectEditaisServerQueryState({ searchContext });
+  return JSON.stringify({
+    q: String(queryState.q || '').trim().toLowerCase(),
+    status: String(queryState.status || 'todos').trim().toLowerCase(),
+    favoritosOnly: Boolean(queryState.favoritosOnly),
+    estado: normalizeFacetContextList(queryState.estado, (value) => normalizeEstadoValue(value)),
+    instituicao: normalizeFacetContextList(queryState.instituicao, (value) => String(value || '').trim().toLowerCase()),
+    area: normalizeFacetContextList(queryState.area, (value) => toCanonicalCategory(value)),
+    ids: normalizeFacetContextList(queryState.ids, (value) => String(value || '').trim()),
+  });
+}
+
+function setServerFilterFacets(rawFacets, { contextSignature = '' } = {}) {
+  const normalized = normalizeServerFacetPayload(rawFacets) || getEmptyServerFilterFacets();
+  const nextSignature = buildFacetSignature(normalized);
+  const changed = nextSignature !== serverFilterFacetsSignature;
+  serverFilterFacets = normalized;
+  serverFilterFacetsSignature = nextSignature;
+  if (contextSignature) {
+    serverFacetContextSignature = String(contextSignature);
+  }
+  serverFacetsLoaded = true;
+  return changed;
 }
 
 function resolveServerStatusFilter(assistantStatusFilters = []) {
@@ -1399,6 +1453,17 @@ function buildEditaisListPath({ page = 1, pageSize = PAGE_SIZE, searchContext = 
   return `/editais?${params.toString()}`;
 }
 
+function normalizeListPathForComparison(path) {
+  const rawPath = String(path || '').trim();
+  if (!rawPath) return '';
+
+  const [pathname = '', queryString = ''] = rawPath.split('?');
+  const params = new URLSearchParams(queryString);
+  params.delete('include_facets');
+  const normalizedQuery = params.toString();
+  return normalizedQuery ? `${pathname}?${normalizedQuery}` : pathname;
+}
+
 function parseEditaisListPayload(raw) {
   const items =
     Array.isArray(raw) ? raw :
@@ -1456,18 +1521,41 @@ function setServerPageState(parsedPage) {
   };
 }
 
-function hydrateEditaisFromPagePayload(parsedPage) {
+function hydrateEditaisFromPagePayload(
+  parsedPage,
+  { includeFacetsRequested = false, facetContextSignature = '' } = {},
+) {
   editaisOriginais = (parsedPage?.items || []).map(normalizeEdital).filter(Boolean);
   setServerPageState(parsedPage);
   currentPage = serverPageState.page;
-  if (parsedPage?.facets) {
-    serverFilterFacets = parsedPage.facets;
+  if (includeFacetsRequested) {
+    if (parsedPage?.facets) {
+      setServerFilterFacets(parsedPage.facets, { contextSignature: facetContextSignature });
+    } else {
+      setServerFilterFacets(getEmptyServerFilterFacets(), { contextSignature: facetContextSignature });
+      if (isPerfDebugEnabled()) {
+        console.debug(`${LIST_REQUEST_DEBUG_TAG} facets_missing_in_response`, {
+          contextSignature: String(facetContextSignature || ''),
+        });
+      }
+    }
   }
   applyFavoritosToLoadedEditais();
 }
 
-async function loadServerPage(page, { pageSize = PAGE_SIZE, searchContext = null, includeFacets = false } = {}) {
+async function loadServerPage(
+  page,
+  {
+    pageSize = PAGE_SIZE,
+    searchContext = null,
+    includeFacets = false,
+    facetContextSignature = '',
+  } = {},
+) {
   const targetPage = Math.max(1, Number(page) || 1);
+  const resolvedFacetContextSignature = String(
+    facetContextSignature || buildFacetContextSignature({ searchContext }),
+  );
   const path = buildEditaisListPath({ page: targetPage, pageSize, searchContext, includeFacets });
   const requestMeta = beginTrackedListRequest(path);
   let aborted = false;
@@ -1505,8 +1593,17 @@ async function loadServerPage(page, { pageSize = PAGE_SIZE, searchContext = null
       throw new Error(`Erro na API (${res.status})`);
     }
 
-    hydrateEditaisFromPagePayload(parsed);
+    if (activeListRequest?.requestId !== requestMeta.requestId) {
+      finishTrackedListRequest(requestMeta, { aborted: true });
+      return false;
+    }
+
+    hydrateEditaisFromPagePayload(parsed, {
+      includeFacetsRequested: includeFacets,
+      facetContextSignature: resolvedFacetContextSignature,
+    });
     lastLoadedListPath = path;
+    lastLoadedListIncludedFacets = Boolean(includeFacets);
     generateDynamicFilters();
     finishTrackedListRequest(requestMeta, { ok: true });
     return true;
@@ -1549,6 +1646,7 @@ async function loadEditais() {
   `;
 
   try {
+    const facetContextSignature = buildFacetContextSignature({ searchContext: null });
     const { path, res, data, parsed } = await fetchEditaisPageFromApi({
       page: 1,
       pageSize: INITIAL_PAGE_SIZE,
@@ -1580,8 +1678,12 @@ async function loadEditais() {
       throw new Error(`Erro na API (${res.status})`);
     }
 
-    hydrateEditaisFromPagePayload(parsed);
+    hydrateEditaisFromPagePayload(parsed, {
+      includeFacetsRequested: true,
+      facetContextSignature,
+    });
     lastLoadedListPath = path;
+    lastLoadedListIncludedFacets = true;
   } catch (e) {
     console.error('Erro ao carregar editais:', e);
     container.innerHTML = `
@@ -1932,13 +2034,10 @@ function renderFacetOptions(type, values, selectedValues = []) {
 }
 
 function generateDynamicFilters() {
-  const resolvedFacets = hasServerFilterFacets()
-    ? serverFilterFacets
-    : {
-      estado: buildFacetItemsFromCurrentPage('estado'),
-      instituicao: buildFacetItemsFromCurrentPage('instituicao'),
-      area: buildFacetItemsFromCurrentPage('area'),
-    };
+  const resolvedFacets = normalizeServerFacetPayload(serverFilterFacets) || getEmptyServerFilterFacets();
+  const currentSignature = buildFacetSignature(resolvedFacets);
+  if (currentSignature === lastRenderedFacetSignature) return;
+  lastRenderedFacetSignature = currentSignature;
 
   renderFacetOptions('estado', resolvedFacets.estado, applied.estado);
   renderFacetOptions('instituicao', resolvedFacets.instituicao, applied.instituicao);
@@ -2533,23 +2632,33 @@ async function applyFiltersAndRender({ resetPage, forceReload = false } = { rese
   const termo = (searchInput?.value || '').trim();
   const searchContext = buildSearchQueryContext(termo);
   const targetPage = Math.max(1, Number(currentPage) || 1);
-  const shouldIncludeFacets = Boolean(forceReload || resetPage || targetPage === 1 || !hasServerFilterFacets());
+  const facetContextSignature = buildFacetContextSignature({ searchContext });
+  const shouldIncludeFacets = Boolean(
+    forceReload ||
+    !serverFacetsLoaded ||
+    facetContextSignature !== serverFacetContextSignature
+  );
   const targetPath = buildEditaisListPath({
     page: targetPage,
     pageSize: INITIAL_PAGE_SIZE,
     searchContext,
     includeFacets: shouldIncludeFacets,
   });
+  const normalizedTargetPath = normalizeListPathForComparison(targetPath);
+  const normalizedLoadedPath = normalizeListPathForComparison(lastLoadedListPath);
+  const pathChanged = normalizedTargetPath !== normalizedLoadedPath;
+  const facetsRefreshPending = shouldIncludeFacets && !lastLoadedListIncludedFacets;
   const requestSeq = ++applyFiltersRenderSeq;
 
   setSearchVisualState();
 
-  if (forceReload || targetPath !== lastLoadedListPath) {
+  if (forceReload || pathChanged || facetsRefreshPending) {
     try {
       const ok = await loadServerPage(targetPage, {
         pageSize: INITIAL_PAGE_SIZE,
         searchContext,
         includeFacets: shouldIncludeFacets,
+        facetContextSignature,
       });
       if (!ok) return;
     } catch (err) {
