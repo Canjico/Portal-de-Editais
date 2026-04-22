@@ -1,3 +1,5 @@
+import { runAfterFirstPaint, runWhenIdle } from './bootstrap-utils.js';
+
 export async function runProfileBootstrapFlow({
   bootstrapAuthFromUrl,
   bootstrapTheme,
@@ -72,8 +74,12 @@ export async function runDashboardBootstrapFlow({
   prepareShell?.();
   markAppReady?.();
 
-  let editaisReady = false;
-  const favoritosPromise = Promise.resolve().then(() => loadFavoritos?.());
+  await runAfterFirstPaint(() => loadEditais?.());
+  await onEditaisReady?.();
+  await onDeepLinkReady?.();
+
+  let editaisReady = true;
+  const favoritosPromise = runWhenIdle(() => loadFavoritos?.());
   const favoritosSettledPromise = Promise.allSettled([favoritosPromise]).then((results) => {
     const [result] = results;
     if (result?.status === "fulfilled") {
@@ -83,11 +89,6 @@ export async function runDashboardBootstrapFlow({
     }
     return result;
   });
-
-  await loadEditais?.();
-  editaisReady = true;
-  await onEditaisReady?.();
-  await onDeepLinkReady?.();
 
   return { me, favoritosPromise: favoritosSettledPromise };
 }

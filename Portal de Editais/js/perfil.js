@@ -1,4 +1,4 @@
-﻿/* =========================================================
+/* =========================================================
    Athos / Atimus - Perfil
    ========================================================= */
 
@@ -14,7 +14,7 @@ import {
   resolvePasswordChangeRedirectTarget,
   resolveAuthFailureRedirectTarget,
   redirectWithAuthGuard,
-} from './auth.js?v=20260416.1';
+} from './auth.js?v=20260420.1';
 import {
   normalizeTextValue,
   normalizeDigits,
@@ -23,7 +23,7 @@ import {
   isComparableFormDirty,
   resolveDirtyTrackingState,
 } from './perfil-dirty-state.js';
-import { runProfileBootstrapFlow } from './bootstrap-flows.js?v=20260416.1';
+import { runProfileBootstrapFlow } from './bootstrap-flows.js?v=20260420.1';
 
 const sidebarToggle = document.getElementById('sidebarToggle');
 const appSidebar = document.getElementById('appSidebar');

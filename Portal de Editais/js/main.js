@@ -6,7 +6,6 @@ import { renderEditais } from './render.js?v=20260318.3';
 import {
   parseAnyDateToTime,
   buildSearchQueryContext,
-  matchesDateIntent,
 } from './search-date-utils.js?v=20260313.1';
 import {
   appendConversationTurn,
@@ -39,7 +38,12 @@ import {
   dashboardPlanToLegacySearchPayload,
   normalizeDashboardAssistantPlan,
 } from './chat-dashboard-contract.js?v=20260403.1';
-import { createSingleFlight } from './bootstrap-utils.js?v=20260415.1';
+import { createSingleFlight } from './bootstrap-utils.js?v=20260420.2';
+import { createAbortableRequestTracker } from './chat-stream-controller.js?v=20260421.1';
+import {
+  parseSseDataPayload,
+  readSsePayloadsFromBuffer,
+} from './chat-stream-sse.js?v=20260421.1';
 
 // =========================
 // CONFIGURAÇÕES & SEGURANÇA
@@ -49,17 +53,70 @@ import {
   LOGIN_URL,
   bootstrapAuthFromUrl,
   buildLoginUrlWithNext,
+  readBootstrapUserFromSession,
+  apiFetch,
   apiFetchJson,
   isPasswordChangeRequiredPayload,
   isPasswordChangeRequiredResponse,
   resolvePasswordChangeRedirectTarget,
   resolveAuthFailureRedirectTarget,
   redirectWithAuthGuard,
-} from './auth.js?v=20260416.1';
-import { runDashboardBootstrapFlow } from './bootstrap-flows.js?v=20260416.1';
+} from './auth.js?v=20260420.2';
+import { runDashboardBootstrapFlow } from './bootstrap-flows.js?v=20260420.2';
 
 const APP_BASE_URL = new URL('../', import.meta.url);
 const SHARE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{20,255}$/;
+const PERF_DEBUG_TAG = '[PERF][Dashboard]';
+const LIST_REQUEST_DEBUG_TAG = '[PERF][Dashboard][Listagem]';
+const PERF_DEBUG_STORAGE_KEY = 'athos_perf_debug';
+const SEARCH_INPUT_DEBOUNCE_MS = 300;
+
+function isPerfDebugEnabled() {
+  try {
+    if (window.ATHOS_PERF_DEBUG === true) return true;
+  } catch (_) {}
+
+  const host = String(window.location.hostname || '').toLowerCase();
+  if (host.includes('localhost') || host.includes('127.0.0.1')) {
+    return true;
+  }
+
+  try {
+    const value = String(
+      localStorage.getItem(PERF_DEBUG_STORAGE_KEY) ||
+      sessionStorage.getItem(PERF_DEBUG_STORAGE_KEY) ||
+      ''
+    )
+      .trim()
+      .toLowerCase();
+    return value === '1' || value === 'true' || value === 'yes' || value === 'on';
+  } catch (_) {
+    return false;
+  }
+}
+
+function perfMark(name) {
+  if (!name || typeof performance?.mark !== 'function') return;
+  try {
+    performance.mark(name);
+  } catch (_) {}
+}
+
+function perfMeasure(name, startMark, endMark) {
+  if (!name || !startMark || !endMark || typeof performance?.measure !== 'function') return;
+  try {
+    performance.measure(name, startMark, endMark);
+    if (!isPerfDebugEnabled()) return;
+    const measures = performance.getEntriesByName(name);
+    const latest = measures[measures.length - 1];
+    if (!latest) return;
+    console.debug(`${PERF_DEBUG_TAG} ${name}`, {
+      durationMs: Number(latest.duration || 0).toFixed(1),
+      startMark,
+      endMark,
+    });
+  } catch (_) {}
+}
 
 function normalizeShareTokenParam(value) {
   const token = String(value || '').trim();
@@ -103,9 +160,11 @@ function extractShareTokenFromLink(link) {
 // ESTADO
 // =========================
 let editaisOriginais = [];
-let fuseInstance = null;
 
 const PAGE_SIZE = 12;
+const INITIAL_PAGE_SIZE = 12;
+const BULK_PAGE_SIZE = 120;
+const ENABLE_FULL_DATASET_FALLBACK = false;
 let currentPage = 1;
 let lastFiltered = [];
 let kpiFilter = 'all';
@@ -113,6 +172,19 @@ let assistantPanelContext = null;
 let assistantSemanticMemory = createDashboardAssistantMemory();
 let bootstrapInitPromise = null;
 let uiEventsBound = false;
+let allEditaisLoaded = false;
+let fullDatasetLoadPromise = null;
+let lastLoadedListPath = '';
+let applyFiltersRenderSeq = 0;
+let searchInputDebounceTimer = null;
+let listRequestCounter = 0;
+let activeListRequest = null;
+let serverPageState = {
+  total: 0,
+  page: 1,
+  pageSize: PAGE_SIZE,
+  hasNext: false,
+};
 const loadEditaisSingleFlight = createSingleFlight(() => loadEditais());
 const loadFavoritosSingleFlight = createSingleFlight(() => loadFavoritos());
 
@@ -278,6 +350,9 @@ const ASSISTANT_OVERLAY_BREAKPOINT = '(max-width: 1279px)';
 let botIsTyping = false;
 let chatState = createChatSessionState();
 let chatQuickPromptsTransitionCleanup = null;
+const chatRequestTracker = createAbortableRequestTracker();
+const CHAT_SEND_BUTTON_SEND_HTML = '<i class="fas fa-paper-plane" aria-hidden="true"></i>';
+const CHAT_SEND_BUTTON_STOP_HTML = '<i class="fas fa-stop" aria-hidden="true"></i>';
 
 function persistChatState(nextState = chatState) {
   chatState = saveChatSessionState(ensureChatSessionState(nextState));
@@ -394,6 +469,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
 async function init() {
   if (bootstrapInitPromise) return bootstrapInitPromise;
+  perfMark('dashboard_bootstrap_start');
 
   bootstrapInitPromise = runDashboardBootstrapFlow({
     bootstrapAuthFromUrl,
@@ -423,7 +499,6 @@ async function init() {
       if (hasPersonalizedRelevance(editaisOriginais)) {
         setSortField('relevancia', { resetDirection: true });
       }
-      buildFuseIndex();
       generateDynamicFilters();
       setupFilterGroupsAccordion();
       applyFiltersAndRender({ resetPage: true });
@@ -466,7 +541,20 @@ async function openDeepLinkedEditalFromUrl() {
   }
   if (editalId) {
     const target = editaisOriginais.find((e) => String(e.id) === String(editalId));
-    if (target) openModal(target);
+    if (target) {
+      openModal(target);
+      return;
+    }
+    try {
+      const { res, data } = await apiFetchJson(`/editais/${encodeURIComponent(String(editalId))}?include_relevance=true&relevance_mode=fast`, { method: 'GET' });
+      if (!res.ok || !data || typeof data !== 'object') return;
+      const normalized = normalizeEdital(data);
+      if (!normalized) return;
+      editaisOriginais.unshift(normalized);
+      openModal(normalized);
+    } catch (_) {
+      // silencioso: mantém fallback de não abrir modal quando o ID não está acessível
+    }
   }
 }
 
@@ -478,10 +566,38 @@ function hasPersonalizedRelevance(items) {
 // =========================
 // AUTH
 // =========================
+function applyThemePreferenceFromAuthPayload(payload) {
+  if (!window.AthosTheme?.setPreference || !payload?.themePreference) return;
+  const nextTheme = window.AthosTheme.resolveProfilePreference
+    ? window.AthosTheme.resolveProfilePreference(payload.themePreference)
+    : payload.themePreference;
+  window.AthosTheme.setPreference(nextTheme);
+}
+
+function readBootstrapAuthUser() {
+  return readBootstrapUserFromSession({
+    consume: true,
+    maxAgeMs: 10 * 60 * 1000,
+  });
+}
+
 async function checkAuth() {
+  const passwordFallback = buildLoginUrlWithNext();
+  const bootstrapUser = readBootstrapAuthUser();
+  if (bootstrapUser) {
+    if (isPasswordChangeRequiredPayload(bootstrapUser)) {
+      redirectWithAuthGuard(
+        resolvePasswordChangeRedirectTarget(bootstrapUser, passwordFallback),
+        'main.checkAuth.bootstrap_password_change_required'
+      );
+      return null;
+    }
+    applyThemePreferenceFromAuthPayload(bootstrapUser);
+    return bootstrapUser;
+  }
+
   try {
     const { res, data } = await apiFetchJson('/cliente/me', { method: 'GET' });
-    const passwordFallback = buildLoginUrlWithNext();
 
     if (!res.ok) {
       const decision = resolveAuthFailureRedirectTarget(res, data);
@@ -505,12 +621,7 @@ async function checkAuth() {
       return null;
     }
 
-    if (window.AthosTheme?.setPreference && data?.themePreference) {
-      const nextTheme = window.AthosTheme.resolveProfilePreference
-        ? window.AthosTheme.resolveProfilePreference(data.themePreference)
-        : data.themePreference;
-      window.AthosTheme.setPreference(nextTheme);
-    }
+    applyThemePreferenceFromAuthPayload(data);
 
     return data && typeof data === 'object' ? data : {};
   } catch (e) {
@@ -545,6 +656,8 @@ function markAppReady() {
   if (!body) return;
   const wasLoading = body.classList.contains('app-loading');
   body.classList.remove('app-loading');
+  perfMark('dashboard_shell_ready');
+  perfMeasure('dashboard_bootstrap_to_shell_ms', 'dashboard_bootstrap_start', 'dashboard_shell_ready');
   if (wasLoading) {
     try {
       window.dispatchEvent(new CustomEvent('athos:app-ready', { detail: { source: 'dashboard' } }));
@@ -570,6 +683,78 @@ function setSearchVisualState() {
   if (!searchWrapper || !searchInput) return;
   const isActive = String(searchInput.value || '').trim().length > 0;
   searchWrapper.classList.toggle('is-active', isActive);
+}
+
+function isAbortError(err) {
+  if (!err) return false;
+  return err.name === 'AbortError' || String(err?.code || '') === '20';
+}
+
+function cancelPendingSearchInputDebounce() {
+  if (searchInputDebounceTimer === null) return;
+  window.clearTimeout(searchInputDebounceTimer);
+  searchInputDebounceTimer = null;
+}
+
+function scheduleDebouncedSearchRefresh() {
+  cancelPendingSearchInputDebounce();
+  searchInputDebounceTimer = window.setTimeout(() => {
+    searchInputDebounceTimer = null;
+    void applyFiltersAndRender({ resetPage: true });
+  }, SEARCH_INPUT_DEBOUNCE_MS);
+}
+
+function beginTrackedListRequest(path) {
+  const targetPath = String(path || '').trim();
+  if (activeListRequest?.controller) {
+    activeListRequest.controller.abort('superseded_by_newer_list_request');
+  }
+
+  const requestId = ++listRequestCounter;
+  const controller = new AbortController();
+  const startedAt = performance.now();
+  activeListRequest = { requestId, controller, path: targetPath, startedAt };
+
+  if (isPerfDebugEnabled()) {
+    console.debug(`${LIST_REQUEST_DEBUG_TAG} start`, {
+      requestId,
+      path: targetPath,
+    });
+  }
+
+  return activeListRequest;
+}
+
+function finishTrackedListRequest(requestMeta, { aborted = false, ok = false, error = null } = {}) {
+  if (!requestMeta) return;
+  const isCurrent = activeListRequest?.requestId === requestMeta.requestId;
+  if (isCurrent) activeListRequest = null;
+
+  if (!isPerfDebugEnabled()) return;
+  const durationMs = Number((performance.now() - Number(requestMeta.startedAt || 0)).toFixed(1));
+  if (aborted) {
+    console.debug(`${LIST_REQUEST_DEBUG_TAG} canceled`, {
+      requestId: requestMeta.requestId,
+      path: requestMeta.path,
+      durationMs,
+    });
+    return;
+  }
+  if (error) {
+    console.debug(`${LIST_REQUEST_DEBUG_TAG} failed`, {
+      requestId: requestMeta.requestId,
+      path: requestMeta.path,
+      durationMs,
+      error: String(error?.message || error),
+    });
+    return;
+  }
+  console.debug(`${LIST_REQUEST_DEBUG_TAG} done`, {
+    requestId: requestMeta.requestId,
+    path: requestMeta.path,
+    durationMs,
+    ok: Boolean(ok),
+  });
 }
 
 function countAppliedFilters() {
@@ -672,7 +857,10 @@ function setChatOpen(nextOpen, { focusInput = false, skipWelcome = false } = {})
   syncChatLauncherVisibility();
   updateChatHeader();
 
-  if (!open) return;
+  if (!open) {
+    abortActiveChatRequest('chat_close');
+    return;
+  }
 
   scrollToBottom();
   if (!skipWelcome && messageContainer?.children.length === 0) {
@@ -1042,12 +1230,299 @@ function cssEscape(value) {
   return String(value ?? '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
+function mergeUniqueListValues(...lists) {
+  const out = [];
+  const seen = new Set();
+
+  lists.forEach((list) => {
+    const arr = Array.isArray(list) ? list : (list == null ? [] : [list]);
+    arr.forEach((item) => {
+      const clean = String(item || '').trim();
+      if (!clean) return;
+      const key = clean.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      out.push(clean);
+    });
+  });
+
+  return out;
+}
+
+function resolveServerStatusFilter(assistantStatusFilters = []) {
+  if (kpiFilter === 'abertos') return 'aberto';
+  if (kpiFilter === 'fechados') return 'encerrado';
+
+  const statusList = Array.isArray(assistantStatusFilters) ? assistantStatusFilters : [];
+  const hasOpen = statusList.includes('aberto');
+  const hasClosed = statusList.includes('encerrado');
+  if (hasOpen && !hasClosed) return 'aberto';
+  if (hasClosed && !hasOpen) return 'encerrado';
+  return 'todos';
+}
+
+function collectEditaisServerQueryState({ searchContext = null } = {}) {
+  const context = searchContext || buildSearchQueryContext((searchInput?.value || '').trim());
+  const rawSearch = String(searchInput?.value || '').trim();
+  const assistantFilters = assistantPanelContext?.filters || {};
+  const assistantStatuses = mergeUniqueListValues(assistantFilters.status || [])
+    .map((value) => normalizeAssistantStatusToken(value))
+    .filter(Boolean);
+  const assistantEstado = mergeUniqueListValues(assistantFilters.estado || [])
+    .map((value) => normalizeEstadoValue(value))
+    .filter(Boolean);
+  const assistantInstituicoes = mergeUniqueListValues(assistantFilters.instituicoes || assistantFilters.instituicao || []);
+  const assistantAreas = mergeUniqueListValues(assistantFilters.categories || [])
+    .map((value) => toCanonicalCategory(value))
+    .filter(Boolean);
+  const assistantKeywords = mergeUniqueListValues(assistantFilters.keywords || []);
+  const assistantResultIds = assistantPanelContext?.resultIdsSet instanceof Set
+    ? Array.from(assistantPanelContext.resultIdsSet)
+        .map((id) => String(id || '').trim())
+        .filter(Boolean)
+    : [];
+
+  const estado = mergeUniqueListValues(applied.estado, assistantEstado)
+    .map((value) => normalizeEstadoValue(value))
+    .filter(Boolean);
+  const instituicao = mergeUniqueListValues(applied.instituicao, assistantInstituicoes).filter(Boolean);
+  const area = mergeUniqueListValues(applied.area, assistantAreas)
+    .map((value) => toCanonicalCategory(value))
+    .filter(Boolean);
+
+  let q = String(context?.textQuery || rawSearch || '').trim();
+  if (assistantKeywords.length) {
+    q = `${q} ${assistantKeywords.join(' ')}`.trim();
+  }
+
+  return {
+    q,
+    estado,
+    instituicao,
+    area,
+    favoritosOnly: Boolean(onlyFavoritos),
+    status: resolveServerStatusFilter(assistantStatuses),
+    sortField: normalizeSortValue(sortField || sortSelect?.value || 'prazo'),
+    sortDirection: String(sortDirection || 'asc').toLowerCase() === 'desc' ? 'desc' : 'asc',
+    ids: assistantResultIds,
+  };
+}
+
+function buildEditaisListPath({ page = 1, pageSize = PAGE_SIZE, searchContext = null } = {}) {
+  const params = new URLSearchParams();
+  const queryState = collectEditaisServerQueryState({ searchContext });
+
+  params.set('modo', 'card');
+  params.set('include_relevance', 'true');
+  params.set('relevance_mode', 'fast');
+  params.set('page', String(Math.max(1, Number(page) || 1)));
+  params.set('page_size', String(Math.max(1, Number(pageSize) || PAGE_SIZE)));
+  params.set('status', queryState.status || 'todos');
+  params.set('sort_field', queryState.sortField || 'prazo');
+  params.set('sort_direction', queryState.sortDirection || 'desc');
+
+  if (queryState.q) params.set('q', queryState.q);
+  if (queryState.favoritosOnly) params.set('favoritos_only', 'true');
+
+  queryState.estado.forEach((value) => params.append('estado', value));
+  queryState.instituicao.forEach((value) => params.append('instituicao', value));
+  queryState.area.forEach((value) => params.append('area', value));
+  queryState.ids.forEach((value) => params.append('ids', value));
+
+  return `/editais?${params.toString()}`;
+}
+
+function parseEditaisListPayload(raw) {
+  const items =
+    Array.isArray(raw) ? raw :
+    (Array.isArray(raw?.items) ? raw.items :
+    (Array.isArray(raw?.editais) ? raw.editais :
+    (Array.isArray(raw?.data) ? raw.data : [])));
+
+  const parsedPage = Number(raw?.page);
+  const parsedPageSize = Number(raw?.page_size);
+  const parsedTotal = Number(raw?.total);
+  const parsedHasNext = raw?.has_next;
+
+  const page = Number.isFinite(parsedPage) && parsedPage > 0 ? Math.floor(parsedPage) : 1;
+  const pageSize = Number.isFinite(parsedPageSize) && parsedPageSize > 0 ? Math.floor(parsedPageSize) : PAGE_SIZE;
+  const fallbackTotal = ((page - 1) * pageSize) + items.length;
+  const total = Number.isFinite(parsedTotal) && parsedTotal >= 0 ? Math.floor(parsedTotal) : fallbackTotal;
+  const hasNext = typeof parsedHasNext === 'boolean'
+    ? parsedHasNext
+    : (page * pageSize) < total;
+
+  return {
+    items,
+    total: Math.max(total, items.length),
+    page,
+    pageSize,
+    hasNext,
+  };
+}
+
+async function fetchEditaisPageFromApi({ page = 1, pageSize = PAGE_SIZE, searchContext = null, signal = null, path = '' } = {}) {
+  const resolvedPath = String(path || '').trim() || buildEditaisListPath({ page, pageSize, searchContext });
+  const fetchOptions = { method: 'GET' };
+  if (signal) fetchOptions.signal = signal;
+  const { res, data } = await apiFetchJson(resolvedPath, fetchOptions);
+  return { path: resolvedPath, res, data, parsed: parseEditaisListPayload(data) };
+}
+
+function setServerPageState(parsedPage) {
+  serverPageState = {
+    total: Number(parsedPage?.total || 0) || 0,
+    page: Number(parsedPage?.page || 1) || 1,
+    pageSize: Number(parsedPage?.pageSize || PAGE_SIZE) || PAGE_SIZE,
+    hasNext: Boolean(parsedPage?.hasNext),
+  };
+}
+
+function hydrateEditaisFromPagePayload(parsedPage, { markAsFull = false } = {}) {
+  editaisOriginais = (parsedPage?.items || []).map(normalizeEdital).filter(Boolean);
+  setServerPageState(parsedPage);
+  currentPage = serverPageState.page;
+  allEditaisLoaded = Boolean(markAsFull);
+  applyFavoritosToLoadedEditais();
+}
+
+async function loadServerPage(page, { pageSize = PAGE_SIZE, searchContext = null } = {}) {
+  const targetPage = Math.max(1, Number(page) || 1);
+  const path = buildEditaisListPath({ page: targetPage, pageSize, searchContext });
+  const requestMeta = beginTrackedListRequest(path);
+  let aborted = false;
+  try {
+    const { res, data, parsed } = await fetchEditaisPageFromApi({
+      page: targetPage,
+      pageSize,
+      searchContext,
+      path,
+      signal: requestMeta.controller.signal,
+    });
+
+    if (!res.ok) {
+      if (isPasswordChangeRequiredResponse(res, data) || isPasswordChangeRequiredPayload(data)) {
+        const fallbackUrl = buildLoginUrlWithNext();
+        redirectWithAuthGuard(
+          resolvePasswordChangeRedirectTarget(data, fallbackUrl),
+          'main.loadServerPage.password_change_required'
+        );
+        finishTrackedListRequest(requestMeta, { ok: false });
+        return false;
+      }
+
+      if (res.status === 401 || res.status === 403) {
+        const fallbackUrl = buildLoginUrlWithNext();
+        redirectWithAuthGuard(
+          resolveAuthFailureRedirectTarget(data, fallbackUrl),
+          'main.loadServerPage.auth_failed'
+        );
+        finishTrackedListRequest(requestMeta, { ok: false });
+        return false;
+      }
+
+      throw new Error(`Erro na API (${res.status})`);
+    }
+
+    hydrateEditaisFromPagePayload(parsed, { markAsFull: false });
+    lastLoadedListPath = path;
+    generateDynamicFilters();
+    finishTrackedListRequest(requestMeta, { ok: true });
+    return true;
+  } catch (err) {
+    if (isAbortError(err)) {
+      aborted = true;
+      finishTrackedListRequest(requestMeta, { aborted: true });
+      return false;
+    }
+    finishTrackedListRequest(requestMeta, { error: err });
+    throw err;
+  } finally {
+    if (!aborted && activeListRequest?.requestId === requestMeta.requestId) {
+      activeListRequest = null;
+    }
+  }
+}
+
+async function ensureFullDatasetLoaded(reason = 'interactive_filters') {
+  if (!ENABLE_FULL_DATASET_FALLBACK) {
+    console.info(`[Dashboard] full dataset fallback desativado (${reason}).`);
+    return false;
+  }
+  if (allEditaisLoaded) return true;
+  if (fullDatasetLoadPromise) return fullDatasetLoadPromise;
+
+  fullDatasetLoadPromise = (async () => {
+    const merged = [];
+    let page = 1;
+    let hasNext = true;
+    let safety = 0;
+    const MAX_PAGES = 200;
+
+    while (hasNext && safety < MAX_PAGES) {
+      const { res, data, parsed } = await fetchEditaisPageFromApi({ page, pageSize: BULK_PAGE_SIZE });
+      if (!res.ok) {
+        throw new Error(`Falha ao carregar base completa (${res.status})`);
+      }
+
+      merged.push(...(parsed.items || []));
+      hasNext = Boolean(parsed.hasNext);
+      const totalPages = Math.max(1, Math.ceil((parsed.total || merged.length) / Math.max(1, parsed.pageSize || BULK_PAGE_SIZE)));
+      if (!hasNext && page < totalPages) {
+        hasNext = true;
+      }
+      page += 1;
+      safety += 1;
+    }
+
+    if (safety >= MAX_PAGES) {
+      throw new Error('Limite de paginação atingido ao ampliar a base de editais.');
+    }
+
+    const dedupe = new Map();
+    merged.forEach((raw) => {
+      const key = String(raw?.id ?? '').trim();
+      if (!key) return;
+      if (!dedupe.has(key)) dedupe.set(key, raw);
+    });
+
+    const normalized = Array.from(dedupe.values()).map(normalizeEdital).filter(Boolean);
+    editaisOriginais = normalized;
+    allEditaisLoaded = true;
+    currentPage = 1;
+    serverPageState = {
+      total: normalized.length,
+      page: 1,
+      pageSize: PAGE_SIZE,
+      hasNext: false,
+    };
+    applyFavoritosToLoadedEditais();
+    generateDynamicFilters();
+    applyFiltersAndRender({ resetPage: true });
+    return true;
+  })()
+    .catch((err) => {
+      console.warn(`Falha ao carregar base completa (${reason}):`, err);
+      return false;
+    })
+    .finally(() => {
+      fullDatasetLoadPromise = null;
+    });
+
+  return fullDatasetLoadPromise;
+}
+
 
 // =========================
 // DATA LOAD
 // =========================
 async function loadEditais() {
-  if (!container) return;
+  perfMark('editais_load_start');
+  if (!container) {
+    perfMark('editais_load_end');
+    perfMeasure('dashboard_editais_load_ms', 'editais_load_start', 'editais_load_end');
+    return;
+  }
 
   container.innerHTML = `
     <div class="loading-container">
@@ -1062,7 +1537,7 @@ async function loadEditais() {
   `;
 
   try {
-    const { res, data } = await apiFetchJson('/editais?modo=card&include_relevance=true&relevance_mode=fast', { method: 'GET' });
+    const { path, res, data, parsed } = await fetchEditaisPageFromApi({ page: 1, pageSize: INITIAL_PAGE_SIZE });
 
     if (!res.ok) {
       if (isPasswordChangeRequiredResponse(res, data) || isPasswordChangeRequiredPayload(data)) {
@@ -1089,12 +1564,8 @@ async function loadEditais() {
       throw new Error(`Erro na API (${res.status})`);
     }
 
-    const rawList =
-      Array.isArray(data) ? data :
-      (Array.isArray(data?.editais) ? data.editais :
-      (Array.isArray(data?.data) ? data.data : []));
-
-    editaisOriginais = rawList.map(normalizeEdital).filter(Boolean);
+    hydrateEditaisFromPagePayload(parsed, { markAsFull: false });
+    lastLoadedListPath = path;
   } catch (e) {
     console.error('Erro ao carregar editais:', e);
     container.innerHTML = `
@@ -1105,6 +1576,9 @@ async function loadEditais() {
         <button onclick="location.reload()" class="btn btn-primary">Tentar novamente</button>
       </section>
     `;
+  } finally {
+    perfMark('editais_load_end');
+    perfMeasure('dashboard_editais_load_ms', 'editais_load_start', 'editais_load_end');
   }
 }
 
@@ -1120,6 +1594,7 @@ function applyFavoritosToLoadedEditais() {
 }
 
 async function loadFavoritos() {
+  perfMark('favoritos_load_start');
   // Se o endpoint ainda não existir no backend, a UI segue normalmente.
   favoritosSet = new Set();
   try {
@@ -1130,6 +1605,9 @@ async function loadFavoritos() {
     }
   } catch (_) {
     // silencioso de propósito (não quebra a listagem)
+  } finally {
+    perfMark('favoritos_load_end');
+    perfMeasure('dashboard_favoritos_load_ms', 'favoritos_load_start', 'favoritos_load_end');
   }
   applyFavoritosToLoadedEditais();
 }
@@ -1211,22 +1689,23 @@ function updateSaveButtonUI(btn, isSaved) {
 function normalizeEdital(api) {
   const data = typeof api?.json_data === 'string' ? safeJsonParse(api.json_data, {}) : (api?.json_data || {});
   const arquivos = typeof api?.arquivos_json === 'string' ? safeJsonParse(api.arquivos_json, []) : (api?.arquivos_json || []);
-  const rawArea = data.area || (Array.isArray(data.tags) && data.tags.length ? data.tags[0] : 'Geral');
-  const titulo = data.titulo || api?.titulo || 'Sem título';
+  const mergedTags = Array.isArray(api?.tags) && api.tags.length ? api.tags : (Array.isArray(data.tags) ? data.tags : []);
+  const rawArea = api?.area || data.area || (mergedTags.length ? mergedTags[0] : 'Geral');
+  const titulo = api?.titulo || data.titulo || 'Sem título';
 
   return {
     id: api?.id,
     titulo,
     slug: generateSlug(titulo),
-    descricao: data.objetivo || data.descricao || 'Sem descrição',
-    publico_alvo: data.publico_alvo || '',
-    icone: resolveIconPath(data.icone_instituicao),
-    instituicao: data.instituicao || '',
-    estado: normalizeEstadoValue(data.estado || 'BR') || 'BR',
+    descricao: api?.descricao || data.objetivo || data.descricao || 'Sem descrição',
+    publico_alvo: api?.publico_alvo || data.publico_alvo || '',
+    icone: resolveIconPath(api?.icone_instituicao || data.icone_instituicao),
+    instituicao: api?.instituicao || data.instituicao || '',
+    estado: normalizeEstadoValue(api?.estado || data.estado || 'BR') || 'BR',
     area: String(rawArea || 'Geral'),
-    instrumento: toCanonicalInstrument(data.instrumento || data.apoio || 'Não informado'),
-    tipo: data.tipo || 'Não informado',
-    valor_total: data.valor_total || '',
+    instrumento: toCanonicalInstrument(api?.instrumento || data.instrumento || data.apoio || 'Não informado'),
+    tipo: api?.tipo || data.tipo || 'Não informado',
+    valor_total: api?.valor_total || data.valor_total || '',
     data_fechamento:
       api?.data_final_submissao ||
       api?.data_fechamento ||
@@ -1241,7 +1720,7 @@ function normalizeEdital(api) {
       data.data_publicacao_resultado ||
       api?.created_at ||
       null,
-    tags: data.tags || [],
+    tags: mergedTags,
     arquivos,
     is_favorite: false,
     share_link: api?.share_link || '',
@@ -1379,16 +1858,12 @@ function toCanonicalInstrument(value) {
 }
 
 // =========================
-// FUSE (relevância)
+// CONTINGÊNCIA LOCAL (fora do fluxo server-driven)
 // =========================
 function buildFuseIndex() {
-  if (typeof Fuse === 'undefined') return;
-  fuseInstance = new Fuse(editaisOriginais, {
-    keys: ['titulo', 'descricao', 'instituicao', 'area', 'tags', 'data_fechamento', 'data_abertura', 'data_publicacao'],
-    threshold: 0.35,
-    ignoreLocation: true,
-    minMatchCharLength: 2,
-  });
+  // Fluxo normal da dashboard não usa Fuse/indexação local.
+  // Mantido como ponto de contingência explícito para cenários de emergência.
+  return null;
 }
 
 // =========================
@@ -2032,6 +2507,8 @@ function applyAssistantPayloadToDashboard(rawPayload, { fallbackQuery = '' } = {
   return true;
 }
 
+// Contingência local legacy: mantido isolado e fora do fluxo padrão server-driven.
+// A listagem normal da dashboard não chama este refinamento.
 function applyAssistantContextFilters(items) {
   if (!assistantPanelContext || !Array.isArray(items) || !items.length) return items;
 
@@ -2094,100 +2571,55 @@ function applyAssistantContextFilters(items) {
 // APLICAÇÃO DE FILTROS
 // =========================
 
-function applyFiltersAndRender({ resetPage } = { resetPage: false }) {
+async function applyFiltersAndRender({ resetPage, forceReload = false } = { resetPage: false, forceReload: false }) {
+  if (!container) return;
+  cancelPendingSearchInputDebounce();
   if (resetPage) currentPage = 1;
 
   const termo = (searchInput?.value || '').trim();
   const searchContext = buildSearchQueryContext(termo);
-  const textQuery = searchContext.textQuery;
-  const textQueryLower = textQuery.toLowerCase();
+  const targetPage = Math.max(1, Number(currentPage) || 1);
+  const targetPath = buildEditaisListPath({
+    page: targetPage,
+    pageSize: INITIAL_PAGE_SIZE,
+    searchContext,
+  });
+  const requestSeq = ++applyFiltersRenderSeq;
+
   setSearchVisualState();
 
-  // 1) Base por relevância (Fuse) quando existir busca
-  let base = [...editaisOriginais];
-
-  if (textQuery && fuseInstance) {
-    base = fuseInstance.search(textQuery).map(r => r.item);
-  } else if (textQuery) {
-    base = base.filter(e =>
-      (e.titulo || '').toLowerCase().includes(textQueryLower) ||
-      (e.descricao || '').toLowerCase().includes(textQueryLower) ||
-      (e.instituicao || '').toLowerCase().includes(textQueryLower) ||
-      (e.area || '').toLowerCase().includes(textQueryLower) ||
-      (Array.isArray(e.tags) && e.tags.some(t => String(t).toLowerCase().includes(textQueryLower)))
-    );
-  }
-
-  if (searchContext.dateIntent) {
-    const dateMatches = editaisOriginais.filter((edital) => matchesDateIntent(edital, searchContext.dateIntent));
-    if (searchContext.hasMeaningfulText && textQuery) {
-      const dateIds = new Set(dateMatches.map((edital) => String(edital.id)));
-      base = base.filter((edital) => dateIds.has(String(edital.id)));
-    } else {
-      base = dateMatches;
+  if (forceReload || targetPath !== lastLoadedListPath) {
+    try {
+      const ok = await loadServerPage(targetPage, {
+        pageSize: INITIAL_PAGE_SIZE,
+        searchContext,
+      });
+      if (!ok) return;
+    } catch (err) {
+      console.error('Falha ao carregar resultados refinados no backend:', err);
+      renderEditais(container, [], {
+        emptyState: {
+          icon: 'fa-triangle-exclamation',
+          title: 'Falha ao atualizar resultados',
+          message: escapeHtml(err?.message || 'Tente novamente em instantes.'),
+        },
+      });
+      return;
     }
   }
 
-  // 2) Filtros aplicados (checkboxes)
-  let filtered = base;
-  if (applied.estado.length) filtered = filtered.filter(e => applied.estado.includes(e.estado));
-  if (applied.instituicao.length) filtered = filtered.filter(e => applied.instituicao.includes(e.instituicao));
-  if (applied.area.length) filtered = filtered.filter(e => applied.area.includes(toCanonicalCategory(e.area)));
-  filtered = applyAssistantContextFilters(filtered);
-  const statsBase = [...filtered];
+  if (requestSeq !== applyFiltersRenderSeq) return;
 
-  // 2.4) Recorte por KPI clicado
-  if (kpiFilter === 'abertos') filtered = filtered.filter((edital) => !isClosedEdital(edital));
-  if (kpiFilter === 'fechados') filtered = filtered.filter((edital) => isClosedEdital(edital));
+  const pageItems = [...editaisOriginais];
+  lastFiltered = pageItems;
 
-  // 2.5) Só salvos
-  if (onlyFavoritos) filtered = filtered.filter(e => !!e.is_favorite);
+  const total = Math.max(0, Number(serverPageState.total || 0));
+  const pageSize = Math.max(1, Number(serverPageState.pageSize || INITIAL_PAGE_SIZE));
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  currentPage = Math.min(Math.max(1, Number(serverPageState.page || targetPage)), totalPages);
 
-  // 3) Ordenação
-  const sort = normalizeSortValue(sortField || sortSelect?.value || 'prazo');
-  const directionFactor = sortDirection === 'desc' ? -1 : 1;
-
-  const collate = (a, b) => String(a || '').localeCompare(String(b || ''), 'pt-BR', { sensitivity: 'base' });
-
-  if (sort === 'prazo') {
-    filtered = [...filtered].sort((a, b) => compareIsoDate(a.data_fechamento, b.data_fechamento) * directionFactor);
-  } else if (sort === 'atualizado' || sort === 'atualizacao') {
-    filtered = [...filtered].sort((a, b) => compareIsoDate(a.data_abertura, b.data_abertura) * directionFactor);
-  } else if (sort === 'titulo') {
-    filtered = [...filtered].sort((a, b) => collate(a.titulo, b.titulo) * directionFactor);
-  } else if (sort === 'instituicao') {
-    filtered = [...filtered].sort((a, b) => collate(a.instituicao, b.instituicao) * directionFactor);
-  } else if (sort === 'estado') {
-    filtered = [...filtered].sort((a, b) => collate(a.estado, b.estado) * directionFactor);
-  } else if (sort === 'relevancia') {
-    const compareRelevance = (a, b) => {
-      const relDiff = normalizeRelevanceScore(a?.relevance_score) - normalizeRelevanceScore(b?.relevance_score);
-      if (relDiff !== 0) return relDiff;
-
-      const highlightDiff = (a?.is_highlighted ? 1 : 0) - (b?.is_highlighted ? 1 : 0);
-      if (highlightDiff !== 0) return highlightDiff;
-
-      const openDiff = (isClosedEdital(a) ? 0 : 1) - (isClosedEdital(b) ? 0 : 1);
-      if (openDiff !== 0) return openDiff;
-
-      return collate(a?.titulo, b?.titulo) * -1;
-    };
-    filtered = [...filtered].sort((a, b) => compareRelevance(a, b) * directionFactor);
-  } else {
-    // fallback
-    filtered = filtered;
-  }
-
-  lastFiltered = filtered;
-
-  // 4) Paginação + render
-  const total = filtered.length;
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  if (currentPage > totalPages) currentPage = totalPages;
-
-  const startIdx = (currentPage - 1) * PAGE_SIZE;
-  const endIdx = Math.min(startIdx + PAGE_SIZE, total);
-  const pageItems = filtered.slice(startIdx, endIdx);
+  const startIdx = total === 0 ? 0 : ((currentPage - 1) * pageSize);
+  const endIdx = total === 0 ? 0 : Math.min(startIdx + pageItems.length, total);
 
   if (resultsMeta) {
     const a = total === 0 ? 0 : startIdx + 1;
@@ -2196,7 +2628,7 @@ function applyFiltersAndRender({ resetPage } = { resetPage: false }) {
     resultsMeta.textContent = `Mostrando ${a}-${b} de ${total} ${label}`;
   }
 
-  updateHeroStats(statsBase);
+  updateHeroStats(pageItems, { totalOverride: total });
   syncKpiButtons();
   renderActiveFilters();
   renderResultsStateHint(total);
@@ -2284,8 +2716,10 @@ function compareIsoDate(a, b) {
   return da < db ? -1 : da > db ? 1 : 0;
 }
 
-function updateHeroStats(filtered) {
-  if (statTotal) statTotal.textContent = String(filtered.length);
+function updateHeroStats(filtered, { totalOverride = null } = {}) {
+  const totalValue = Number(totalOverride);
+  const resolvedTotal = Number.isFinite(totalValue) && totalValue >= 0 ? Math.round(totalValue) : filtered.length;
+  if (statTotal) statTotal.textContent = String(resolvedTotal);
 
   const now = new Date();
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
@@ -2513,7 +2947,7 @@ const doLogout = async () => {
         clearAssistantPanelContext();
       }
       setSearchVisualState();
-      applyFiltersAndRender({ resetPage: true });
+      scheduleDebouncedSearchRefresh();
     });
   }
 
@@ -2609,13 +3043,13 @@ const doLogout = async () => {
 
   // paginação click
   if (paginationEl) {
-    paginationEl.addEventListener('click', (e) => {
+    paginationEl.addEventListener('click', async (e) => {
       const btn = e.target.closest('button[data-page]');
       if (!btn) return;
       const p = Number(btn.getAttribute('data-page'));
       if (!Number.isFinite(p) || p === currentPage) return;
       currentPage = p;
-      applyFiltersAndRender({ resetPage: false });
+      await applyFiltersAndRender({ resetPage: false });
       window.scrollTo({ top: 0, behavior: 'smooth' });
     });
   }
@@ -2642,7 +3076,7 @@ const doLogout = async () => {
             showToast(r.is_favorite ? 'Edital salvo na sua lista.' : 'Edital removido dos salvos.', 'success', 1800);
             // Se estiver vendo só salvos e removeu, some do grid
             if (onlyFavoritos && !r.is_favorite) {
-              applyFiltersAndRender({ resetPage: true });
+              applyFiltersAndRender({ resetPage: true, forceReload: true });
             }
           }
         } catch (err) {
@@ -2685,11 +3119,18 @@ const doLogout = async () => {
   }
 
   if (sendButton && chatInput) {
-    sendButton.addEventListener('click', () => handleChatSend({ source: 'message_send' }));
+    sendButton.addEventListener('click', () => {
+      if (isChatStreamActive()) {
+        abortActiveChatRequest('stop_button');
+        return;
+      }
+      void handleChatSend({ source: 'message_send' });
+    });
     chatInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {
         e.preventDefault();
-        handleChatSend({ source: 'message_send' });
+        if (isChatStreamActive()) return;
+        void handleChatSend({ source: 'message_send' });
       }
     });
   }
@@ -3065,7 +3506,7 @@ async function openModal(edital) {
           showToast(r.is_favorite ? 'Edital salvo com sucesso.' : 'Edital removido dos salvos.', 'success', 1800);
 
           if (onlyFavoritos && !r.is_favorite) {
-            applyFiltersAndRender({ resetPage: true });
+            applyFiltersAndRender({ resetPage: true, forceReload: true });
           }
         }
       } catch (err) {
@@ -3367,14 +3808,16 @@ function addMessage(text, sender = 'bot', sources = null, opts = {}) {
   return msg;
 }
 
-function setMessageText(msgEl, text, sources = null) {
+function setMessageText(msgEl, text, sources = null, options = {}) {
   if (!msgEl) return;
   const bubble = msgEl.querySelector('.bubble');
   if (bubble) bubble.innerHTML = renderSimpleMarkdown(text);
   if (msgEl.classList.contains('bot')) {
     applySourcesDetails(msgEl, sources);
   }
-  msgEl.classList.remove('is-typing');
+  if (!options?.keepTyping) {
+    msgEl.classList.remove('is-typing');
+  }
 }
 
 function buildSourcesDetails(sources) {
@@ -3810,9 +4253,7 @@ function searchEditaisForChat(query) {
 
   let items = [];
 
-  if (keywords.length && fuseInstance) {
-    items = fuseInstance.search(keywords.join(' ')).map((r) => r.item);
-  } else if (keywords.length) {
+  if (keywords.length) {
     items = editaisOriginais.filter((e) => {
       const hay = [
         e.titulo, e.descricao, e.instituicao, e.estado, e.area,
@@ -4229,6 +4670,52 @@ function resolveBackendSearchDecision({ data, question, backendOptions, backendS
   };
 }
 
+function setActiveChatRequestController(controller) {
+  chatRequestTracker.setActiveController(controller);
+}
+
+function clearActiveChatRequestController(controller) {
+  chatRequestTracker.clearActiveController(controller);
+}
+
+function isChatStreamActive() {
+  return chatRequestTracker.hasActiveController();
+}
+
+function abortActiveChatRequest(reason = 'manual') {
+  const aborted = chatRequestTracker.abortActiveController();
+  if (aborted) {
+    console.info('[CHAT][stream] requisicao abortada pelo cliente', { reason });
+  }
+  return aborted;
+}
+
+async function readResponsePayloadFallback(res) {
+  if (!res) return null;
+  const contentType = String(res.headers?.get('content-type') || '').toLowerCase();
+  let rawText = '';
+  try {
+    rawText = await res.text();
+  } catch (_) {
+    rawText = '';
+  }
+
+  if (!rawText) return null;
+  if (contentType.includes('application/json')) {
+    try {
+      return JSON.parse(rawText);
+    } catch (_) {
+      return { _rawText: rawText };
+    }
+  }
+
+  try {
+    return JSON.parse(rawText);
+  } catch (_) {
+    return { _rawText: rawText };
+  }
+}
+
 async function handleChatSend(options = {}) {
   if (botIsTyping) return;
   if (!hasPersonalizationConsent()) {
@@ -4395,142 +4882,275 @@ async function handleChatSend(options = {}) {
     return;
   }
 
-  setChatBusy(true);
-  const typingMsg = addMessage('digitando...', 'bot', null, { isTyping: true });
-  const canApplyDashboardSearch = !contextualEditalId;
+  setChatBusy(true, { streaming: true });
+  const typingMsg = addMessage('', 'bot', null, { isTyping: true });
+  const streamController = new AbortController();
+  setActiveChatRequestController(streamController);
+  let streamedText = '';
+  let streamedSources = [];
+  let streamTopicDetection = null;
+  let hasBackendState = false;
+  let streamErrorMessage = '';
+  let streamDoneReceived = false;
 
   try {
-    const endpoint = contextualEditalId ? `/chat/edital/${encodeURIComponent(contextualEditalId)}` : '/chat';
-
-    const { res, data } = await apiFetchJson(endpoint, {
+    const endpoint = `/chat/edital/${encodeURIComponent(contextualEditalId)}/stream`;
+    const res = await apiFetch(endpoint, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      // manda "message" (backend) e "question" (compat)
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'text/event-stream',
+      },
       body: JSON.stringify({ message: question, question, state: chatState }),
+      signal: streamController.signal,
     });
 
-    if (!res.ok) {
-      const localOutcome = buildLocalAssistantOutcome(question);
-      const fallbackText = localOutcome?.reply || 'O chat está indisponível no momento. Tenta de novo em alguns instantes.';
-      setMessageText(
-        typingMsg,
-        fallbackText
-      );
-      chatState = appendConversationTurn(chatState, 'assistant', fallbackText);
-      persistChatState(chatState);
-      if (canApplyDashboardSearch && localOutcome?.shouldSearch) {
-        attachEditaisOptions(typingMsg, question);
-      }
-      return;
-    }
+    const contentType = String(res.headers?.get('content-type') || '').toLowerCase();
+    const isSseResponse = Boolean(res.ok && res.body && contentType.includes('text/event-stream'));
 
-    const hasBackendState = Boolean(data?.state && typeof data.state === 'object');
-    if (Object.prototype.hasOwnProperty.call(data || {}, 'state')) {
-      if (data?.state && typeof data.state === 'object') {
-        chatState = ensureChatSessionState(data.state);
+    if (!isSseResponse) {
+      const data = await readResponsePayloadFallback(res);
+
+      if (!res.ok) {
+        const localOutcome = buildLocalAssistantOutcome(question);
+        const fallbackText = localOutcome?.reply || 'O chat está indisponível no momento. Tenta de novo em alguns instantes.';
+        setMessageText(typingMsg, fallbackText);
+        chatState = appendConversationTurn(chatState, 'assistant', fallbackText);
         persistChatState(chatState);
-        updateChatHeader();
-      } else {
-        clearActiveEditalContext({ clearAssistantContext: true });
+        return;
       }
-    }
 
-    if (data?.switch_to_general) {
-      clearActiveEditalContext({ clearAssistantContext: true });
-      const switchText = normalizeBotText(
-        data?.reply || 'Entendi, saindo do edital atual. Agora voce pode buscar outro tema.'
-      );
-      setMessageText(typingMsg, switchText);
+      hasBackendState = Boolean(data?.state && typeof data.state === 'object');
+      if (Object.prototype.hasOwnProperty.call(data || {}, 'state')) {
+        if (data?.state && typeof data.state === 'object') {
+          chatState = ensureChatSessionState(data.state);
+          persistChatState(chatState);
+          updateChatHeader();
+        } else {
+          clearActiveEditalContext({ clearAssistantContext: true });
+        }
+      }
+
+      if (data?.switch_to_general) {
+        clearActiveEditalContext({ clearAssistantContext: true });
+        const switchText = normalizeBotText(
+          data?.reply || 'Entendi, saindo do edital atual. Agora voce pode buscar outro tema.'
+        );
+        setMessageText(typingMsg, switchText);
+        if (!hasBackendState) {
+          chatState = appendConversationTurn(chatState, 'assistant', switchText);
+        }
+        persistChatState(chatState);
+        return;
+      }
+
+      const answer =
+        data?.answer ??
+        data?.reply ??
+        data?.resposta ??
+        data?.message ??
+        data?.text ??
+        data?._rawText ??
+        null;
+      const rawText = (answer && String(answer).trim())
+        ? normalizeBotText(answer)
+        : 'Nao consegui responder agora.';
+      const extracted = extractEmbeddedSources(rawText);
+      const finalText = extracted.text || rawText;
+      const finalSources = normalizeSources(data?.sources, extracted.names);
+      setMessageText(typingMsg, finalText, finalSources);
       if (!hasBackendState) {
-        chatState = appendConversationTurn(chatState, 'assistant', switchText);
+        chatState = appendConversationTurn(chatState, 'assistant', finalText);
+      }
+      if (data?.topic_detection && typeof data.topic_detection === 'object') {
+        chatState = updateTopicDetection(chatState, data.topic_detection);
+        console.info('[CHAT][topic-detector][backend]', {
+          context: { type: chatState?.activeContextType, entityId: chatState?.activeEntityId },
+          userMessage: String(question || '').slice(0, 180),
+          decision: data.topic_detection?.decision,
+          confidence: Number(data.topic_detection?.confidence || 0).toFixed(2),
+          reason: data.topic_detection?.reason,
+        });
       }
       persistChatState(chatState);
       return;
     }
 
-    // tolera nomes diferentes de campo
-    const answer =
-      data?.answer ??
-      data?.reply ??
-      data?.resposta ??
-      data?.message ??
-      data?.text ??
-      data?._rawText ??
-      null;
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+    const sseParseOptions = {
+      onInvalidJson(payloadText, err) {
+        console.warn('[CHAT][stream] evento SSE invalido', { payloadText, err });
+      },
+    };
 
-    const localOutcome = buildLocalAssistantOutcome(question);
-    const preferContextualAnswer = Boolean(contextualEditalId);
-    const isLocalNonSearch = !preferContextualAnswer && localOutcome?.intent !== 'edital_search';
-    const rawText = isLocalNonSearch
-      ? (localOutcome?.reply || 'Não consegui responder agora.')
-      : ((answer && String(answer).trim())
-        ? normalizeBotText(answer)
-        : (localOutcome?.reply || 'Não consegui responder agora.'));
-    const extracted = extractEmbeddedSources(rawText);
-    const finalText = extracted.text || rawText;
-    const finalSources = normalizeSources(data?.sources, extracted.names);
+    const applyStreamDelta = (deltaText) => {
+      const nextChunk = String(deltaText || '');
+      if (!nextChunk) return;
+      streamedText += nextChunk;
+      setMessageText(typingMsg, streamedText, streamedSources, { keepTyping: true });
+      scrollToBottom();
+    };
+
+    const handleStreamPayload = (payload) => {
+      if (!payload || typeof payload !== 'object') return;
+      const type = String(payload.type || '').trim().toLowerCase();
+      if (!type || type === 'start') return;
+
+      if (type === 'delta') {
+        applyStreamDelta(payload.text || '');
+        return;
+      }
+
+      if (type === 'sources') {
+        const extracted = extractEmbeddedSources(streamedText);
+        streamedSources = normalizeSources(payload.sources, extracted.names);
+        setMessageText(typingMsg, streamedText, streamedSources, { keepTyping: true });
+        scrollToBottom();
+        return;
+      }
+
+      if (type === 'state') {
+        if (payload.state && typeof payload.state === 'object') {
+          chatState = ensureChatSessionState(payload.state);
+          persistChatState(chatState);
+          updateChatHeader();
+          hasBackendState = true;
+        }
+        if (payload.topic_detection && typeof payload.topic_detection === 'object') {
+          streamTopicDetection = payload.topic_detection;
+          chatState = updateTopicDetection(chatState, payload.topic_detection);
+          persistChatState(chatState);
+          console.info('[CHAT][topic-detector][backend]', {
+            context: { type: chatState?.activeContextType, entityId: chatState?.activeEntityId },
+            userMessage: String(question || '').slice(0, 180),
+            decision: payload.topic_detection?.decision,
+            confidence: Number(payload.topic_detection?.confidence || 0).toFixed(2),
+            reason: payload.topic_detection?.reason,
+          });
+        }
+        return;
+      }
+
+      if (type === 'error') {
+        streamErrorMessage = normalizeBotText(
+          payload.message || 'Ocorreu um erro ao consultar a IA. Tente novamente em instantes.'
+        );
+        return;
+      }
+
+      if (type === 'done') {
+        streamDoneReceived = true;
+      }
+    };
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+
+      const chunkText = decoder.decode(value, { stream: true });
+      const parsed = readSsePayloadsFromBuffer(buffer, chunkText, sseParseOptions);
+      buffer = parsed.remainder;
+
+      for (const payload of parsed.payloads) {
+        handleStreamPayload(payload);
+        if (streamDoneReceived || streamErrorMessage) break;
+      }
+
+      if (streamDoneReceived || streamErrorMessage) break;
+    }
+
+    const flushChunk = decoder.decode();
+    if (flushChunk) {
+      const parsedFlush = readSsePayloadsFromBuffer(buffer, flushChunk, sseParseOptions);
+      buffer = parsedFlush.remainder;
+      for (const payload of parsedFlush.payloads) {
+        handleStreamPayload(payload);
+        if (streamDoneReceived || streamErrorMessage) break;
+      }
+    }
+
+    if (buffer.trim()) {
+      const tailPayload = parseSseDataPayload(buffer, sseParseOptions);
+      if (tailPayload) {
+        handleStreamPayload(tailPayload);
+      }
+    }
+
+    if (streamErrorMessage) {
+      const fallbackText = streamErrorMessage || 'Ocorreu um erro ao consultar a IA. Tente novamente em instantes.';
+      setMessageText(typingMsg, fallbackText, streamedSources);
+      if (!hasBackendState) {
+        chatState = appendConversationTurn(chatState, 'assistant', fallbackText);
+        if (streamTopicDetection && typeof streamTopicDetection === 'object') {
+          chatState = updateTopicDetection(chatState, streamTopicDetection);
+        }
+        persistChatState(chatState);
+      }
+      return;
+    }
+
+    const extracted = extractEmbeddedSources(streamedText);
+    const fallbackText = normalizeBotText(streamedText) || 'Nao consegui responder agora.';
+    const finalText = extracted.text || fallbackText;
+    const finalSources = normalizeSources(streamedSources, extracted.names);
     setMessageText(typingMsg, finalText, finalSources);
+
     if (!hasBackendState) {
       chatState = appendConversationTurn(chatState, 'assistant', finalText);
-    }
-    if (data?.topic_detection && typeof data.topic_detection === 'object') {
-      chatState = updateTopicDetection(chatState, data.topic_detection);
-      console.info('[CHAT][topic-detector][backend]', {
-        context: { type: chatState?.activeContextType, entityId: chatState?.activeEntityId },
-        userMessage: String(question || '').slice(0, 180),
-        decision: data.topic_detection?.decision,
-        confidence: Number(data.topic_detection?.confidence || 0).toFixed(2),
-        reason: data.topic_detection?.reason,
-      });
-    }
-    persistChatState(chatState);
-
-    const backendOptions = Array.isArray(data?.options) ? data.options : [];
-    const backendStructuredPayload = normalizeAssistantSearchPayload(
-      data?.search_payload ||
-      data?.intent_payload ||
-      data?.searchPayload ||
-      null
-    );
-
-    const chatDecision = isLocalNonSearch
-      ? { intent: localOutcome?.intent || 'unknown', shouldSearch: false }
-      : resolveBackendSearchDecision({
-        data,
-        question,
-        backendOptions,
-        backendStructuredPayload,
-      });
-
-    if (canApplyDashboardSearch && chatDecision.shouldSearch) {
-      attachEditaisOptions(
-        typingMsg,
-        question,
-        backendOptions.length ? backendOptions : null,
-        backendStructuredPayload
-      );
+      if (streamTopicDetection && typeof streamTopicDetection === 'object') {
+        chatState = updateTopicDetection(chatState, streamTopicDetection);
+      }
+      persistChatState(chatState);
     }
 
   } catch (e) {
+    if (e?.name === 'AbortError') {
+      console.info('[CHAT][stream] requisicao abortada', e);
+      const abortedText = normalizeBotText(streamedText) || 'Conversa interrompida. Voce pode enviar novamente.';
+      const extracted = extractEmbeddedSources(abortedText);
+      const finalText = extracted.text || abortedText;
+      const finalSources = normalizeSources(streamedSources, extracted.names);
+      setMessageText(typingMsg, finalText, finalSources);
+      if (!hasBackendState) {
+        chatState = appendConversationTurn(chatState, 'assistant', finalText);
+        persistChatState(chatState);
+      }
+      return;
+    }
+
     console.error('Erro no chat:', e);
     const localOutcome = buildLocalAssistantOutcome(question);
     const fallbackText = localOutcome?.reply || 'Deu ruim aqui do meu lado. Tenta de novo em alguns segundos.';
     setMessageText(typingMsg, fallbackText);
     chatState = appendConversationTurn(chatState, 'assistant', fallbackText);
     persistChatState(chatState);
-    if (canApplyDashboardSearch && localOutcome?.shouldSearch) {
-      attachEditaisOptions(typingMsg, question);
-    }
   } finally {
+    clearActiveChatRequestController(streamController);
     setChatBusy(false);
     scrollToBottom();
   }
 }
 
-function setChatBusy(isBusy) {
-  botIsTyping = !!isBusy;
-  if (chatInput) chatInput.disabled = !!isBusy;
-  if (sendButton) sendButton.disabled = !!isBusy;
+function setChatBusy(isBusy, options = {}) {
+  const busy = Boolean(isBusy);
+  const streaming = busy && Boolean(options?.streaming);
+
+  botIsTyping = busy;
+
+  if (chatInput) chatInput.disabled = busy;
+  if (sendButton) {
+    sendButton.disabled = busy && !streaming;
+    sendButton.classList.toggle('is-stop-mode', streaming);
+    sendButton.dataset.mode = streaming ? 'stop' : 'send';
+    sendButton.setAttribute('aria-label', streaming ? 'Parar geração' : 'Enviar');
+    sendButton.title = streaming ? 'Parar geração' : 'Enviar';
+    const nextIcon = streaming ? CHAT_SEND_BUTTON_STOP_HTML : CHAT_SEND_BUTTON_SEND_HTML;
+    if (sendButton.innerHTML !== nextIcon) {
+      sendButton.innerHTML = nextIcon;
+    }
+  }
 }
 
 

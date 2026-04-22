@@ -80,8 +80,13 @@ test('dashboard não bloqueia bootstrap principal por favoritos', async () => {
   assert.ok(events.includes('mark_ready'));
   assert.ok(events.includes('editais_ready'));
   assert.ok(events.includes('deep_link_ready'));
+  assert.ok(!events.includes('load_favoritos_start'));
   assert.ok(!events.includes('load_favoritos_done'));
   assert.ok(!events.includes('favoritos_ready'));
+
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.ok(events.includes('load_favoritos_start'));
+  assert.ok(!events.includes('load_favoritos_done'));
 
   resolveFavoritos();
   await result.favoritosPromise;
@@ -89,4 +94,5 @@ test('dashboard não bloqueia bootstrap principal por favoritos', async () => {
   assert.ok(events.includes('load_favoritos_done'));
   assert.ok(events.includes('favoritos_ready'));
   assert.equal(Boolean(favoritosCallbackPayload?.editaisReady), true);
+  assert.ok(events.indexOf('deep_link_ready') < events.indexOf('load_favoritos_start'));
 });
