@@ -31,3 +31,13 @@ test('card detail is fetched on demand when details are missing', () => {
   assert.match(mainSource, /if \(edital\.details_loaded\) return edital;/);
   assert.match(mainSource, /const path = `\/editais\/\$\{encodeURIComponent\(String\(edital\.id\)\)\}\?include_relevance=true&relevance_mode=fast`;/);
 });
+
+test('legacy fallback requests full dataset and does not use summary mode', () => {
+  assert.match(mainSource, /summary:\s*false,\s*[\s\S]*view:\s*'full'/);
+  assert.match(mainSource, /includeAttachments:\s*true/);
+});
+
+test('server paged hero uses global stats metadata from backend', () => {
+  assert.match(mainSource, /updateHeroStats\(editaisOriginais,\s*\{\s*globalStats:\s*serverPageMeta\.stats\s*\}\)/);
+  assert.match(mainSource, /function normalizeHeroStatsFromMeta\(globalStats, fallbackStats\)/);
+});

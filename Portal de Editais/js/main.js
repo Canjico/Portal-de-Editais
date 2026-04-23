@@ -1,4 +1,4 @@
-﻿/* =========================================================
+/* =========================================================
    Athos / Atimus — Editais (UX/UI novo + filtros + paginação)
    ========================================================= */
 
@@ -107,6 +107,10 @@ let editaisOriginais = [];
 let fuseInstance = null;
 
 const PAGE_SIZE = 12;
+const DASHBOARD_DATA_MODE = Object.freeze({
+  SERVER_PAGED_SUMMARY: 'server_paged_summary',
+  LEGACY_FULL_DATASET: 'legacy_full_dataset',
+});
 let currentPage = 1;
 let lastFiltered = [];
 let kpiFilter = 'all';
@@ -116,13 +120,14 @@ let bootstrapInitPromise = null;
 let uiEventsBound = false;
 const loadEditaisSingleFlight = createSingleFlight(() => loadEditais());
 const loadFavoritosSingleFlight = createSingleFlight(() => loadFavoritos());
-let dashboardDataMode = 'server_paged';
+let dashboardDataMode = DASHBOARD_DATA_MODE.SERVER_PAGED_SUMMARY;
 let legacyDatasetLoaded = false;
 let legacyDatasetLoadingPromise = null;
 let serverPageMeta = {
   page: 1,
   limit: PAGE_SIZE,
   total: 0,
+  stats: { total: 0, openTotal: 0, closedTotal: 0 },
   totalPages: 1,
   hasNext: false,
   hasPrev: false,
@@ -441,7 +446,7 @@ async function init() {
     loadFavoritos: loadFavoritosSingleFlight,
     onEditaisReady: async () => {
       applyFavoritosToLoadedEditais();
-      if (dashboardDataMode !== 'server_paged' && hasPersonalizedRelevance(editaisOriginais)) {
+      if (dashboardDataMode !== DASHBOARD_DATA_MODE.SERVER_PAGED_SUMMARY && hasPersonalizedRelevance(editaisOriginais)) {
         setSortField('relevancia', { resetDirection: true });
       }
       buildFuseIndex();
@@ -1112,18 +1117,62 @@ function isAdvancedDashboardQueryActive() {
   );
 }
 
-function buildEditaisListEndpoint({ page = 1, limit = PAGE_SIZE, summary = true } = {}) {
+function buildEditaisListEndpoint({
+  page = 1,
+  limit = PAGE_SIZE,
+  summary = true,
+  view = 'card',
+  modo = view,
+  includeAttachments = false,
+} = {}) {
   const params = new URLSearchParams();
-  params.set('view', 'card');
-  params.set('modo', 'card');
+  params.set('view', view);
+  params.set('modo', modo || view);
   params.set('include_relevance', 'true');
   params.set('relevance_mode', 'fast');
   params.set('sort_by', mapSortFieldToApi(sortField));
   params.set('sort_order', mapSortDirectionToApi(sortDirection));
-  if (summary) params.set('summary', '1');
+  if (summary === true) params.set('summary', '1');
+  if (includeAttachments) params.set('include_attachments', '1');
   if (Number.isFinite(Number(page)) && Number(page) > 0) params.set('page', String(Math.trunc(Number(page))));
   if (Number.isFinite(Number(limit)) && Number(limit) > 0) params.set('limit', String(Math.trunc(Number(limit))));
   return `/editais?${params.toString()}`;
+}
+
+function normalizeServerStatsPayload(payload = {}, fallbackTotal = 0) {
+  const rawPayload = payload && typeof payload === 'object' ? payload : {};
+  const rawStats = rawPayload?.stats && typeof rawPayload.stats === 'object'
+    ? rawPayload.stats
+    : rawPayload;
+
+  const providedTotal = Number(rawStats?.total ?? rawPayload?.total ?? fallbackTotal ?? 0);
+  const openCandidate = rawStats?.open_total ?? rawPayload?.open_total;
+  const closedCandidate = rawStats?.closed_total ?? rawPayload?.closed_total;
+  const hasOpen = Number.isFinite(Number(openCandidate));
+  const hasClosed = Number.isFinite(Number(closedCandidate));
+  if (!hasOpen && !hasClosed) return null;
+
+  let total = Number.isFinite(providedTotal) ? Math.max(0, Math.trunc(providedTotal)) : Math.max(0, Math.trunc(Number(fallbackTotal) || 0));
+  if (total === 0) {
+    total = Math.max(
+      total,
+      Math.trunc(Number(openCandidate) || 0) + Math.trunc(Number(closedCandidate) || 0),
+    );
+  }
+
+  let openTotal = hasOpen ? Math.max(0, Math.trunc(Number(openCandidate))) : null;
+  let closedTotal = hasClosed ? Math.max(0, Math.trunc(Number(closedCandidate))) : null;
+
+  if (openTotal === null) openTotal = Math.max(0, total - Number(closedTotal || 0));
+  if (closedTotal === null) closedTotal = Math.max(0, total - Number(openTotal || 0));
+
+  openTotal = Math.max(0, Math.min(openTotal, total));
+  closedTotal = Math.max(0, Math.min(closedTotal, total));
+  if ((openTotal + closedTotal) !== total) {
+    closedTotal = Math.max(0, total - openTotal);
+  }
+
+  return { total, openTotal, closedTotal };
 }
 
 function normalizeServerPageMeta(payload = {}, fallbackPage = 1) {
@@ -1140,6 +1189,7 @@ function normalizeServerPageMeta(payload = {}, fallbackPage = 1) {
     hasPrev: Boolean(payload?.has_prev),
     sortBy: String(payload?.sort_by || mapSortFieldToApi(sortField)),
     sortOrder: String(payload?.sort_order || mapSortDirectionToApi(sortDirection)),
+    stats: normalizeServerStatsPayload(payload, total),
   };
 }
 
@@ -1164,7 +1214,7 @@ function extractEditaisItemsFromPayload(data) {
 }
 
 async function ensureLegacyDatasetLoaded() {
-  if (legacyDatasetLoaded && dashboardDataMode === 'legacy_full') return true;
+  if (legacyDatasetLoaded && dashboardDataMode === DASHBOARD_DATA_MODE.LEGACY_FULL_DATASET) return true;
   if (legacyDatasetLoadingPromise) {
     await legacyDatasetLoadingPromise;
     return true;
@@ -1187,7 +1237,13 @@ async function loadEditais({ page = 1, forceLegacy = false } = {}) {
 
   try {
     const endpoint = forceLegacy
-      ? buildEditaisListEndpoint({ page: null, limit: null, summary: true })
+      ? buildEditaisListEndpoint({
+        page: null,
+        limit: null,
+        summary: false,
+        view: 'full',
+        includeAttachments: true,
+      })
       : buildEditaisListEndpoint({ page, limit: PAGE_SIZE, summary: true });
     const { res, data } = await apiFetchJson(endpoint, { method: 'GET' });
 
@@ -1223,12 +1279,14 @@ async function loadEditais({ page = 1, forceLegacy = false } = {}) {
     applyFavoritosToLoadedEditais();
 
     if (forceLegacy) {
-      dashboardDataMode = 'legacy_full';
+      const legacyStats = computeOpenClosedTotals(editaisOriginais);
+      dashboardDataMode = DASHBOARD_DATA_MODE.LEGACY_FULL_DATASET;
       legacyDatasetLoaded = true;
       serverPageMeta = {
         page: 1,
         limit: Math.max(1, editaisOriginais.length || PAGE_SIZE),
-        total: editaisOriginais.length,
+        total: legacyStats.total,
+        stats: legacyStats,
         totalPages: 1,
         hasNext: false,
         hasPrev: false,
@@ -1239,15 +1297,17 @@ async function loadEditais({ page = 1, forceLegacy = false } = {}) {
       return;
     }
 
-    dashboardDataMode = 'server_paged';
+    dashboardDataMode = DASHBOARD_DATA_MODE.SERVER_PAGED_SUMMARY;
     legacyDatasetLoaded = false;
+    const localStats = computeOpenClosedTotals(editaisOriginais);
     serverPageMeta = extracted.wrapped
       ? extracted.pageMeta
       : {
         page: 1,
         limit: PAGE_SIZE,
-        total: editaisOriginais.length,
-        totalPages: Math.max(1, Math.ceil(editaisOriginais.length / PAGE_SIZE)),
+        total: localStats.total,
+        stats: localStats,
+        totalPages: Math.max(1, Math.ceil(localStats.total / PAGE_SIZE)),
         hasNext: false,
         hasPrev: false,
         sortBy: mapSortFieldToApi(sortField),
@@ -2299,7 +2359,7 @@ function applyFiltersAndRender({ resetPage } = { resetPage: false }) {
   const serverSortSupported = isServerSortSupported(activeSort);
   const hasAdvancedQuery = isAdvancedDashboardQueryActive();
 
-  if (dashboardDataMode === 'server_paged' && (hasAdvancedQuery || !serverSortSupported)) {
+  if (dashboardDataMode === DASHBOARD_DATA_MODE.SERVER_PAGED_SUMMARY && (hasAdvancedQuery || !serverSortSupported)) {
     showCardsLoadingState();
     void ensureLegacyDatasetLoaded()
       .then(() => {
@@ -2313,7 +2373,7 @@ function applyFiltersAndRender({ resetPage } = { resetPage: false }) {
     return;
   }
 
-  if (dashboardDataMode === 'server_paged') {
+  if (dashboardDataMode === DASHBOARD_DATA_MODE.SERVER_PAGED_SUMMARY) {
     const expectedSortBy = mapSortFieldToApi(activeSort);
     const expectedSortOrder = mapSortDirectionToApi(sortDirection);
     const expectedPage = Math.max(1, Number(currentPage || 1));
@@ -2350,7 +2410,7 @@ function applyFiltersAndRender({ resetPage } = { resetPage: false }) {
       resultsMeta.textContent = `Mostrando ${startIdx}-${endIdx} de ${total} ${label}`;
     }
 
-    updateHeroStats(editaisOriginais);
+    updateHeroStats(editaisOriginais, { globalStats: serverPageMeta.stats });
     syncKpiButtons();
     renderActiveFilters();
     renderResultsStateHint(total);
@@ -2547,29 +2607,68 @@ function compareIsoDate(a, b) {
   return da < db ? -1 : da > db ? 1 : 0;
 }
 
-function updateHeroStats(filtered) {
-  if (statTotal) statTotal.textContent = String(filtered.length);
-
+function computeOpenClosedTotals(items = []) {
+  const list = Array.isArray(items) ? items : [];
   const now = new Date();
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
 
-  let abertos = 0;
-  let fechados = 0;
+  let openTotal = 0;
+  let closedTotal = 0;
 
-  for (const e of filtered) {
+  for (const e of list) {
     const t = parseAnyDateToTime(e.data_fechamento);
     // Sem data final: considera como aberto (melhor UX do que sumir com números)
     if (t === null) {
-      abertos++;
+      openTotal++;
       continue;
     }
-    // Data final no passado (ou hoje): fechado
-    if (t < todayStart) fechados++;
-    else abertos++;
+    // Data final no passado: fechado
+    if (t < todayStart) closedTotal++;
+    else openTotal++;
   }
 
-  if (statAbertos) statAbertos.textContent = String(abertos);
-  if (statFechados) statFechados.textContent = String(fechados);
+  return {
+    total: list.length,
+    openTotal,
+    closedTotal,
+  };
+}
+
+function normalizeHeroStatsFromMeta(globalStats, fallbackStats) {
+  const fallback = fallbackStats && typeof fallbackStats === 'object'
+    ? fallbackStats
+    : { total: 0, openTotal: 0, closedTotal: 0 };
+  if (!globalStats || typeof globalStats !== 'object') return fallback;
+
+  const totalRaw = Number(globalStats.total);
+  const openRaw = Number(globalStats.openTotal ?? globalStats.open_total);
+  const closedRaw = Number(globalStats.closedTotal ?? globalStats.closed_total);
+  const hasOpen = Number.isFinite(openRaw);
+  const hasClosed = Number.isFinite(closedRaw);
+  if (!Number.isFinite(totalRaw) || (!hasOpen && !hasClosed)) return fallback;
+
+  const total = Math.max(0, Math.trunc(totalRaw));
+  let openTotal = hasOpen ? Math.max(0, Math.trunc(openRaw)) : null;
+  let closedTotal = hasClosed ? Math.max(0, Math.trunc(closedRaw)) : null;
+
+  if (openTotal === null) openTotal = Math.max(0, total - Number(closedTotal || 0));
+  if (closedTotal === null) closedTotal = Math.max(0, total - Number(openTotal || 0));
+
+  openTotal = Math.max(0, Math.min(openTotal, total));
+  closedTotal = Math.max(0, Math.min(closedTotal, total));
+  if ((openTotal + closedTotal) !== total) {
+    closedTotal = Math.max(0, total - openTotal);
+  }
+
+  return { total, openTotal, closedTotal };
+}
+
+function updateHeroStats(filtered, { globalStats = null } = {}) {
+  const fallbackStats = computeOpenClosedTotals(filtered);
+  const resolvedStats = normalizeHeroStatsFromMeta(globalStats, fallbackStats);
+  if (statTotal) statTotal.textContent = String(resolvedStats.total);
+  if (statAbertos) statAbertos.textContent = String(resolvedStats.openTotal);
+  if (statFechados) statFechados.textContent = String(resolvedStats.closedTotal);
 }
 
 

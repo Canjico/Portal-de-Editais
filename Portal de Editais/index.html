@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8" />
@@ -78,7 +78,7 @@
           <input
             type="text"
             id="search"
-            placeholder="Buscar por tema, instituiÃ§Ã£o, estado, categoria ou data (ex: abr/2026)..."
+            placeholder="Buscar por tema, instituição, estado, categoria ou data (ex: abr/2026)..."
             autocomplete="off"
             aria-label="Buscar editais"
           />
@@ -94,7 +94,7 @@
             <span class="badge" id="savedBadge" hidden>0</span>
           </button>
 
-          <button class="icon-btn" type="button" aria-label="NotificaÃ§Ãµes">
+          <button class="icon-btn" type="button" aria-label="Notificações">
             <i class="far fa-bell"></i>
             <span class="badge" hidden>0</span>
           </button>
@@ -104,11 +104,11 @@
           </button>
 
           <div class="user-menu" id="userMenu">
-            <button class="icon-btn" id="userMenuBtn" type="button" aria-label="Menu do usuÃ¡rio" title="Conta">
+            <button class="icon-btn" id="userMenuBtn" type="button" aria-label="Menu do usuário" title="Conta">
               <i class="fas fa-user-circle"></i>
             </button>
 
-            <div class="user-dropdown" role="menu" aria-label="AÃ§Ãµes">
+            <div class="user-dropdown" role="menu" aria-label="Ações">
               <a href="./perfil" role="menuitem">Perfil</a>
               <button id="logoutBtn" type="button" role="menuitem">Sair</button>
             </div>
@@ -120,7 +120,7 @@
 
         <section class="hero-banner" aria-label="Resumo">
           <h1>Monitoramento de Editais</h1>
-          <p>Filtre, ordene e monitore oportunidades com leitura rÃ¡pida e contexto claro.</p>
+          <p>Filtre, ordene e monitore oportunidades com leitura rápida e contexto claro.</p>
 
           <div class="hero-stats" id="heroStats" role="group" aria-label="KPIs de monitoramento">
             <button class="hero-stat is-active" id="statChipTotal" type="button" data-kpi-filter="all" aria-pressed="true">
@@ -131,7 +131,7 @@
             <button class="hero-stat" id="statChipAbertos" type="button" data-kpi-filter="abertos" aria-pressed="false">
               <span class="label">Abertos</span>
               <span class="value" id="statAbertos">0</span>
-              <span class="hint">InscriÃ§Ãµes ativas</span>
+              <span class="hint">Inscrições ativas</span>
             </button>
             <button class="hero-stat" id="statChipFechados" type="button" data-kpi-filter="fechados" aria-pressed="false">
               <span class="label">Encerrados</span>
@@ -169,11 +169,11 @@
 
             <section class="filter-group is-collapsed" data-filter-group="instituicao">
               <button class="filter-group-title" type="button" data-filter-toggle aria-expanded="false">
-                <span><i class="fas fa-building" aria-hidden="true"></i> InstituiÃ§Ã£o</span>
+                <span><i class="fas fa-building" aria-hidden="true"></i> Instituição</span>
                 <i class="fas fa-chevron-down" aria-hidden="true"></i>
               </button>
               <div class="filter-group-body" aria-hidden="true" hidden inert>
-                <input class="filter-search" id="filterSearchInstituicao" type="text" placeholder="Buscar instituiÃ§Ã£o..." autocomplete="off" aria-label="Buscar instituiÃ§Ã£o" />
+                <input class="filter-search" id="filterSearchInstituicao" type="text" placeholder="Buscar instituição..." autocomplete="off" aria-label="Buscar instituição" />
                 <div class="filter-options" id="filterOptsInstituicao" data-filter-type="instituicao"></div>
               </div>
             </section>
@@ -202,25 +202,25 @@
               <div class="results-actions">
                 <div class="sort-wrapper">
                   <span class="sort-label">Ordenar por</span>
-                  <div class="sort-chips" id="sortChips" role="group" aria-label="Campos de ordenaÃ§Ã£o">
-                    <button class="sort-chip" type="button" data-sort="relevancia">RelevÃ¢ncia</button>
+                  <div class="sort-chips" id="sortChips" role="group" aria-label="Campos de ordenação">
+                    <button class="sort-chip" type="button" data-sort="relevancia">Relevância</button>
                     <button class="sort-chip is-active" type="button" data-sort="prazo">Prazo</button>
-                    <button class="sort-chip" type="button" data-sort="titulo">TÃ­tulo</button>
-                    <button class="sort-chip" type="button" data-sort="instituicao">InstituiÃ§Ã£o</button>
+                    <button class="sort-chip" type="button" data-sort="titulo">Título</button>
+                    <button class="sort-chip" type="button" data-sort="instituicao">Instituição</button>
                     <button class="sort-chip" type="button" data-sort="estado">Estado</button>
                     <button class="sort-chip" type="button" data-sort="atualizado">Atualizado</button>
                   </div>
 
-                  <button class="sort-direction-btn" id="sortDirectionBtn" type="button" aria-label="DireÃ§Ã£o da ordenaÃ§Ã£o" title="DireÃ§Ã£o: decrescente">
+                  <button class="sort-direction-btn" id="sortDirectionBtn" type="button" aria-label="Direção da ordenação" title="Direção: decrescente">
                     <i class="fas fa-arrow-down-wide-short" id="sortDirectionIcon" aria-hidden="true"></i>
                     <span id="sortDirectionText">Decrescente</span>
                   </button>
 
                   <select id="sortSelect" aria-label="Ordenar resultados">
-                    <option value="relevancia">RelevÃ¢ncia</option>
+                    <option value="relevancia">Relevância</option>
                     <option value="prazo" selected>Prazo</option>
-                    <option value="titulo">TÃ­tulo</option>
-                    <option value="instituicao">InstituiÃ§Ã£o</option>
+                    <option value="titulo">Título</option>
+                    <option value="instituicao">Instituição</option>
                     <option value="estado">Estado</option>
                     <option value="atualizado">Atualizado</option>
                   </select>
@@ -246,7 +246,7 @@
               <span class="app-footer-sep" aria-hidden="true">&bull;</span>
               <a href="./termos-de-uso">Termos de Uso</a>
               <span class="app-footer-sep" aria-hidden="true">&bull;</span>
-              <a href="./politica-de-privacidade">PolÃ­tica de Privacidade</a>
+              <a href="./politica-de-privacidade">Política de Privacidade</a>
             </footer>
           </section>
         </div>
@@ -275,13 +275,13 @@
 
   <div class="e-contact-buttons__content-wrapper" id="chatbot-wrapper" aria-label="Chat" aria-hidden="true">
     <div class="chat-header">
-      <span class="chat-header-title">Athos â€¢ Assistente</span>
+      <span class="chat-header-title">Athos • Assistente</span>
       <button class="chat-close-btn" id="chatCloseBtn" type="button" aria-label="Fechar assistente">
         <i class="fas fa-xmark" aria-hidden="true"></i>
       </button>
     </div>
     <div class="chat-messages" id="chatbot-messages"></div>
-    <div class="chat-quick-prompts" id="chatQuickPrompts" aria-label="SugestÃµes de perguntas"></div>
+    <div class="chat-quick-prompts" id="chatQuickPrompts" aria-label="Sugestões de perguntas"></div>
     <div class="chat-input-area">
       <input id="chat-input" type="text" placeholder="Digite sua mensagem..." autocomplete="off" aria-label="Mensagem para o assistente" />
       <button id="send-button" type="button" aria-label="Enviar"><i class="fas fa-paper-plane"></i></button>
@@ -291,6 +291,6 @@
   <script src="./js/theme-init.js?v=20260317.2"></script>
   <script src="./js/consent.js?v=20260310.1"></script>
   <script src="./js/presence.js?v=20260309.1"></script>
-  <script type="module" src="./js/main.js?v=20260423.1"></script>
+  <script type="module" src="./js/main.js?v=20260423.2"></script>
 </body>
 </html>
