@@ -86,3 +86,34 @@ test('apiFetch GET faz fallback com Authorization/X-Cliente-Token em 401', async
   assert.equal(String(secondHeaders.Authorization || '').startsWith('Bearer '), true);
   assert.equal(String(secondHeaders['X-Cliente-Token'] || ''), 'token-fallback-401');
 });
+
+test('apiFetch GET faz fallback com token também em 403', async () => {
+  fetchCalls = [];
+  responseQueue = [createResponse(403), createResponse(200)];
+  sessionStorage.setItem('cliente_token', 'token-fallback-403');
+
+  await apiFetch('/cliente/me?minimal=1', { method: 'GET' });
+
+  assert.equal(fetchCalls.length, 2);
+  const firstHeaders = fetchCalls[0].options.headers || {};
+  const secondHeaders = fetchCalls[1].options.headers || {};
+
+  assert.equal(Object.prototype.hasOwnProperty.call(firstHeaders, 'Authorization'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(firstHeaders, 'X-Cliente-Token'), false);
+  assert.equal(String(secondHeaders.Authorization || '').startsWith('Bearer '), true);
+  assert.equal(String(secondHeaders['X-Cliente-Token'] || ''), 'token-fallback-403');
+});
+
+test('apiFetch GET não faz fallback com token quando status não é 401/403', async () => {
+  fetchCalls = [];
+  responseQueue = [createResponse(500)];
+  sessionStorage.setItem('cliente_token', 'token-no-fallback-500');
+
+  const res = await apiFetch('/cliente/me?minimal=1', { method: 'GET' });
+
+  assert.equal(res.status, 500);
+  assert.equal(fetchCalls.length, 1);
+  const firstHeaders = fetchCalls[0].options.headers || {};
+  assert.equal(Object.prototype.hasOwnProperty.call(firstHeaders, 'Authorization'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(firstHeaders, 'X-Cliente-Token'), false);
+});

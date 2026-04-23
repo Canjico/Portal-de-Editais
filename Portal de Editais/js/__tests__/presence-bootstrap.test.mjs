@@ -172,4 +172,7 @@ test('presence tracker aguarda app ready para iniciar heartbeat', async () => {
 
   assert.ok(fetchCalls.length >= 1);
   assert.equal(fetchCalls.some((call) => String(call.url || '').includes('/cliente/me')), false);
+  const firstCall = fetchCalls[0] || {};
+  assert.equal(String(firstCall.options?.method || '').toUpperCase(), 'POST');
+  assert.equal(firstCall.options?.credentials, 'include');
 });

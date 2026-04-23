@@ -173,3 +173,40 @@ test('perfil usa handoff para hidratar shell e valida auth em background', async
   assert.ok(events.includes('check_auth_done'));
   assert.ok(events.includes('auth_confirmed'));
 });
+
+test('dashboard mantém shell com handoff mesmo quando confirmação de auth falha', async () => {
+  const events = [];
+  let capturedAuthError = null;
+
+  const result = await runDashboardBootstrapFlow({
+    bootstrapAuthFromUrl: () => events.push('bootstrap_auth'),
+    bootstrapChatSessionState: () => events.push('bootstrap_chat'),
+    bootstrapTheme: () => events.push('bootstrap_theme'),
+    readAuthHandoff: () => ({ id: 99, nome: 'Handoff resiliente' }),
+    checkAuth: async () => {
+      events.push('check_auth_start');
+      throw new Error('falha de rede no /cliente/me');
+    },
+    onAuthConfirmed: () => events.push('auth_confirmed'),
+    onAuthConfirmationError: (error) => {
+      capturedAuthError = error;
+      events.push('auth_confirm_error');
+    },
+    hydrateSidebarUser: () => events.push('hydrate_sidebar'),
+    prepareShell: () => events.push('prepare_shell'),
+    markAppReady: () => events.push('mark_ready'),
+    loadEditais: async () => events.push('load_editais'),
+    loadFavoritos: async () => events.push('load_favoritos'),
+    onEditaisReady: async () => events.push('editais_ready'),
+    onDeepLinkReady: async () => events.push('deep_link_ready'),
+  });
+
+  const confirmed = await result.authConfirmationPromise;
+
+  assert.ok(events.includes('hydrate_sidebar'));
+  assert.ok(events.includes('mark_ready'));
+  assert.ok(events.includes('auth_confirm_error'));
+  assert.ok(!events.includes('auth_confirmed'));
+  assert.equal(capturedAuthError instanceof Error, true);
+  assert.equal(confirmed, null);
+});
