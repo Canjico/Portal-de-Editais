@@ -1,8 +1,8 @@
-/* =========================================================
+﻿/* =========================================================
    Athos / Atimus — Editais (UX/UI novo + filtros + paginação)
    ========================================================= */
 
-import { renderEditais } from './render.js?v=20260423.1';
+import { renderEditais } from './render.js?v=20260318.3';
 import {
   parseAnyDateToTime,
   buildSearchQueryContext,
@@ -55,7 +55,7 @@ import {
   resolvePasswordChangeRedirectTarget,
   resolveAuthFailureRedirectTarget,
   redirectWithAuthGuard,
-} from './auth.js?v=20260423.1';
+} from './auth.js?v=20260416.1';
 import { runDashboardBootstrapFlow } from './bootstrap-flows.js?v=20260416.1';
 import { readAuthHandoff } from './auth-handoff.js?v=20260422.1';
 
@@ -107,10 +107,6 @@ let editaisOriginais = [];
 let fuseInstance = null;
 
 const PAGE_SIZE = 12;
-const DASHBOARD_DATA_MODE = Object.freeze({
-  SERVER_PAGED_SUMMARY: 'server_paged_summary',
-  LEGACY_FULL_DATASET: 'legacy_full_dataset',
-});
 let currentPage = 1;
 let lastFiltered = [];
 let kpiFilter = 'all';
@@ -120,20 +116,6 @@ let bootstrapInitPromise = null;
 let uiEventsBound = false;
 const loadEditaisSingleFlight = createSingleFlight(() => loadEditais());
 const loadFavoritosSingleFlight = createSingleFlight(() => loadFavoritos());
-let dashboardDataMode = DASHBOARD_DATA_MODE.SERVER_PAGED_SUMMARY;
-let legacyDatasetLoaded = false;
-let legacyDatasetLoadingPromise = null;
-let serverPageMeta = {
-  page: 1,
-  limit: PAGE_SIZE,
-  total: 0,
-  stats: { total: 0, openTotal: 0, closedTotal: 0 },
-  totalPages: 1,
-  hasNext: false,
-  hasPrev: false,
-  sortBy: 'prazo',
-  sortOrder: 'asc',
-};
 
 // Filtros aplicados (só mudam quando clicar em "Aplicar filtros")
 let applied = {
@@ -446,7 +428,7 @@ async function init() {
     loadFavoritos: loadFavoritosSingleFlight,
     onEditaisReady: async () => {
       applyFavoritosToLoadedEditais();
-      if (dashboardDataMode !== DASHBOARD_DATA_MODE.SERVER_PAGED_SUMMARY && hasPersonalizedRelevance(editaisOriginais)) {
+      if (hasPersonalizedRelevance(editaisOriginais)) {
         setSortField('relevancia', { resetDirection: true });
       }
       buildFuseIndex();
@@ -1068,8 +1050,13 @@ function cssEscape(value) {
   return String(value ?? '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
-function showCardsLoadingState() {
+
+// =========================
+// DATA LOAD
+// =========================
+async function loadEditais() {
   if (!container) return;
+
   container.innerHTML = `
     <div class="loading-container">
       <div class="spinner"></div>
@@ -1081,171 +1068,9 @@ function showCardsLoadingState() {
       </div>
     </div>
   `;
-}
-
-function mapSortFieldToApi(sortValue) {
-  const normalized = normalizeSortValue(sortValue || 'prazo');
-  if (normalized === 'atualizado' || normalized === 'atualizacao') return 'atualizado';
-  if (normalized === 'titulo') return 'titulo';
-  if (normalized === 'relevancia') return 'relevancia';
-  return 'prazo';
-}
-
-function mapSortDirectionToApi(directionValue) {
-  return String(directionValue || '').toLowerCase() === 'desc' ? 'desc' : 'asc';
-}
-
-function isServerSortSupported(sortValue) {
-  const normalized = normalizeSortValue(sortValue || 'prazo');
-  return (
-    normalized === 'prazo' ||
-    normalized === 'atualizado' ||
-    normalized === 'atualizacao' ||
-    normalized === 'titulo' ||
-    normalized === 'relevancia'
-  );
-}
-
-function isAdvancedDashboardQueryActive() {
-  const hasSearch = String(searchInput?.value || '').trim().length > 0;
-  return Boolean(
-    hasSearch ||
-    hasAppliedFilters() ||
-    onlyFavoritos ||
-    kpiFilter !== 'all' ||
-    assistantPanelContext
-  );
-}
-
-function buildEditaisListEndpoint({
-  page = 1,
-  limit = PAGE_SIZE,
-  summary = true,
-  view = 'card',
-  modo = view,
-  includeAttachments = false,
-} = {}) {
-  const params = new URLSearchParams();
-  params.set('view', view);
-  params.set('modo', modo || view);
-  params.set('include_relevance', 'true');
-  params.set('relevance_mode', 'fast');
-  params.set('sort_by', mapSortFieldToApi(sortField));
-  params.set('sort_order', mapSortDirectionToApi(sortDirection));
-  if (summary === true) params.set('summary', '1');
-  if (includeAttachments) params.set('include_attachments', '1');
-  if (Number.isFinite(Number(page)) && Number(page) > 0) params.set('page', String(Math.trunc(Number(page))));
-  if (Number.isFinite(Number(limit)) && Number(limit) > 0) params.set('limit', String(Math.trunc(Number(limit))));
-  return `/editais?${params.toString()}`;
-}
-
-function normalizeServerStatsPayload(payload = {}, fallbackTotal = 0) {
-  const rawPayload = payload && typeof payload === 'object' ? payload : {};
-  const rawStats = rawPayload?.stats && typeof rawPayload.stats === 'object'
-    ? rawPayload.stats
-    : rawPayload;
-
-  const providedTotal = Number(rawStats?.total ?? rawPayload?.total ?? fallbackTotal ?? 0);
-  const openCandidate = rawStats?.open_total ?? rawPayload?.open_total;
-  const closedCandidate = rawStats?.closed_total ?? rawPayload?.closed_total;
-  const hasOpen = Number.isFinite(Number(openCandidate));
-  const hasClosed = Number.isFinite(Number(closedCandidate));
-  if (!hasOpen && !hasClosed) return null;
-
-  let total = Number.isFinite(providedTotal) ? Math.max(0, Math.trunc(providedTotal)) : Math.max(0, Math.trunc(Number(fallbackTotal) || 0));
-  if (total === 0) {
-    total = Math.max(
-      total,
-      Math.trunc(Number(openCandidate) || 0) + Math.trunc(Number(closedCandidate) || 0),
-    );
-  }
-
-  let openTotal = hasOpen ? Math.max(0, Math.trunc(Number(openCandidate))) : null;
-  let closedTotal = hasClosed ? Math.max(0, Math.trunc(Number(closedCandidate))) : null;
-
-  if (openTotal === null) openTotal = Math.max(0, total - Number(closedTotal || 0));
-  if (closedTotal === null) closedTotal = Math.max(0, total - Number(openTotal || 0));
-
-  openTotal = Math.max(0, Math.min(openTotal, total));
-  closedTotal = Math.max(0, Math.min(closedTotal, total));
-  if ((openTotal + closedTotal) !== total) {
-    closedTotal = Math.max(0, total - openTotal);
-  }
-
-  return { total, openTotal, closedTotal };
-}
-
-function normalizeServerPageMeta(payload = {}, fallbackPage = 1) {
-  const page = Math.max(1, Number(payload?.page || fallbackPage || 1));
-  const limit = Math.max(1, Number(payload?.limit || PAGE_SIZE));
-  const total = Math.max(0, Number(payload?.total || 0));
-  const totalPages = Math.max(1, Number(payload?.total_pages || 1));
-  return {
-    page,
-    limit,
-    total,
-    totalPages,
-    hasNext: Boolean(payload?.has_next),
-    hasPrev: Boolean(payload?.has_prev),
-    sortBy: String(payload?.sort_by || mapSortFieldToApi(sortField)),
-    sortOrder: String(payload?.sort_order || mapSortDirectionToApi(sortDirection)),
-    stats: normalizeServerStatsPayload(payload, total),
-  };
-}
-
-function extractEditaisItemsFromPayload(data) {
-  if (Array.isArray(data)) {
-    return {
-      items: data,
-      wrapped: false,
-      pageMeta: normalizeServerPageMeta({}, currentPage),
-    };
-  }
-
-  const items = Array.isArray(data?.items)
-    ? data.items
-    : (Array.isArray(data?.editais) ? data.editais : (Array.isArray(data?.data) ? data.data : []));
-
-  return {
-    items,
-    wrapped: Boolean(data && typeof data === 'object' && Array.isArray(data?.items)),
-    pageMeta: normalizeServerPageMeta(data, currentPage),
-  };
-}
-
-async function ensureLegacyDatasetLoaded() {
-  if (legacyDatasetLoaded && dashboardDataMode === DASHBOARD_DATA_MODE.LEGACY_FULL_DATASET) return true;
-  if (legacyDatasetLoadingPromise) {
-    await legacyDatasetLoadingPromise;
-    return true;
-  }
-  legacyDatasetLoadingPromise = loadEditais({ page: 1, forceLegacy: true })
-    .finally(() => {
-      legacyDatasetLoadingPromise = null;
-    });
-  await legacyDatasetLoadingPromise;
-  return true;
-}
-
-
-// =========================
-// DATA LOAD
-// =========================
-async function loadEditais({ page = 1, forceLegacy = false } = {}) {
-  if (!container) return;
-  showCardsLoadingState();
 
   try {
-    const endpoint = forceLegacy
-      ? buildEditaisListEndpoint({
-        page: null,
-        limit: null,
-        summary: false,
-        view: 'full',
-        includeAttachments: true,
-      })
-      : buildEditaisListEndpoint({ page, limit: PAGE_SIZE, summary: true });
-    const { res, data } = await apiFetchJson(endpoint, { method: 'GET' });
+    const { res, data } = await apiFetchJson('/editais?modo=card&include_relevance=true&relevance_mode=fast', { method: 'GET' });
 
     if (!res.ok) {
       if (isPasswordChangeRequiredResponse(res, data) || isPasswordChangeRequiredPayload(data)) {
@@ -1272,48 +1097,12 @@ async function loadEditais({ page = 1, forceLegacy = false } = {}) {
       throw new Error(`Erro na API (${res.status})`);
     }
 
-    const extracted = extractEditaisItemsFromPayload(data);
-    const rawList = Array.isArray(extracted.items) ? extracted.items : [];
+    const rawList =
+      Array.isArray(data) ? data :
+      (Array.isArray(data?.editais) ? data.editais :
+      (Array.isArray(data?.data) ? data.data : []));
 
     editaisOriginais = rawList.map(normalizeEdital).filter(Boolean);
-    applyFavoritosToLoadedEditais();
-
-    if (forceLegacy) {
-      const legacyStats = computeOpenClosedTotals(editaisOriginais);
-      dashboardDataMode = DASHBOARD_DATA_MODE.LEGACY_FULL_DATASET;
-      legacyDatasetLoaded = true;
-      serverPageMeta = {
-        page: 1,
-        limit: Math.max(1, editaisOriginais.length || PAGE_SIZE),
-        total: legacyStats.total,
-        stats: legacyStats,
-        totalPages: 1,
-        hasNext: false,
-        hasPrev: false,
-        sortBy: mapSortFieldToApi(sortField),
-        sortOrder: mapSortDirectionToApi(sortDirection),
-      };
-      currentPage = 1;
-      return;
-    }
-
-    dashboardDataMode = DASHBOARD_DATA_MODE.SERVER_PAGED_SUMMARY;
-    legacyDatasetLoaded = false;
-    const localStats = computeOpenClosedTotals(editaisOriginais);
-    serverPageMeta = extracted.wrapped
-      ? extracted.pageMeta
-      : {
-        page: 1,
-        limit: PAGE_SIZE,
-        total: localStats.total,
-        stats: localStats,
-        totalPages: Math.max(1, Math.ceil(localStats.total / PAGE_SIZE)),
-        hasNext: false,
-        hasPrev: false,
-        sortBy: mapSortFieldToApi(sortField),
-        sortOrder: mapSortDirectionToApi(sortDirection),
-      };
-    currentPage = serverPageMeta.page;
   } catch (e) {
     console.error('Erro ao carregar editais:', e);
     container.innerHTML = `
@@ -1342,7 +1131,7 @@ async function loadFavoritos() {
   // Se o endpoint ainda não existir no backend, a UI segue normalmente.
   favoritosSet = new Set();
   try {
-    const { res, data } = await apiFetchJson('/cliente/favoritos?ids_only=1', { method: 'GET' });
+    const { res, data } = await apiFetchJson('/cliente/favoritos', { method: 'GET' });
     if (res.ok) {
       const ids = Array.isArray(data) ? data : (Array.isArray(data?.ids) ? data.ids : []);
       favoritosSet = new Set((ids || []).map(v => String(v)));
@@ -1399,24 +1188,16 @@ async function toggleFavorito(editalId) {
   if (!edital) return { ok: false };
 
   const estavaSalvo = !!edital.is_favorite;
-  const proximoEstado = !estavaSalvo;
 
-  // Atualização otimista: evita sensação de travamento ao favoritar/desfavoritar.
-  edital.is_favorite = proximoEstado;
-  if (proximoEstado) favoritosSet.add(idStr);
+  await salvarOuRemoverFavorito(editalId, !estavaSalvo);
+
+  edital.is_favorite = !estavaSalvo;
+  if (edital.is_favorite) favoritosSet.add(idStr);
   else favoritosSet.delete(idStr);
+
   syncSavedBadge();
 
-  try {
-    await salvarOuRemoverFavorito(editalId, proximoEstado);
-    return { ok: true, is_favorite: edital.is_favorite, edital };
-  } catch (error) {
-    edital.is_favorite = estavaSalvo;
-    if (estavaSalvo) favoritosSet.add(idStr);
-    else favoritosSet.delete(idStr);
-    syncSavedBadge();
-    throw error;
-  }
+  return { ok: true, is_favorite: edital.is_favorite, edital };
 }
 
 function updateSaveButtonUI(btn, isSaved) {
@@ -1436,36 +1217,7 @@ function updateSaveButtonUI(btn, isSaved) {
 
 
 function normalizeEdital(api) {
-  const hasSummaryShape = Boolean(
-    api &&
-    !api?.json_data &&
-    (
-      Object.prototype.hasOwnProperty.call(api, 'instituicao') ||
-      Object.prototype.hasOwnProperty.call(api, 'area') ||
-      Object.prototype.hasOwnProperty.call(api, 'instrumento') ||
-      Object.prototype.hasOwnProperty.call(api, 'publico_alvo')
-    )
-  );
-  const summaryData = hasSummaryShape
-    ? {
-      titulo: api?.titulo || '',
-      objetivo: api?.descricao || '',
-      descricao: api?.descricao || '',
-      publico_alvo: api?.publico_alvo || '',
-      icone_instituicao: api?.icone_instituicao || '',
-      instituicao: api?.instituicao || '',
-      estado: api?.estado || 'BR',
-      area: api?.area || 'Geral',
-      instrumento: api?.instrumento || '',
-      tipo: api?.tipo || '',
-      valor_total: api?.valor_total || '',
-      tags: Array.isArray(api?.tags) ? api.tags : [],
-      data_final_submissao: api?.data_final_submissao || api?.data_fechamento || null,
-      data_fechamento: api?.data_fechamento || api?.data_final_submissao || null,
-      fluxo_continuo: api?.fluxo_continuo,
-    }
-    : null;
-  const data = summaryData || (typeof api?.json_data === 'string' ? safeJsonParse(api.json_data, {}) : (api?.json_data || {}));
+  const data = typeof api?.json_data === 'string' ? safeJsonParse(api.json_data, {}) : (api?.json_data || {});
   const arquivos = typeof api?.arquivos_json === 'string' ? safeJsonParse(api.arquivos_json, []) : (api?.arquivos_json || []);
   const rawArea = data.area || (Array.isArray(data.tags) && data.tags.length ? data.tags[0] : 'Geral');
   const titulo = data.titulo || api?.titulo || 'Sem título';
@@ -2354,73 +2106,6 @@ function applyFiltersAndRender({ resetPage } = { resetPage: false }) {
   if (resetPage) currentPage = 1;
 
   const termo = (searchInput?.value || '').trim();
-  setSearchVisualState();
-  const activeSort = normalizeSortValue(sortField || sortSelect?.value || 'prazo');
-  const serverSortSupported = isServerSortSupported(activeSort);
-  const hasAdvancedQuery = isAdvancedDashboardQueryActive();
-
-  if (dashboardDataMode === DASHBOARD_DATA_MODE.SERVER_PAGED_SUMMARY && (hasAdvancedQuery || !serverSortSupported)) {
-    showCardsLoadingState();
-    void ensureLegacyDatasetLoaded()
-      .then(() => {
-        buildFuseIndex();
-        generateDynamicFilters();
-        applyFiltersAndRender({ resetPage: true });
-      })
-      .catch((error) => {
-        console.error('Falha ao carregar dataset completo para filtros avançados:', error);
-      });
-    return;
-  }
-
-  if (dashboardDataMode === DASHBOARD_DATA_MODE.SERVER_PAGED_SUMMARY) {
-    const expectedSortBy = mapSortFieldToApi(activeSort);
-    const expectedSortOrder = mapSortDirectionToApi(sortDirection);
-    const expectedPage = Math.max(1, Number(currentPage || 1));
-    const needsServerReload = Boolean(
-      Number(serverPageMeta.page || 1) !== expectedPage ||
-      String(serverPageMeta.sortBy || '') !== expectedSortBy ||
-      String(serverPageMeta.sortOrder || '') !== expectedSortOrder
-    );
-
-    if (needsServerReload) {
-      showCardsLoadingState();
-      void loadEditais({ page: expectedPage })
-        .then(() => {
-          buildFuseIndex();
-          generateDynamicFilters();
-          applyFiltersAndRender({ resetPage: false });
-        })
-        .catch((error) => {
-          console.error('Falha ao carregar página de editais no modo paginado:', error);
-        });
-      return;
-    }
-
-    const total = Math.max(0, Number(serverPageMeta.total || editaisOriginais.length || 0));
-    const totalPages = Math.max(1, Number(serverPageMeta.totalPages || 1));
-    if (currentPage > totalPages) currentPage = totalPages;
-    const serverLimit = Math.max(1, Number(serverPageMeta.limit || PAGE_SIZE));
-    const startIdx = total === 0 ? 0 : ((currentPage - 1) * serverLimit) + 1;
-    const endIdx = total === 0 ? 0 : Math.min(startIdx + editaisOriginais.length - 1, total);
-
-    lastFiltered = [...editaisOriginais];
-    if (resultsMeta) {
-      const label = onlyFavoritos ? 'salvos' : 'editais';
-      resultsMeta.textContent = `Mostrando ${startIdx}-${endIdx} de ${total} ${label}`;
-    }
-
-    updateHeroStats(editaisOriginais, { globalStats: serverPageMeta.stats });
-    syncKpiButtons();
-    renderActiveFilters();
-    renderResultsStateHint(total);
-    renderEditais(container, editaisOriginais, {
-      emptyState: buildEmptyState({ total, termo }),
-    });
-    renderPagination(totalPages);
-    return;
-  }
-
   const searchContext = buildSearchQueryContext(termo);
   const textQuery = searchContext.textQuery;
   const textQueryLower = textQuery.toLowerCase();
@@ -2467,7 +2152,7 @@ function applyFiltersAndRender({ resetPage } = { resetPage: false }) {
   if (onlyFavoritos) filtered = filtered.filter(e => !!e.is_favorite);
 
   // 3) Ordenação
-  const sort = activeSort;
+  const sort = normalizeSortValue(sortField || sortSelect?.value || 'prazo');
   const directionFactor = sortDirection === 'desc' ? -1 : 1;
 
   const collate = (a, b) => String(a || '').localeCompare(String(b || ''), 'pt-BR', { sensitivity: 'base' });
@@ -2607,68 +2292,29 @@ function compareIsoDate(a, b) {
   return da < db ? -1 : da > db ? 1 : 0;
 }
 
-function computeOpenClosedTotals(items = []) {
-  const list = Array.isArray(items) ? items : [];
+function updateHeroStats(filtered) {
+  if (statTotal) statTotal.textContent = String(filtered.length);
+
   const now = new Date();
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
 
-  let openTotal = 0;
-  let closedTotal = 0;
+  let abertos = 0;
+  let fechados = 0;
 
-  for (const e of list) {
+  for (const e of filtered) {
     const t = parseAnyDateToTime(e.data_fechamento);
     // Sem data final: considera como aberto (melhor UX do que sumir com números)
     if (t === null) {
-      openTotal++;
+      abertos++;
       continue;
     }
-    // Data final no passado: fechado
-    if (t < todayStart) closedTotal++;
-    else openTotal++;
+    // Data final no passado (ou hoje): fechado
+    if (t < todayStart) fechados++;
+    else abertos++;
   }
 
-  return {
-    total: list.length,
-    openTotal,
-    closedTotal,
-  };
-}
-
-function normalizeHeroStatsFromMeta(globalStats, fallbackStats) {
-  const fallback = fallbackStats && typeof fallbackStats === 'object'
-    ? fallbackStats
-    : { total: 0, openTotal: 0, closedTotal: 0 };
-  if (!globalStats || typeof globalStats !== 'object') return fallback;
-
-  const totalRaw = Number(globalStats.total);
-  const openRaw = Number(globalStats.openTotal ?? globalStats.open_total);
-  const closedRaw = Number(globalStats.closedTotal ?? globalStats.closed_total);
-  const hasOpen = Number.isFinite(openRaw);
-  const hasClosed = Number.isFinite(closedRaw);
-  if (!Number.isFinite(totalRaw) || (!hasOpen && !hasClosed)) return fallback;
-
-  const total = Math.max(0, Math.trunc(totalRaw));
-  let openTotal = hasOpen ? Math.max(0, Math.trunc(openRaw)) : null;
-  let closedTotal = hasClosed ? Math.max(0, Math.trunc(closedRaw)) : null;
-
-  if (openTotal === null) openTotal = Math.max(0, total - Number(closedTotal || 0));
-  if (closedTotal === null) closedTotal = Math.max(0, total - Number(openTotal || 0));
-
-  openTotal = Math.max(0, Math.min(openTotal, total));
-  closedTotal = Math.max(0, Math.min(closedTotal, total));
-  if ((openTotal + closedTotal) !== total) {
-    closedTotal = Math.max(0, total - openTotal);
-  }
-
-  return { total, openTotal, closedTotal };
-}
-
-function updateHeroStats(filtered, { globalStats = null } = {}) {
-  const fallbackStats = computeOpenClosedTotals(filtered);
-  const resolvedStats = normalizeHeroStatsFromMeta(globalStats, fallbackStats);
-  if (statTotal) statTotal.textContent = String(resolvedStats.total);
-  if (statAbertos) statAbertos.textContent = String(resolvedStats.openTotal);
-  if (statFechados) statFechados.textContent = String(resolvedStats.closedTotal);
+  if (statAbertos) statAbertos.textContent = String(abertos);
+  if (statFechados) statFechados.textContent = String(fechados);
 }
 
 

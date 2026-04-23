@@ -6,7 +6,6 @@
     return;
   }
 
-  const fragment = document.createDocumentFragment();
   editais.forEach((edital) => {
     const card = document.createElement('article');
     card.className = 'edital-card';
@@ -95,9 +94,8 @@
       </button>
     `;
 
-    fragment.appendChild(card);
+    container.appendChild(card);
   });
-  container.appendChild(fragment);
 
   container.querySelectorAll('.share-btn').forEach((btn) => {
     btn.addEventListener('click', (e) => {
