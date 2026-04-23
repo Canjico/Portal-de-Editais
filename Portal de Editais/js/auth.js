@@ -7,6 +7,11 @@ export const API_BASE = 'https://atimus-api-acb4gfgagefcevb5.brazilsouth-01.azur
 const CLIENTE_TOKEN_KEY = 'cliente_token';
 const AUTH_DEBUG_TAG = '[DEBUG_AUTH][Portal]';
 const AUTH_DEBUG_STORAGE_KEY = 'athos_auth_debug';
+const AUTH_TRANSPORT_MODE_STORAGE_KEY = 'athos_auth_transport_mode_v1';
+const AUTH_COOKIE_FAILURE_STORAGE_KEY = 'athos_cookie_first_failures_v1';
+const AUTH_TOKEN_PREFERRED_TTL_MS = 5 * 60 * 1000;
+const AUTH_COOKIE_FAILURE_WINDOW_MS = 2 * 60 * 1000;
+const AUTH_COOKIE_FAILURE_THRESHOLD = 2;
 let authRedirectInProgress = false;
 
 export const IS_LOCAL =
@@ -264,6 +269,141 @@ function buildTokenHeaders(tokenValue = '') {
   };
 }
 
+function readSessionJson(key) {
+  try {
+    const raw = sessionStorage.getItem(String(key || ''));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function writeSessionJson(key, value) {
+  try {
+    sessionStorage.setItem(String(key || ''), JSON.stringify(value || {}));
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function removeSessionKey(key) {
+  try {
+    sessionStorage.removeItem(String(key || ''));
+  } catch (_) {}
+}
+
+function getUrlPathname(url) {
+  try {
+    return new URL(String(url || ''), window.location.origin).pathname || '';
+  } catch (_) {
+    return String(url || '');
+  }
+}
+
+function isKeyAuthenticatedEndpoint(pathname = '') {
+  const path = String(pathname || '').toLowerCase();
+  return (
+    path.includes('/cliente/me') ||
+    path.includes('/cliente/favoritos') ||
+    path.includes('/editais')
+  );
+}
+
+function clearAdaptiveTransportMode(reason = 'manual_reset') {
+  removeSessionKey(AUTH_TRANSPORT_MODE_STORAGE_KEY);
+  debugAuth('adaptive_token_preferred_expired_reset', { reason });
+}
+
+function resolveAdaptiveTransportMode({ hasStoredToken = false } = {}) {
+  if (!hasStoredToken) {
+    return { mode: 'cookie_first', adaptiveActive: false };
+  }
+
+  const now = Date.now();
+  const payload = readSessionJson(AUTH_TRANSPORT_MODE_STORAGE_KEY);
+  const mode = String(payload?.mode || '').trim().toLowerCase();
+  const expiresAt = Number(payload?.expiresAt || 0);
+
+  if (mode !== 'token_preferred' || !Number.isFinite(expiresAt) || expiresAt <= now) {
+    if (payload) clearAdaptiveTransportMode('expired_or_invalid');
+    return { mode: 'cookie_first', adaptiveActive: false };
+  }
+
+  return { mode: 'token_preferred', adaptiveActive: true, expiresAt };
+}
+
+function engageAdaptiveTokenPreferred({ reason = 'cookie_first_failures', endpointPath = '', status = 0 } = {}) {
+  const now = Date.now();
+  const expiresAt = now + AUTH_TOKEN_PREFERRED_TTL_MS;
+  const saved = writeSessionJson(AUTH_TRANSPORT_MODE_STORAGE_KEY, {
+    mode: 'token_preferred',
+    engagedAt: now,
+    expiresAt,
+    reason: String(reason || ''),
+    endpointPath: String(endpointPath || ''),
+    status: Number(status || 0),
+  });
+  if (saved) {
+    debugAuth('adaptive_token_preferred_engaged', {
+      reason,
+      endpointPath,
+      status: Number(status || 0),
+      ttlMs: AUTH_TOKEN_PREFERRED_TTL_MS,
+      expiresAt,
+    });
+  }
+  return saved;
+}
+
+function clearCookieFirstFailureTracker() {
+  removeSessionKey(AUTH_COOKIE_FAILURE_STORAGE_KEY);
+}
+
+function registerCookieFirstSuccess(endpointPath = '', responseStatus = 0) {
+  clearCookieFirstFailureTracker();
+  debugAuth('cookie_first_success', {
+    endpointPath,
+    status: Number(responseStatus || 0),
+  });
+}
+
+function registerCookieFirstFailure(endpointPath = '', responseStatus = 0) {
+  const now = Date.now();
+  const prev = readSessionJson(AUTH_COOKIE_FAILURE_STORAGE_KEY) || {};
+  const previousAt = Number(prev.lastFailureAt || 0);
+  const withinWindow = previousAt > 0 && (now - previousAt) <= AUTH_COOKIE_FAILURE_WINDOW_MS;
+  const prevFailures = withinWindow ? Number(prev.failures || 0) : 0;
+  const endpointBoost = isKeyAuthenticatedEndpoint(endpointPath) ? 2 : 1;
+  const failures = prevFailures + endpointBoost;
+
+  writeSessionJson(AUTH_COOKIE_FAILURE_STORAGE_KEY, {
+    failures,
+    lastFailureAt: now,
+    lastEndpointPath: String(endpointPath || ''),
+    lastStatus: Number(responseStatus || 0),
+  });
+
+  debugAuth('cookie_first_failure', {
+    endpointPath,
+    status: Number(responseStatus || 0),
+    failures,
+    endpointBoost,
+    threshold: AUTH_COOKIE_FAILURE_THRESHOLD,
+  });
+
+  if (failures >= AUTH_COOKIE_FAILURE_THRESHOLD) {
+    engageAdaptiveTokenPreferred({
+      reason: 'repeated_cookie_first_401_403',
+      endpointPath,
+      status: Number(responseStatus || 0),
+    });
+    clearCookieFirstFailureTracker();
+  }
+}
+
 /**
  * Estratégia de fetch:
  * - GET autenticado: cookie-first (sem headers customizados) para reduzir preflight.
@@ -271,6 +411,7 @@ function buildTokenHeaders(tokenValue = '') {
  */
 export async function apiFetch(pathOrUrl, options = {}) {
   const url = absolutize(pathOrUrl);
+  const endpointPath = getUrlPathname(url);
   const method = normalizeMethod(options.method);
 
   const baseHeaders = options.headers instanceof Headers
@@ -295,7 +436,54 @@ export async function apiFetch(pathOrUrl, options = {}) {
   };
 
   const shouldUseCookieFirstGet = method === 'GET' && !hasManualAuthHeader;
+  const adaptiveMode = resolveAdaptiveTransportMode({ hasStoredToken: Boolean(storedToken) });
+  const selectedMode = shouldUseCookieFirstGet
+    ? adaptiveMode.mode
+    : (hasManualAuthHeader ? 'manual_headers' : 'token_headers_default');
+  debugAuth('auth_transport_mode_selected', {
+    method,
+    endpointPath,
+    mode: selectedMode,
+    adaptiveActive: Boolean(adaptiveMode.adaptiveActive),
+    hasStoredToken: Boolean(storedToken),
+    hasManualAuthHeader: Boolean(hasManualAuthHeader),
+  });
+
   if (shouldUseCookieFirstGet) {
+    if (adaptiveMode.mode === 'token_preferred' && storedToken) {
+      const preferredHeaders = { ...baseHeaders, ...buildTokenHeaders(storedToken) };
+      const adaptiveResponse = await tryFetchOnce({
+        ...options,
+        method,
+        headers: preferredHeaders,
+        credentials: 'include',
+      });
+      if (adaptiveResponse) {
+        debugAuth('token_fallback_used', {
+          endpointPath,
+          reason: 'adaptive_token_preferred',
+          status: Number(adaptiveResponse.status || 0),
+        });
+        return adaptiveResponse;
+      }
+
+      const adaptiveNoCredentialsResponse = await tryFetchOnce({
+        ...options,
+        method,
+        headers: preferredHeaders,
+      });
+      if (adaptiveNoCredentialsResponse) {
+        debugAuth('token_fallback_used', {
+          endpointPath,
+          reason: 'adaptive_token_preferred_no_credentials',
+          status: Number(adaptiveNoCredentialsResponse.status || 0),
+        });
+        return adaptiveNoCredentialsResponse;
+      }
+
+      throw lastErr || new Error('Falha ao fazer requisição.');
+    }
+
     const cookieFirstResponse = await tryFetchOnce({
       ...options,
       method,
@@ -310,7 +498,12 @@ export async function apiFetch(pathOrUrl, options = {}) {
     );
 
     if (!needsTokenFallback && cookieFirstResponse) {
+      registerCookieFirstSuccess(endpointPath, cookieFirstResponse.status);
       return cookieFirstResponse;
+    }
+
+    if (needsTokenFallback) {
+      registerCookieFirstFailure(endpointPath, cookieFirstResponse.status);
     }
 
     const fallbackWithToken = storedToken ? mergedHeaders : { ...baseHeaders };
@@ -320,14 +513,28 @@ export async function apiFetch(pathOrUrl, options = {}) {
       headers: fallbackWithToken,
       credentials: 'include',
     });
-    if (cookieFallbackResponse) return cookieFallbackResponse;
+    if (cookieFallbackResponse) {
+      debugAuth('token_fallback_used', {
+        endpointPath,
+        reason: 'cookie_first_401_403',
+        status: Number(cookieFallbackResponse.status || 0),
+      });
+      return cookieFallbackResponse;
+    }
 
     const noCredentialsFallbackResponse = await tryFetchOnce({
       ...options,
       method,
       headers: fallbackWithToken,
     });
-    if (noCredentialsFallbackResponse) return noCredentialsFallbackResponse;
+    if (noCredentialsFallbackResponse) {
+      debugAuth('token_fallback_used', {
+        endpointPath,
+        reason: 'cookie_first_401_403_no_credentials',
+        status: Number(noCredentialsFallbackResponse.status || 0),
+      });
+      return noCredentialsFallbackResponse;
+    }
 
     if (cookieFirstResponse) return cookieFirstResponse;
     throw lastErr || new Error('Falha ao fazer requisição.');

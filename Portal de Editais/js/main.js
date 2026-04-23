@@ -2,7 +2,7 @@
    Athos / Atimus — Editais (UX/UI novo + filtros + paginação)
    ========================================================= */
 
-import { renderEditais } from './render.js?v=20260318.3';
+import { renderEditais } from './render.js?v=20260423.1';
 import {
   parseAnyDateToTime,
   buildSearchQueryContext,
@@ -55,7 +55,7 @@ import {
   resolvePasswordChangeRedirectTarget,
   resolveAuthFailureRedirectTarget,
   redirectWithAuthGuard,
-} from './auth.js?v=20260416.1';
+} from './auth.js?v=20260423.1';
 import { runDashboardBootstrapFlow } from './bootstrap-flows.js?v=20260416.1';
 import { readAuthHandoff } from './auth-handoff.js?v=20260422.1';
 
@@ -116,6 +116,19 @@ let bootstrapInitPromise = null;
 let uiEventsBound = false;
 const loadEditaisSingleFlight = createSingleFlight(() => loadEditais());
 const loadFavoritosSingleFlight = createSingleFlight(() => loadFavoritos());
+let dashboardDataMode = 'server_paged';
+let legacyDatasetLoaded = false;
+let legacyDatasetLoadingPromise = null;
+let serverPageMeta = {
+  page: 1,
+  limit: PAGE_SIZE,
+  total: 0,
+  totalPages: 1,
+  hasNext: false,
+  hasPrev: false,
+  sortBy: 'prazo',
+  sortOrder: 'asc',
+};
 
 // Filtros aplicados (só mudam quando clicar em "Aplicar filtros")
 let applied = {
@@ -428,7 +441,7 @@ async function init() {
     loadFavoritos: loadFavoritosSingleFlight,
     onEditaisReady: async () => {
       applyFavoritosToLoadedEditais();
-      if (hasPersonalizedRelevance(editaisOriginais)) {
+      if (dashboardDataMode !== 'server_paged' && hasPersonalizedRelevance(editaisOriginais)) {
         setSortField('relevancia', { resetDirection: true });
       }
       buildFuseIndex();
@@ -1050,13 +1063,8 @@ function cssEscape(value) {
   return String(value ?? '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
-
-// =========================
-// DATA LOAD
-// =========================
-async function loadEditais() {
+function showCardsLoadingState() {
   if (!container) return;
-
   container.innerHTML = `
     <div class="loading-container">
       <div class="spinner"></div>
@@ -1068,9 +1076,120 @@ async function loadEditais() {
       </div>
     </div>
   `;
+}
+
+function mapSortFieldToApi(sortValue) {
+  const normalized = normalizeSortValue(sortValue || 'prazo');
+  if (normalized === 'atualizado' || normalized === 'atualizacao') return 'atualizado';
+  if (normalized === 'titulo') return 'titulo';
+  if (normalized === 'relevancia') return 'relevancia';
+  return 'prazo';
+}
+
+function mapSortDirectionToApi(directionValue) {
+  return String(directionValue || '').toLowerCase() === 'desc' ? 'desc' : 'asc';
+}
+
+function isServerSortSupported(sortValue) {
+  const normalized = normalizeSortValue(sortValue || 'prazo');
+  return (
+    normalized === 'prazo' ||
+    normalized === 'atualizado' ||
+    normalized === 'atualizacao' ||
+    normalized === 'titulo' ||
+    normalized === 'relevancia'
+  );
+}
+
+function isAdvancedDashboardQueryActive() {
+  const hasSearch = String(searchInput?.value || '').trim().length > 0;
+  return Boolean(
+    hasSearch ||
+    hasAppliedFilters() ||
+    onlyFavoritos ||
+    kpiFilter !== 'all' ||
+    assistantPanelContext
+  );
+}
+
+function buildEditaisListEndpoint({ page = 1, limit = PAGE_SIZE, summary = true } = {}) {
+  const params = new URLSearchParams();
+  params.set('view', 'card');
+  params.set('modo', 'card');
+  params.set('include_relevance', 'true');
+  params.set('relevance_mode', 'fast');
+  params.set('sort_by', mapSortFieldToApi(sortField));
+  params.set('sort_order', mapSortDirectionToApi(sortDirection));
+  if (summary) params.set('summary', '1');
+  if (Number.isFinite(Number(page)) && Number(page) > 0) params.set('page', String(Math.trunc(Number(page))));
+  if (Number.isFinite(Number(limit)) && Number(limit) > 0) params.set('limit', String(Math.trunc(Number(limit))));
+  return `/editais?${params.toString()}`;
+}
+
+function normalizeServerPageMeta(payload = {}, fallbackPage = 1) {
+  const page = Math.max(1, Number(payload?.page || fallbackPage || 1));
+  const limit = Math.max(1, Number(payload?.limit || PAGE_SIZE));
+  const total = Math.max(0, Number(payload?.total || 0));
+  const totalPages = Math.max(1, Number(payload?.total_pages || 1));
+  return {
+    page,
+    limit,
+    total,
+    totalPages,
+    hasNext: Boolean(payload?.has_next),
+    hasPrev: Boolean(payload?.has_prev),
+    sortBy: String(payload?.sort_by || mapSortFieldToApi(sortField)),
+    sortOrder: String(payload?.sort_order || mapSortDirectionToApi(sortDirection)),
+  };
+}
+
+function extractEditaisItemsFromPayload(data) {
+  if (Array.isArray(data)) {
+    return {
+      items: data,
+      wrapped: false,
+      pageMeta: normalizeServerPageMeta({}, currentPage),
+    };
+  }
+
+  const items = Array.isArray(data?.items)
+    ? data.items
+    : (Array.isArray(data?.editais) ? data.editais : (Array.isArray(data?.data) ? data.data : []));
+
+  return {
+    items,
+    wrapped: Boolean(data && typeof data === 'object' && Array.isArray(data?.items)),
+    pageMeta: normalizeServerPageMeta(data, currentPage),
+  };
+}
+
+async function ensureLegacyDatasetLoaded() {
+  if (legacyDatasetLoaded && dashboardDataMode === 'legacy_full') return true;
+  if (legacyDatasetLoadingPromise) {
+    await legacyDatasetLoadingPromise;
+    return true;
+  }
+  legacyDatasetLoadingPromise = loadEditais({ page: 1, forceLegacy: true })
+    .finally(() => {
+      legacyDatasetLoadingPromise = null;
+    });
+  await legacyDatasetLoadingPromise;
+  return true;
+}
+
+
+// =========================
+// DATA LOAD
+// =========================
+async function loadEditais({ page = 1, forceLegacy = false } = {}) {
+  if (!container) return;
+  showCardsLoadingState();
 
   try {
-    const { res, data } = await apiFetchJson('/editais?modo=card&include_relevance=true&relevance_mode=fast', { method: 'GET' });
+    const endpoint = forceLegacy
+      ? buildEditaisListEndpoint({ page: null, limit: null, summary: true })
+      : buildEditaisListEndpoint({ page, limit: PAGE_SIZE, summary: true });
+    const { res, data } = await apiFetchJson(endpoint, { method: 'GET' });
 
     if (!res.ok) {
       if (isPasswordChangeRequiredResponse(res, data) || isPasswordChangeRequiredPayload(data)) {
@@ -1097,12 +1216,44 @@ async function loadEditais() {
       throw new Error(`Erro na API (${res.status})`);
     }
 
-    const rawList =
-      Array.isArray(data) ? data :
-      (Array.isArray(data?.editais) ? data.editais :
-      (Array.isArray(data?.data) ? data.data : []));
+    const extracted = extractEditaisItemsFromPayload(data);
+    const rawList = Array.isArray(extracted.items) ? extracted.items : [];
 
     editaisOriginais = rawList.map(normalizeEdital).filter(Boolean);
+    applyFavoritosToLoadedEditais();
+
+    if (forceLegacy) {
+      dashboardDataMode = 'legacy_full';
+      legacyDatasetLoaded = true;
+      serverPageMeta = {
+        page: 1,
+        limit: Math.max(1, editaisOriginais.length || PAGE_SIZE),
+        total: editaisOriginais.length,
+        totalPages: 1,
+        hasNext: false,
+        hasPrev: false,
+        sortBy: mapSortFieldToApi(sortField),
+        sortOrder: mapSortDirectionToApi(sortDirection),
+      };
+      currentPage = 1;
+      return;
+    }
+
+    dashboardDataMode = 'server_paged';
+    legacyDatasetLoaded = false;
+    serverPageMeta = extracted.wrapped
+      ? extracted.pageMeta
+      : {
+        page: 1,
+        limit: PAGE_SIZE,
+        total: editaisOriginais.length,
+        totalPages: Math.max(1, Math.ceil(editaisOriginais.length / PAGE_SIZE)),
+        hasNext: false,
+        hasPrev: false,
+        sortBy: mapSortFieldToApi(sortField),
+        sortOrder: mapSortDirectionToApi(sortDirection),
+      };
+    currentPage = serverPageMeta.page;
   } catch (e) {
     console.error('Erro ao carregar editais:', e);
     container.innerHTML = `
@@ -1131,7 +1282,7 @@ async function loadFavoritos() {
   // Se o endpoint ainda não existir no backend, a UI segue normalmente.
   favoritosSet = new Set();
   try {
-    const { res, data } = await apiFetchJson('/cliente/favoritos', { method: 'GET' });
+    const { res, data } = await apiFetchJson('/cliente/favoritos?ids_only=1', { method: 'GET' });
     if (res.ok) {
       const ids = Array.isArray(data) ? data : (Array.isArray(data?.ids) ? data.ids : []);
       favoritosSet = new Set((ids || []).map(v => String(v)));
@@ -1188,16 +1339,24 @@ async function toggleFavorito(editalId) {
   if (!edital) return { ok: false };
 
   const estavaSalvo = !!edital.is_favorite;
+  const proximoEstado = !estavaSalvo;
 
-  await salvarOuRemoverFavorito(editalId, !estavaSalvo);
-
-  edital.is_favorite = !estavaSalvo;
-  if (edital.is_favorite) favoritosSet.add(idStr);
+  // Atualização otimista: evita sensação de travamento ao favoritar/desfavoritar.
+  edital.is_favorite = proximoEstado;
+  if (proximoEstado) favoritosSet.add(idStr);
   else favoritosSet.delete(idStr);
-
   syncSavedBadge();
 
-  return { ok: true, is_favorite: edital.is_favorite, edital };
+  try {
+    await salvarOuRemoverFavorito(editalId, proximoEstado);
+    return { ok: true, is_favorite: edital.is_favorite, edital };
+  } catch (error) {
+    edital.is_favorite = estavaSalvo;
+    if (estavaSalvo) favoritosSet.add(idStr);
+    else favoritosSet.delete(idStr);
+    syncSavedBadge();
+    throw error;
+  }
 }
 
 function updateSaveButtonUI(btn, isSaved) {
@@ -1217,7 +1376,36 @@ function updateSaveButtonUI(btn, isSaved) {
 
 
 function normalizeEdital(api) {
-  const data = typeof api?.json_data === 'string' ? safeJsonParse(api.json_data, {}) : (api?.json_data || {});
+  const hasSummaryShape = Boolean(
+    api &&
+    !api?.json_data &&
+    (
+      Object.prototype.hasOwnProperty.call(api, 'instituicao') ||
+      Object.prototype.hasOwnProperty.call(api, 'area') ||
+      Object.prototype.hasOwnProperty.call(api, 'instrumento') ||
+      Object.prototype.hasOwnProperty.call(api, 'publico_alvo')
+    )
+  );
+  const summaryData = hasSummaryShape
+    ? {
+      titulo: api?.titulo || '',
+      objetivo: api?.descricao || '',
+      descricao: api?.descricao || '',
+      publico_alvo: api?.publico_alvo || '',
+      icone_instituicao: api?.icone_instituicao || '',
+      instituicao: api?.instituicao || '',
+      estado: api?.estado || 'BR',
+      area: api?.area || 'Geral',
+      instrumento: api?.instrumento || '',
+      tipo: api?.tipo || '',
+      valor_total: api?.valor_total || '',
+      tags: Array.isArray(api?.tags) ? api.tags : [],
+      data_final_submissao: api?.data_final_submissao || api?.data_fechamento || null,
+      data_fechamento: api?.data_fechamento || api?.data_final_submissao || null,
+      fluxo_continuo: api?.fluxo_continuo,
+    }
+    : null;
+  const data = summaryData || (typeof api?.json_data === 'string' ? safeJsonParse(api.json_data, {}) : (api?.json_data || {}));
   const arquivos = typeof api?.arquivos_json === 'string' ? safeJsonParse(api.arquivos_json, []) : (api?.arquivos_json || []);
   const rawArea = data.area || (Array.isArray(data.tags) && data.tags.length ? data.tags[0] : 'Geral');
   const titulo = data.titulo || api?.titulo || 'Sem título';
@@ -2106,6 +2294,73 @@ function applyFiltersAndRender({ resetPage } = { resetPage: false }) {
   if (resetPage) currentPage = 1;
 
   const termo = (searchInput?.value || '').trim();
+  setSearchVisualState();
+  const activeSort = normalizeSortValue(sortField || sortSelect?.value || 'prazo');
+  const serverSortSupported = isServerSortSupported(activeSort);
+  const hasAdvancedQuery = isAdvancedDashboardQueryActive();
+
+  if (dashboardDataMode === 'server_paged' && (hasAdvancedQuery || !serverSortSupported)) {
+    showCardsLoadingState();
+    void ensureLegacyDatasetLoaded()
+      .then(() => {
+        buildFuseIndex();
+        generateDynamicFilters();
+        applyFiltersAndRender({ resetPage: true });
+      })
+      .catch((error) => {
+        console.error('Falha ao carregar dataset completo para filtros avançados:', error);
+      });
+    return;
+  }
+
+  if (dashboardDataMode === 'server_paged') {
+    const expectedSortBy = mapSortFieldToApi(activeSort);
+    const expectedSortOrder = mapSortDirectionToApi(sortDirection);
+    const expectedPage = Math.max(1, Number(currentPage || 1));
+    const needsServerReload = Boolean(
+      Number(serverPageMeta.page || 1) !== expectedPage ||
+      String(serverPageMeta.sortBy || '') !== expectedSortBy ||
+      String(serverPageMeta.sortOrder || '') !== expectedSortOrder
+    );
+
+    if (needsServerReload) {
+      showCardsLoadingState();
+      void loadEditais({ page: expectedPage })
+        .then(() => {
+          buildFuseIndex();
+          generateDynamicFilters();
+          applyFiltersAndRender({ resetPage: false });
+        })
+        .catch((error) => {
+          console.error('Falha ao carregar página de editais no modo paginado:', error);
+        });
+      return;
+    }
+
+    const total = Math.max(0, Number(serverPageMeta.total || editaisOriginais.length || 0));
+    const totalPages = Math.max(1, Number(serverPageMeta.totalPages || 1));
+    if (currentPage > totalPages) currentPage = totalPages;
+    const serverLimit = Math.max(1, Number(serverPageMeta.limit || PAGE_SIZE));
+    const startIdx = total === 0 ? 0 : ((currentPage - 1) * serverLimit) + 1;
+    const endIdx = total === 0 ? 0 : Math.min(startIdx + editaisOriginais.length - 1, total);
+
+    lastFiltered = [...editaisOriginais];
+    if (resultsMeta) {
+      const label = onlyFavoritos ? 'salvos' : 'editais';
+      resultsMeta.textContent = `Mostrando ${startIdx}-${endIdx} de ${total} ${label}`;
+    }
+
+    updateHeroStats(editaisOriginais);
+    syncKpiButtons();
+    renderActiveFilters();
+    renderResultsStateHint(total);
+    renderEditais(container, editaisOriginais, {
+      emptyState: buildEmptyState({ total, termo }),
+    });
+    renderPagination(totalPages);
+    return;
+  }
+
   const searchContext = buildSearchQueryContext(termo);
   const textQuery = searchContext.textQuery;
   const textQueryLower = textQuery.toLowerCase();
@@ -2152,7 +2407,7 @@ function applyFiltersAndRender({ resetPage } = { resetPage: false }) {
   if (onlyFavoritos) filtered = filtered.filter(e => !!e.is_favorite);
 
   // 3) Ordenação
-  const sort = normalizeSortValue(sortField || sortSelect?.value || 'prazo');
+  const sort = activeSort;
   const directionFactor = sortDirection === 'desc' ? -1 : 1;
 
   const collate = (a, b) => String(a || '').localeCompare(String(b || ''), 'pt-BR', { sensitivity: 'base' });
