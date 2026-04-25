@@ -71,3 +71,60 @@ export function readSsePayloadsFromBuffer(rawBuffer, incomingChunk, options = {}
 
   return { payloads, remainder };
 }
+
+export function applyChatStreamPayload(currentState, payload) {
+  const state = {
+    text: '',
+    sources: [],
+    isTyping: true,
+    done: false,
+    donePayload: null,
+    meta: null,
+    error: '',
+    ...(currentState && typeof currentState === 'object' ? currentState : {}),
+  };
+  const event = payload && typeof payload === 'object' ? payload : {};
+  const eventType = String(event.type || '').trim().toLowerCase();
+
+  if (eventType === 'start') {
+    return { ...state };
+  }
+
+  if (eventType === 'meta') {
+    return { ...state, meta: event };
+  }
+
+  if (eventType === 'delta') {
+    const incoming = String(event.text || '');
+    if (!incoming) return { ...state };
+    return { ...state, text: `${String(state.text || '')}${incoming}` };
+  }
+
+  if (eventType === 'sources') {
+    const sources = Array.isArray(event.sources) ? event.sources : [];
+    return { ...state, sources };
+  }
+
+  if (eventType === 'done') {
+    const finalReply = String(event.reply || event.text || '').trim();
+    const nextText = finalReply || String(state.text || '');
+    return {
+      ...state,
+      text: nextText,
+      done: true,
+      isTyping: false,
+      donePayload: event,
+    };
+  }
+
+  if (eventType === 'error') {
+    return {
+      ...state,
+      error: String(event.message || 'Falha no stream').trim(),
+      done: true,
+      isTyping: false,
+    };
+  }
+
+  return { ...state };
+}

@@ -40,6 +40,11 @@ import {
   normalizeDashboardAssistantPlan,
 } from './chat-dashboard-contract.js?v=20260403.1';
 import { createSingleFlight } from './bootstrap-utils.js?v=20260415.1';
+import { createAbortableRequestTracker } from './chat-stream-controller.js?v=20260425.1';
+import {
+  applyChatStreamPayload,
+  readSsePayloadsFromBuffer,
+} from './chat-stream-sse.js?v=20260425.1';
 
 // =========================
 // CONFIGURAÇÕES & SEGURANÇA
@@ -47,6 +52,7 @@ import { createSingleFlight } from './bootstrap-utils.js?v=20260415.1';
 import {
   API_BASE,
   LOGIN_URL,
+  apiFetch,
   bootstrapAuthFromUrl,
   buildLoginUrlWithNext,
   apiFetchJson,
@@ -277,6 +283,7 @@ const assistantBackdrop = document.getElementById('assistantBackdrop');
 const ASSISTANT_OVERLAY_BREAKPOINT = '(max-width: 1279px)';
 
 let botIsTyping = false;
+const chatRequestTracker = createAbortableRequestTracker();
 let chatState = createChatSessionState();
 let chatQuickPromptsTransitionCleanup = null;
 
@@ -680,7 +687,11 @@ function setChatOpen(nextOpen, { focusInput = false, skipWelcome = false } = {})
   syncChatLauncherVisibility();
   updateChatHeader();
 
-  if (!open) return;
+  if (!open) {
+    chatRequestTracker.abortActiveController();
+    setChatBusy(false);
+    return;
+  }
 
   scrollToBottom();
   if (!skipWelcome && messageContainer?.children.length === 0) {
@@ -3375,14 +3386,16 @@ function addMessage(text, sender = 'bot', sources = null, opts = {}) {
   return msg;
 }
 
-function setMessageText(msgEl, text, sources = null) {
+function setMessageText(msgEl, text, sources = null, opts = {}) {
   if (!msgEl) return;
   const bubble = msgEl.querySelector('.bubble');
   if (bubble) bubble.innerHTML = renderSimpleMarkdown(text);
   if (msgEl.classList.contains('bot')) {
     applySourcesDetails(msgEl, sources);
   }
-  msgEl.classList.remove('is-typing');
+  if (!opts?.keepTyping) {
+    msgEl.classList.remove('is-typing');
+  }
 }
 
 function buildSourcesDetails(sources) {
@@ -3430,6 +3443,129 @@ function buildSourcesDetails(sources) {
 
   details.appendChild(ul);
   return details;
+}
+
+function updateStreamTypingMessage(msgEl, streamState, { forceDone = false } = {}) {
+  if (!msgEl) return;
+  const finalText = String(streamState?.text || '').trim() || '...';
+  const normalizedSources = normalizeSources(streamState?.sources);
+  setMessageText(msgEl, finalText, normalizedSources, { keepTyping: !forceDone && !streamState?.done });
+}
+
+function consumeSsePayload(typingMsg, streamState, payload) {
+  const nextState = applyChatStreamPayload(streamState, payload);
+  if (Array.isArray(nextState?.sources)) {
+    nextState.sources = normalizeSources(nextState.sources);
+  }
+
+  const shouldRefreshText =
+    payload?.type === 'delta' ||
+    payload?.type === 'sources' ||
+    payload?.type === 'done';
+
+  if (shouldRefreshText) {
+    updateStreamTypingMessage(typingMsg, nextState, { forceDone: payload?.type === 'done' });
+    scrollToBottom();
+  }
+  return nextState;
+}
+
+async function tryChatStreamRequest({
+  endpoint,
+  requestBody,
+  typingMsg,
+}) {
+  const controller = new AbortController();
+  chatRequestTracker.setActiveController(controller);
+
+  let streamState = {
+    text: '',
+    sources: [],
+    isTyping: true,
+    done: false,
+    donePayload: null,
+    meta: null,
+    error: '',
+  };
+  let sseBuffer = '';
+
+  try {
+    const response = await apiFetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody || {}),
+      signal: controller.signal,
+    });
+
+    if (!response?.ok || !response.body) {
+      return { ok: false, status: Number(response?.status || 0) };
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+
+      const chunkText = decoder.decode(value, { stream: true });
+      const parsed = readSsePayloadsFromBuffer(sseBuffer, chunkText);
+      sseBuffer = parsed.remainder;
+
+      for (const payload of parsed.payloads) {
+        streamState = consumeSsePayload(typingMsg, streamState, payload);
+      }
+    }
+
+    const trailing = decoder.decode();
+    if (trailing) {
+      const parsedTrailing = readSsePayloadsFromBuffer(sseBuffer, trailing);
+      sseBuffer = parsedTrailing.remainder;
+      for (const payload of parsedTrailing.payloads) {
+        streamState = consumeSsePayload(typingMsg, streamState, payload);
+      }
+    }
+
+    if (!streamState.done && String(sseBuffer || '').trim()) {
+      const finalPass = readSsePayloadsFromBuffer('', `${sseBuffer}\n\n`);
+      for (const payload of finalPass.payloads) {
+        streamState = consumeSsePayload(typingMsg, streamState, payload);
+      }
+      sseBuffer = finalPass.remainder;
+    }
+
+    if (streamState.error) {
+      return { ok: false, status: 0, error: streamState.error };
+    }
+
+    if (!streamState.done) {
+      return { ok: false, status: 0, error: 'stream-incomplete' };
+    }
+
+    const extracted = extractEmbeddedSources(streamState.text || '');
+    const finalText = normalizeBotText(extracted.text || streamState.text || '');
+    const finalSources = normalizeSources(streamState.sources, extracted.names);
+    setMessageText(typingMsg, finalText, finalSources);
+
+    return {
+      ok: true,
+      text: finalText,
+      sources: finalSources,
+      donePayload: streamState.donePayload || null,
+    };
+  } catch (err) {
+    if (err?.name === 'AbortError') {
+      return { ok: false, aborted: true };
+    }
+    console.warn('[CHAT][stream] falha no stream SSE', err);
+    return {
+      ok: false,
+      status: 0,
+      error: String(err?.message || err || 'stream-error'),
+    };
+  } finally {
+    chatRequestTracker.clearActiveController(controller);
+  }
 }
 
 
@@ -4238,7 +4374,11 @@ function resolveBackendSearchDecision({ data, question, backendOptions, backendS
 }
 
 async function handleChatSend(options = {}) {
-  if (botIsTyping) return;
+  if (botIsTyping) {
+    const aborted = chatRequestTracker.abortActiveController();
+    if (!aborted) return;
+    setChatBusy(false);
+  }
   if (!hasPersonalizationConsent()) {
     showToast('Ative cookies de personalização em Perfil > Privacidade > Cookies para usar o chat.', 'info');
     return;
@@ -4310,10 +4450,50 @@ async function handleChatSend(options = {}) {
   const contextualEditalId = getActiveEditalContext()?.editalId ?? null;
   if (!contextualEditalId) {
     setChatBusy(true);
-    const typingMsg = addMessage('digitando...', 'bot', null, { isTyping: true });
+    const typingMsg = addMessage('pensando...', 'bot', null, { isTyping: true });
 
     try {
       const dashboardContext = buildDashboardIntelligenceContext();
+      const streamOutcome = await tryChatStreamRequest({
+        endpoint: '/chat/stream',
+        requestBody: {
+          message: question,
+          question,
+          state: chatState,
+          dashboard_context: dashboardContext,
+        },
+        typingMsg,
+      });
+
+      if (streamOutcome.ok) {
+        const donePayload = streamOutcome?.donePayload && typeof streamOutcome.donePayload === 'object'
+          ? streamOutcome.donePayload
+          : {};
+        const hasBackendState = Boolean(donePayload?.state && typeof donePayload.state === 'object');
+
+        if (hasBackendState) {
+          chatState = ensureChatSessionState(donePayload.state);
+          persistChatState(chatState);
+          updateChatHeader();
+        } else {
+          chatState = appendConversationTurn(chatState, 'assistant', streamOutcome.text || '');
+          persistChatState(chatState);
+        }
+
+        const streamOptions = Array.isArray(donePayload?.options) ? donePayload.options : [];
+        if (donePayload?.should_search) {
+          attachEditaisOptions(
+            typingMsg,
+            question,
+            streamOptions.length ? streamOptions : null,
+            null
+          );
+        }
+        return;
+      }
+      if (streamOutcome.aborted) return;
+
+      setMessageText(typingMsg, 'digitando...', null, { keepTyping: true });
       const { res, data } = await apiFetchJson('/chat/dashboard-intelligence', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -4404,10 +4584,52 @@ async function handleChatSend(options = {}) {
   }
 
   setChatBusy(true);
-  const typingMsg = addMessage('digitando...', 'bot', null, { isTyping: true });
+  const typingMsg = addMessage('pensando...', 'bot', null, { isTyping: true });
   const canApplyDashboardSearch = !contextualEditalId;
 
   try {
+    const streamEndpoint = contextualEditalId
+      ? `/chat/edital/${encodeURIComponent(contextualEditalId)}/stream`
+      : '/chat/stream';
+    const streamOutcome = await tryChatStreamRequest({
+      endpoint: streamEndpoint,
+      requestBody: { message: question, question, state: chatState },
+      typingMsg,
+    });
+
+    if (streamOutcome.ok) {
+      const donePayload = streamOutcome?.donePayload && typeof streamOutcome.donePayload === 'object'
+        ? streamOutcome.donePayload
+        : {};
+      const hasBackendState = Boolean(donePayload?.state && typeof donePayload.state === 'object');
+
+      if (Object.prototype.hasOwnProperty.call(donePayload || {}, 'state')) {
+        if (hasBackendState) {
+          chatState = ensureChatSessionState(donePayload.state);
+          persistChatState(chatState);
+          updateChatHeader();
+        } else {
+          clearActiveEditalContext({ clearAssistantContext: true });
+        }
+      } else {
+        chatState = appendConversationTurn(chatState, 'assistant', streamOutcome.text || '');
+        persistChatState(chatState);
+      }
+
+      const streamOptions = Array.isArray(donePayload?.options) ? donePayload.options : [];
+      if (canApplyDashboardSearch && donePayload?.should_search) {
+        attachEditaisOptions(
+          typingMsg,
+          question,
+          streamOptions.length ? streamOptions : null,
+          null
+        );
+      }
+      return;
+    }
+    if (streamOutcome.aborted) return;
+
+    setMessageText(typingMsg, 'digitando...', null, { keepTyping: true });
     const endpoint = contextualEditalId ? `/chat/edital/${encodeURIComponent(contextualEditalId)}` : '/chat';
 
     const { res, data } = await apiFetchJson(endpoint, {
