@@ -290,6 +290,7 @@ let botIsTyping = false;
 const chatRequestTracker = createAbortableRequestTracker();
 let chatState = createChatSessionState();
 let chatQuickPromptsTransitionCleanup = null;
+let activeLegacyAssistantLoading = null;
 
 function persistChatState(nextState = chatState) {
   chatState = saveChatSessionState(ensureChatSessionState(nextState));
@@ -692,6 +693,7 @@ function setChatOpen(nextOpen, { focusInput = false, skipWelcome = false } = {})
   updateChatHeader();
 
   if (!open) {
+    stopLegacyAssistantLoading(activeLegacyAssistantLoading);
     chatRequestTracker.abortActiveController();
     setChatBusy(false);
     return;
@@ -3227,11 +3229,18 @@ function stripHtmlPreserveBreaks(htmlStr) {
   return (tmp.textContent || tmp.innerText || '').trim();
 }
 
+function sanitizeAssistantReplyText(text) {
+  return String(text || '')
+    .replace(/^\s*Base:\s*todos os cards carregados\.?\s*$/gim, '')
+    .replace(/(?:\r?\n){3,}/g, '\n\n')
+    .trim();
+}
+
 function normalizeBotText(value) {
   const s = String(value ?? '').trim();
   if (!s) return '';
-  if (s.includes('<') && s.includes('>')) return stripHtmlPreserveBreaks(s);
-  return s;
+  const text = s.includes('<') && s.includes('>') ? stripHtmlPreserveBreaks(s) : s;
+  return sanitizeAssistantReplyText(text);
 }
 
 function normalizeConciseBotText(value, { maxLines = 3 } = {}) {
@@ -3318,7 +3327,7 @@ function addMessage(text, sender = 'bot', sources = null, opts = {}) {
   const bubble = document.createElement('div');
   bubble.className = 'bubble';
   if (sender === 'bot') {
-    bubble.innerHTML = renderSimpleMarkdown(text);
+    bubble.innerHTML = renderSimpleMarkdown(sanitizeAssistantReplyText(text));
   } else {
     bubble.textContent = String(text ?? '');
   }
@@ -3334,13 +3343,51 @@ function addMessage(text, sender = 'bot', sources = null, opts = {}) {
 function setMessageText(msgEl, text, sources = null, opts = {}) {
   if (!msgEl) return;
   const bubble = msgEl.querySelector('.bubble');
-  if (bubble) bubble.innerHTML = renderSimpleMarkdown(text);
+  if (bubble) bubble.innerHTML = renderSimpleMarkdown(sanitizeAssistantReplyText(text));
   if (msgEl.classList.contains('bot')) {
     applySourcesDetails(msgEl, sources);
   }
   if (!opts?.keepTyping) {
     msgEl.classList.remove('is-typing');
   }
+}
+
+const LEGACY_ASSISTANT_LOADING_TEXTS = [
+  'Analisando os editais...',
+  'Aplicando filtros...',
+  'Conferindo os cards...',
+  'Montando resposta...',
+];
+
+function stopLegacyAssistantLoading(controller) {
+  if (!controller || controller.stopped) return;
+  if (controller.intervalId) clearInterval(controller.intervalId);
+  controller.stopped = true;
+  if (activeLegacyAssistantLoading === controller) {
+    activeLegacyAssistantLoading = null;
+  }
+}
+
+function startLegacyAssistantLoading(messageElement) {
+  stopLegacyAssistantLoading(activeLegacyAssistantLoading);
+
+  const controller = {
+    intervalId: null,
+    stopped: false,
+  };
+  let index = 0;
+
+  activeLegacyAssistantLoading = controller;
+  setMessageText(messageElement, LEGACY_ASSISTANT_LOADING_TEXTS[index], null, { keepTyping: true });
+
+  controller.intervalId = setInterval(() => {
+    if (controller.stopped) return;
+    index = (index + 1) % LEGACY_ASSISTANT_LOADING_TEXTS.length;
+    setMessageText(messageElement, LEGACY_ASSISTANT_LOADING_TEXTS[index], null, { keepTyping: true });
+    scrollToBottom();
+  }, 800);
+
+  return controller;
 }
 
 function updateStreamTypingMessage(msgEl, streamState, { forceDone = false } = {}) {
@@ -3525,6 +3572,46 @@ const DASHBOARD_LISTING_QUESTION_HINTS = [
   'edital de',
 ];
 
+const DASHBOARD_LISTING_ACTION_HINTS = [
+  'mostre',
+  'mostrar',
+  'liste',
+  'listar',
+  'quais',
+  'quantos',
+  'tem',
+  'buscar',
+  'busque',
+  'busca',
+  'procura',
+  'procure',
+  'procurar',
+  'oportunidade',
+  'oportunidades',
+  'chamada',
+  'chamadas',
+  'programa',
+  'programas',
+];
+
+const DASHBOARD_OPPORTUNITY_HINTS = [
+  'edital',
+  'editais',
+  'oportunidade',
+  'oportunidades',
+  'chamada',
+  'chamadas',
+  'programa',
+  'programas',
+  'fomento',
+  'financiamento',
+  'apoio',
+  'linha',
+  'linhas',
+  'selecao',
+  'selecoes',
+];
+
 const CHAT_REFINE_HINTS = [
   'quero edital', 'quero editais', 'quero buscar', 'quero buscar algo',
   'me mostra oportunidade', 'me mostra oportunidades', 'tem alguma oportunidade',
@@ -3650,6 +3737,10 @@ function isDashboardListingQuestion(question) {
   const normalizedQuery = normalizeAssistantQuery(question);
   if (!normalizedQuery) return false;
   if (messageHasAnyPhrase(normalizedQuery, DASHBOARD_LISTING_QUESTION_HINTS)) return true;
+
+  const hasListingAction = messageHasAnyPhrase(normalizedQuery, DASHBOARD_LISTING_ACTION_HINTS);
+  const hasOpportunityTerm = messageHasAnyPhrase(normalizedQuery, DASHBOARD_OPPORTUNITY_HINTS);
+  if (hasListingAction && hasOpportunityTerm) return true;
 
   return (
     /\bmostre\s+(os\s+|as\s+)?editais\b/.test(normalizedQuery) ||
@@ -4300,6 +4391,7 @@ function resolveBackendSearchDecision({ data, question, backendOptions, backendS
 async function handleChatSend(options = {}) {
   if (botIsTyping) {
     const aborted = chatRequestTracker.abortActiveController();
+    stopLegacyAssistantLoading(activeLegacyAssistantLoading);
     if (!aborted) return;
     setChatBusy(false);
   }
@@ -4374,14 +4466,17 @@ async function handleChatSend(options = {}) {
   const contextualEditalId = getActiveEditalContext()?.editalId ?? null;
   if (!contextualEditalId && isDashboardListingQuestion(question)) {
     setChatBusy(true);
-    const typingMsg = addMessage('pensando...', 'bot', null, { isTyping: true });
+    const typingMsg = addMessage('Analisando os editais...', 'bot', null, { isTyping: true });
+    const requestController = new AbortController();
+    chatRequestTracker.setActiveController(requestController);
+    const loadingController = startLegacyAssistantLoading(typingMsg);
 
     try {
       const dashboardContext = buildDashboardIntelligenceContext();
-      setMessageText(typingMsg, 'digitando...', null, { keepTyping: true });
       const { res, data } = await apiFetchJson('/chat/dashboard-intelligence', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: requestController.signal,
         body: JSON.stringify({
           message: question,
           question,
@@ -4403,9 +4498,10 @@ async function handleChatSend(options = {}) {
       if (!plan) throw new Error('invalid-dashboard-plan');
 
       const backendReply = normalizeConciseBotText(
-        data?.reply || plan?.suggested_reply || 'Nao consegui responder com os dados estruturados do dashboard.'
+        data?.reply || plan?.suggested_reply || 'Não consegui responder com os dados do painel.'
       );
-      const finalReply = normalizeConciseBotText(plan?.suggested_reply || backendReply);
+      const finalReply = normalizeConciseBotText(plan?.suggested_reply || backendReply) || backendReply || 'Não consegui responder com os dados do painel.';
+      stopLegacyAssistantLoading(loadingController);
       setMessageText(typingMsg, finalReply);
 
       if (!hasBackendState) {
@@ -4436,11 +4532,16 @@ async function handleChatSend(options = {}) {
         );
       }
     } catch (err) {
+      if (err?.name === 'AbortError') {
+        stopLegacyAssistantLoading(loadingController);
+        return;
+      }
       console.warn('[CHAT][dashboard-intelligence] fallback local ativado', err);
       const semanticOutcome = runLocalDashboardSemanticAssistant(question);
       const semanticReply = normalizeConciseBotText(
-        semanticOutcome?.reply || 'Nao consegui responder com os dados estruturados do dashboard.'
+        semanticOutcome?.reply || 'Não consegui responder com os dados do painel.'
       );
+      stopLegacyAssistantLoading(loadingController);
       setMessageText(typingMsg, semanticReply);
       chatState = appendConversationTurn(chatState, 'assistant', semanticReply);
       persistChatState(chatState);
@@ -4462,7 +4563,12 @@ async function handleChatSend(options = {}) {
         );
       }
     } finally {
-      setChatBusy(false);
+      stopLegacyAssistantLoading(loadingController);
+      const shouldReleaseBusy =
+        chatRequestTracker.getActiveController() === requestController ||
+        !chatRequestTracker.hasActiveController();
+      chatRequestTracker.clearActiveController(requestController);
+      if (shouldReleaseBusy) setChatBusy(false);
       scrollToBottom();
     }
     return;
