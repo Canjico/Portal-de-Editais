@@ -295,6 +295,7 @@ const chatRequestTracker = createAbortableRequestTracker();
 let chatState = createChatSessionState();
 let chatQuickPromptsTransitionCleanup = null;
 let activeLegacyAssistantLoading = null;
+let pendingDashboardOptionsRestores = [];
 
 function persistChatState(nextState = chatState) {
   chatState = saveChatSessionState(sanitizeChatStateAssistantReplies(ensureChatSessionState(nextState)));
@@ -310,7 +311,8 @@ function replayChatSessionHistory() {
   const history = restoreConversationHistory(chatState);
   history.forEach((entry) => {
     const sender = entry?.role === 'assistant' ? 'bot' : 'user';
-    addMessage(entry?.text || '', sender);
+    const msg = addMessage(entry?.text || '', sender, entry?.ui?.type === 'sources' ? entry.ui.sources : null);
+    if (sender === 'bot') restoreChatMessageUi(msg, entry?.ui);
   });
 }
 
@@ -450,6 +452,7 @@ async function init() {
       buildFuseIndex();
       generateDynamicFilters();
       setupFilterGroupsAccordion();
+      flushPendingDashboardOptionsRestores();
       applyFiltersAndRender({ resetPage: true });
     },
     onDeepLinkReady: openDeepLinkedEditalFromUrl,
@@ -496,7 +499,11 @@ async function openDeepLinkedEditalFromUrl() {
 
 function hasPersonalizedRelevance(items) {
   if (!Array.isArray(items) || items.length === 0) return false;
-  return items.some((item) => normalizeRelevanceScore(item?.relevance_score) > 0 || item?.is_highlighted);
+  return items.some((item) => (
+    normalizeRelevanceScore(item?.relevance_score) > 0 ||
+    item?.is_highlighted ||
+    ['perfect', 'high', 'medium'].includes(String(item?.relevance_level || '').trim())
+  ));
 }
 
 // =========================
@@ -877,13 +884,20 @@ function renderResultsStateHint(total) {
 
   const hasSearch = String(searchInput?.value || '').trim().length > 0;
   const hasFilters = hasAppliedFilters() || Boolean(assistantPanelContext);
-  const highlightedTotal = Array.isArray(lastFiltered)
-    ? lastFiltered.filter((item) => item?.is_highlighted).length
+  const perfectCount = Array.isArray(lastFiltered)
+    ? lastFiltered.filter((e) => e?.relevance_level === 'perfect' || e?.is_highlighted).length
     : 0;
-  const hasPersonalizedSignals = Array.isArray(lastFiltered)
-    ? hasPersonalizedRelevance(lastFiltered)
-    : false;
-  const hasProfileRecommendations = highlightedTotal > 0;
+  const highCount = Array.isArray(lastFiltered)
+    ? lastFiltered.filter((e) => e?.relevance_level === 'high').length
+    : 0;
+  const mediumCount = Array.isArray(lastFiltered)
+    ? lastFiltered.filter((e) => e?.relevance_level === 'medium').length
+    : 0;
+  const hasPersonalizedSignals = perfectCount > 0 ||
+    highCount > 0 ||
+    mediumCount > 0 ||
+    (Array.isArray(lastFiltered) ? hasPersonalizedRelevance(lastFiltered) : false);
+  const hasProfileRecommendations = perfectCount > 0;
 
   let text = '';
   if (total === 0 && onlyFavoritos && favoritosSet.size === 0) {
@@ -904,17 +918,19 @@ function renderResultsStateHint(total) {
     !onlyFavoritos &&
     kpiFilter === 'all'
   ) {
-    text = `Com base no seu perfil, ${highlightedTotal} edital${highlightedTotal > 1 ? 'is estão' : ' está'} em destaque.`;
+    text = `Com base no seu perfil, ${perfectCount} ${perfectCount === 1 ? 'edital 100% aderente está' : 'editais 100% aderentes estão'} em destaque.`;
   } else if (
     total > 0 &&
     !hasProfileRecommendations &&
-    hasPersonalizedSignals &&
+    (hasPersonalizedSignals || highCount === 0) &&
     !hasSearch &&
     !hasFilters &&
     !onlyFavoritos &&
     kpiFilter === 'all'
   ) {
-    text = 'No momento, não há edital 100% aderente ao seu perfil em destaque.';
+    text = highCount > 0
+      ? 'Encontramos editais com alta aderência ao seu perfil. Nenhum atingiu 100% por enquanto.'
+      : 'No momento, não há edital 100% aderente ao seu perfil. Complete seu perfil para melhorar as recomendações.';
   } else if (total > 0 && hasFilters) {
     text = 'Filtros aplicados para resultados mais relevantes.';
   }
@@ -3513,8 +3529,10 @@ function sanitizeChatStateAssistantReplies(state) {
   });
 }
 
-function setLatestAssistantConversationTurn(state, text) {
-  const cleanText = sanitizeAssistantReplyText(text);
+function setLatestAssistantConversationTurn(state, turn) {
+  const isStructuredTurn = turn && typeof turn === 'object' && !Array.isArray(turn);
+  const cleanText = sanitizeAssistantReplyText(isStructuredTurn ? turn.text : turn);
+  const hasUi = isStructuredTurn && Object.prototype.hasOwnProperty.call(turn, 'ui');
   if (!cleanText) return ensureChatSessionState(state);
 
   const safeState = ensureChatSessionState(state);
@@ -3528,7 +3546,9 @@ function setLatestAssistantConversationTurn(state, text) {
     history[lastAssistantIndex] = {
       ...history[lastAssistantIndex],
       text: cleanText,
+      ...(hasUi && turn.ui ? { ui: turn.ui } : {}),
     };
+    if (hasUi && !turn.ui) delete history[lastAssistantIndex].ui;
     return ensureChatSessionState({
       ...safeState,
       conversationHistory: history,
@@ -3536,7 +3556,7 @@ function setLatestAssistantConversationTurn(state, text) {
     });
   }
 
-  return appendConversationTurn(safeState, 'assistant', cleanText);
+  return appendConversationTurn(safeState, 'assistant', cleanText, hasUi ? { ui: turn.ui } : {});
 }
 
 function normalizeBotText(value) {
@@ -5162,16 +5182,310 @@ function normalizeBackendChatOptions(rawOptions) {
   return out;
 }
 
+const MAX_CHAT_UI_OPTIONS = 10;
+const MAX_CHAT_UI_RESULT_IDS = 80;
+
+function limitAssistantSearchPayloadForUi(rawPayload) {
+  const normalized = normalizeAssistantSearchPayload(rawPayload);
+  if (!normalized) return null;
+  return {
+    ...normalized,
+    result_ids: (normalized.result_ids || []).map((id) => String(id || '').trim()).filter(Boolean).slice(0, MAX_CHAT_UI_RESULT_IDS),
+    filters: {
+      status: Array.isArray(normalized.filters?.status) ? [...normalized.filters.status] : [],
+      deadline_range: String(normalized.filters?.deadline_range || '').trim(),
+      categories: Array.isArray(normalized.filters?.categories) ? [...normalized.filters.categories] : [],
+      instituicoes: Array.isArray(normalized.filters?.instituicoes) ? [...normalized.filters.instituicoes] : [],
+      estado: Array.isArray(normalized.filters?.estado) ? [...normalized.filters.estado] : [],
+      keywords: Array.isArray(normalized.filters?.keywords) ? [...normalized.filters.keywords] : [],
+    },
+  };
+}
+
+function normalizeDashboardOptionForUiState(option) {
+  if (!option || typeof option !== 'object') return null;
+  const action = String(option.action || '').trim();
+  const title = String(option.title || option.label || '').trim();
+  if (!action || !title) return null;
+
+  const normalized = {
+    action,
+    title: truncateText(title, 160),
+  };
+  if (option.id !== null && option.id !== undefined) normalized.id = String(option.id);
+  if (option.query) normalized.query = truncateText(option.query, 260);
+  if (option.meta) normalized.meta = truncateText(option.meta, 220);
+  const payload = limitAssistantSearchPayloadForUi(option.payload || option.search_payload || option.searchPayload);
+  if (payload) normalized.payload = payload;
+  return normalized;
+}
+
+function collectDashboardOptionResultIds(options = [], payload = null) {
+  const ids = [];
+  const addIds = (values) => {
+    if (!Array.isArray(values)) return;
+    values.forEach((id) => {
+      const clean = String(id || '').trim();
+      if (clean) ids.push(clean);
+    });
+  };
+
+  addIds(payload?.result_ids);
+  options.forEach((option) => {
+    if (!option || typeof option !== 'object') return;
+    if (option.id !== null && option.id !== undefined) ids.push(String(option.id));
+    addIds(option.payload?.result_ids);
+  });
+
+  return toUniqueStringList(ids, { normalize: (id) => String(id || '').trim() })
+    .slice(0, MAX_CHAT_UI_RESULT_IDS);
+}
+
+function normalizeDashboardOptionsUiMetadata(rawUi) {
+  if (!rawUi || typeof rawUi !== 'object') return null;
+  if (String(rawUi.type || '').trim() !== 'dashboard_options') return null;
+
+  const searchPayload = limitAssistantSearchPayloadForUi(
+    rawUi.search_payload || rawUi.searchPayload || rawUi.payload
+  );
+  const options = Array.isArray(rawUi.options)
+    ? rawUi.options.map(normalizeDashboardOptionForUiState).filter(Boolean).slice(0, MAX_CHAT_UI_OPTIONS)
+    : [];
+  const resultIds = collectDashboardOptionResultIds(options, searchPayload)
+    .concat(toUniqueStringList(rawUi.result_ids || rawUi.resultIds || rawUi.ids, {
+      normalize: (id) => String(id || '').trim(),
+    }))
+    .filter(Boolean);
+  const uniqueResultIds = toUniqueStringList(resultIds, { normalize: (id) => String(id || '').trim() })
+    .slice(0, MAX_CHAT_UI_RESULT_IDS);
+
+  if (!uniqueResultIds.length && !searchPayload && !options.length) return null;
+  return {
+    type: 'dashboard_options',
+    result_ids: uniqueResultIds,
+    search_payload: searchPayload,
+    options,
+  };
+}
+
+function createDashboardOptionsUiMetadata(query, options, rawSearchPayload) {
+  const searchPayload = limitAssistantSearchPayloadForUi(rawSearchPayload);
+  const normalizedOptions = Array.isArray(options)
+    ? options.map(normalizeDashboardOptionForUiState).filter(Boolean).slice(0, MAX_CHAT_UI_OPTIONS)
+    : [];
+  const resultIds = collectDashboardOptionResultIds(normalizedOptions, searchPayload);
+  const payloadWithQuery = searchPayload
+    ? {
+      ...searchPayload,
+      query: searchPayload.query || String(query || '').trim(),
+      result_ids: searchPayload.result_ids?.length ? searchPayload.result_ids : resultIds,
+    }
+    : null;
+
+  return normalizeDashboardOptionsUiMetadata({
+    type: 'dashboard_options',
+    result_ids: resultIds,
+    search_payload: payloadWithQuery,
+    options: normalizedOptions,
+  });
+}
+
+function getMessageBubblePlainText(msgEl) {
+  const bubble = msgEl?.querySelector?.('.bubble');
+  return String(bubble?.textContent || '').trim();
+}
+
+function persistLatestAssistantDashboardOptions(msgEl, ui) {
+  if (!ui) return;
+  const text = getMessageBubblePlainText(msgEl);
+  if (!text) return;
+  chatState = setLatestAssistantConversationTurn(chatState, { text, ui });
+  persistChatState(chatState);
+}
+
+function buildChatOptionFromEdital(edital) {
+  if (!edital || edital.id == null) return null;
+  const metaParts = [];
+  if (edital?.is_highlighted || edital?.relevance_level === 'perfect') metaParts.push('100% aderente');
+  else if (edital?.relevance_level === 'high') metaParts.push('Alta aderência');
+  if (edital.instituicao) metaParts.push(edital.instituicao);
+  if (edital.estado) metaParts.push(formatEstadoLabel(edital.estado));
+  if (edital.data_fechamento) metaParts.push(`Até ${formatChatDate(edital.data_fechamento)}`);
+  return {
+    action: 'open_edital',
+    id: edital.id,
+    title: edital.titulo || 'Sem título',
+    meta: metaParts.join(' • ') || null,
+  };
+}
+
+function appendChatOptionOnce(options, nextOption) {
+  const normalized = normalizeDashboardOptionForUiState(nextOption);
+  if (!normalized) return;
+  const key = [
+    normalized.action,
+    normalized.id || '',
+    normalized.query || '',
+    normalized.title || '',
+  ].join('::').toLowerCase();
+  const exists = options.some((option) => ([
+    option.action,
+    option.id || '',
+    option.query || '',
+    option.title || '',
+  ].join('::').toLowerCase()) === key);
+  if (!exists) options.push(normalized);
+}
+
+function buildDashboardOptionsFromUiMetadata(rawUi) {
+  const ui = normalizeDashboardOptionsUiMetadata(rawUi);
+  if (!ui) return [];
+
+  const byId = new Map(
+    (Array.isArray(editaisOriginais) ? editaisOriginais : [])
+      .map((item) => [String(item?.id ?? ''), item])
+      .filter(([id]) => Boolean(id))
+  );
+  const savedOpenIds = ui.options
+    .filter((option) => option.action === 'open_edital' && option.id != null)
+    .map((option) => String(option.id));
+  const idsForCards = savedOpenIds.length ? savedOpenIds : ui.result_ids.slice(0, 5);
+  const options = [];
+
+  idsForCards.forEach((id) => {
+    const card = byId.get(String(id));
+    if (!card) return;
+    appendChatOptionOnce(options, buildChatOptionFromEdital(card));
+  });
+
+  ui.options
+    .filter((option) => option.action !== 'open_edital')
+    .forEach((option) => {
+      const nextOption = { ...option };
+      if (nextOption.action === 'view_all' && !nextOption.payload && ui.search_payload) {
+        nextOption.payload = ui.search_payload;
+      }
+      if (nextOption.action === 'view_all' && !nextOption.query) {
+        nextOption.query = ui.search_payload?.query || '';
+      }
+      appendChatOptionOnce(options, nextOption);
+    });
+
+  const hasViewAll = options.some((option) => option.action === 'view_all');
+  if (!hasViewAll && ui.search_payload && Number(ui.search_payload.total || 0) > options.length) {
+    appendChatOptionOnce(options, {
+      action: 'view_all',
+      query: ui.search_payload.query || '',
+      title: `Ver todos no painel (${Number(ui.search_payload.total || ui.result_ids.length)})`,
+      meta: 'Aplicar filtro no painel',
+      payload: ui.search_payload,
+    });
+  }
+
+  const hasAskNew = options.some((option) => option.action === 'ask_new');
+  if (!hasAskNew && options.length) {
+    appendChatOptionOnce(options, {
+      action: 'ask_new',
+      title: 'Buscar outro tema',
+      meta: 'Trocar a palavra-chave',
+    });
+  }
+
+  return options.slice(0, MAX_CHAT_UI_OPTIONS);
+}
+
+function renderChatOptions(msgEl, rawOptions) {
+  if (!msgEl || !Array.isArray(rawOptions) || !rawOptions.length) return false;
+  msgEl.querySelectorAll('.chat-options').forEach((node) => node.remove());
+
+  const options = rawOptions.map(normalizeDashboardOptionForUiState).filter(Boolean);
+  if (!options.length) return false;
+
+  const wrap = document.createElement('div');
+  wrap.className = 'chat-options';
+
+  for (const opt of options) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'chat-option-btn';
+    btn.setAttribute('data-action', opt.action);
+
+    if (opt.id != null) btn.setAttribute('data-edital-id', String(opt.id));
+    if (opt.query) btn.setAttribute('data-query', String(opt.query));
+    if (opt.payload && typeof opt.payload === 'object') btn._chatPayload = opt.payload;
+
+    const title = truncateText(opt.title, 70);
+    const meta = opt.meta ? truncateText(opt.meta, 92) : '';
+
+    btn.innerHTML = `
+      <div class="chat-opt-title">${escapeHtml(title)}</div>
+      ${meta ? `<div class="chat-opt-meta">${escapeHtml(meta)}</div>` : ''}
+    `.trim();
+
+    wrap.appendChild(btn);
+  }
+
+  msgEl.appendChild(wrap);
+  scrollToBottom();
+  return true;
+}
+
+function dashboardOptionsUiNeedsEditais(rawUi) {
+  const ui = normalizeDashboardOptionsUiMetadata(rawUi);
+  if (!ui) return false;
+  return ui.result_ids.length > 0 || ui.options.some((option) => (
+    option.action === 'open_edital' && option.id != null
+  ));
+}
+
+function restoreDashboardOptionsUi(msgEl, rawUi) {
+  const ui = normalizeDashboardOptionsUiMetadata(rawUi);
+  if (!msgEl || !ui) return false;
+  if (msgEl.querySelector('.chat-options')) return true;
+
+  const needsEditais = dashboardOptionsUiNeedsEditais(ui);
+  const hasLoadedEditais = Array.isArray(editaisOriginais) && editaisOriginais.length > 0;
+  if (needsEditais && !hasLoadedEditais) {
+    pendingDashboardOptionsRestores.push({ msgEl, ui });
+    return false;
+  }
+
+  const options = buildDashboardOptionsFromUiMetadata(ui);
+  return renderChatOptions(msgEl, options);
+}
+
+function restoreChatMessageUi(msgEl, ui) {
+  if (!msgEl || !ui || typeof ui !== 'object') return false;
+  if (ui.type === 'dashboard_options') return restoreDashboardOptionsUi(msgEl, ui);
+  if (ui.type === 'sources') {
+    applySourcesDetails(msgEl, ui.sources);
+    return true;
+  }
+  return false;
+}
+
+function flushPendingDashboardOptionsRestores() {
+  if (!pendingDashboardOptionsRestores.length) return;
+  const pending = pendingDashboardOptionsRestores;
+  pendingDashboardOptionsRestores = [];
+  pending.forEach(({ msgEl, ui }) => {
+    if (!msgEl?.isConnected || msgEl.querySelector?.('.chat-options')) return;
+    restoreDashboardOptionsUi(msgEl, ui);
+  });
+}
+
 function attachEditaisOptions(msgEl, query, rawOptions = null, rawStructuredPayload = null) {
   if (!msgEl) return;
 
   const structuredPayload = normalizeAssistantSearchPayload(rawStructuredPayload);
   const fromBackend = normalizeBackendChatOptions(rawOptions);
   const hasBackendOptions = fromBackend.length > 0;
+  let optionsSearchPayload = structuredPayload;
   let options = [];
 
   if (hasBackendOptions) {
     const panelPayload = structuredPayload || buildAssistantPayloadFromQuery(query);
+    optionsSearchPayload = panelPayload;
     const panelTotal = Number(panelPayload?.total) > 0 ? Number(panelPayload.total) : fromBackend.length;
     options = fromBackend.slice(0, 8);
     const hasViewAllAction = options.some((opt) => String(opt?.action || '').trim() === 'view_all');
@@ -5205,6 +5519,7 @@ function attachEditaisOptions(msgEl, query, rawOptions = null, rawStructuredPayl
     const all = searchEditaisForChat(query);
     if (!all.length) return;
     const panelPayload = structuredPayload || buildAssistantPayloadFromQuery(query, all);
+    optionsSearchPayload = panelPayload;
     const panelTotal = Number(panelPayload?.total) > 0 ? Number(panelPayload.total) : all.length;
 
     const top = all.slice(0, 5);
@@ -5244,32 +5559,13 @@ function attachEditaisOptions(msgEl, query, rawOptions = null, rawStructuredPayl
     });
   }
 
-  const wrap = document.createElement('div');
-  wrap.className = 'chat-options';
-
-  for (const opt of options) {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'chat-option-btn';
-    btn.setAttribute('data-action', opt.action);
-
-    if (opt.id != null) btn.setAttribute('data-edital-id', String(opt.id));
-    if (opt.query) btn.setAttribute('data-query', String(opt.query));
-    if (opt.payload && typeof opt.payload === 'object') btn._chatPayload = opt.payload;
-
-    const title = truncateText(opt.title, 70);
-    const meta = opt.meta ? truncateText(opt.meta, 92) : '';
-
-    btn.innerHTML = `
-      <div class="chat-opt-title">${escapeHtml(title)}</div>
-      ${meta ? `<div class="chat-opt-meta">${escapeHtml(meta)}</div>` : ''}
-    `.trim();
-
-    wrap.appendChild(btn);
+  const rendered = renderChatOptions(msgEl, options);
+  if (rendered) {
+    persistLatestAssistantDashboardOptions(
+      msgEl,
+      createDashboardOptionsUiMetadata(query, options, optionsSearchPayload)
+    );
   }
-
-  msgEl.appendChild(wrap);
-  scrollToBottom();
 }
 
 function getLastDashboardResultCards() {

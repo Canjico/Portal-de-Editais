@@ -5,6 +5,7 @@ import {
   clearChatSessionState,
   createChatSessionState,
   loadChatSessionState,
+  restoreConversationHistory,
   saveChatSessionState,
   setActiveEditalContextInState,
 } from '../chat-session-state.js';
@@ -55,3 +56,39 @@ test('memória reseta ao iniciar sessão limpa (nova aba/janela)', () => {
   assert.notEqual(afterClear.sessionId, freshSession.sessionId);
 });
 
+test('historico preserva metadados de UI das opcoes do dashboard', () => {
+  const storage = createMemoryStorage();
+  let state = createChatSessionState();
+  state = appendConversationTurn(state, 'user', 'Mostre oportunidades para tecnologia e inovacao');
+  state = appendConversationTurn(state, 'assistant', 'Separei alguns editais abaixo.', {
+    ui: {
+      type: 'dashboard_options',
+      result_ids: [101, 102],
+      search_payload: {
+        intent: 'edital_search',
+        query: 'tecnologia inovacao',
+        total: 2,
+        result_ids: [101, 102],
+        filters: {
+          keywords: ['tecnologia', 'inovacao'],
+        },
+      },
+      options: [
+        { action: 'open_edital', id: 101, title: 'Edital 101', meta: 'FINEP' },
+        { action: 'view_all', title: 'Ver todos no painel (2)', payload: { result_ids: [101, 102], total: 2 } },
+      ],
+    },
+  });
+
+  saveChatSessionState(state, storage);
+  const restored = loadChatSessionState(storage);
+  const history = restoreConversationHistory(restored);
+  const assistantTurn = history.at(-1);
+
+  assert.equal(assistantTurn.role, 'assistant');
+  assert.equal(assistantTurn.ui.type, 'dashboard_options');
+  assert.deepEqual(assistantTurn.ui.result_ids, ['101', '102']);
+  assert.equal(assistantTurn.ui.search_payload.query, 'tecnologia inovacao');
+  assert.equal(assistantTurn.ui.options.length, 2);
+  assert.equal(assistantTurn.ui.options[0].id, '101');
+});

@@ -37,4 +37,24 @@ test('dashboard has 100 percent adherent KPI filter', () => {
   assert.match(indexSource, /id="statChipRecomendados"/);
   assert.match(indexSource, /data-kpi-filter="recomendados"/);
   assert.match(mainSource, /kpiFilter === 'recomendados'/);
+  assert.match(indexSource, /AderÃªncia perfeita|Aderência perfeita/);
+});
+
+test('renderResultsStateHint diferencia aderencia perfeita alta e perfil incompleto', () => {
+  assert.match(mainSource, /const perfectCount = Array\.isArray\(lastFiltered\)/);
+  assert.match(mainSource, /const highCount = Array\.isArray\(lastFiltered\)/);
+  assert.match(mainSource, /const mediumCount = Array\.isArray\(lastFiltered\)/);
+  assert.match(mainSource, /Com base no seu perfil, \$\{perfectCount\}/);
+  assert.match(mainSource, /Encontramos editais com alta aderÃªncia ao seu perfil|Encontramos editais com alta aderência ao seu perfil/);
+  assert.match(mainSource, /Complete seu perfil para melhorar as recomendaÃ§Ãµes|Complete seu perfil para melhorar as recomendações/);
+  assert.doesNotMatch(mainSource, /No momento, nÃ£o hÃ¡ edital 100% aderente ao seu perfil em destaque|No momento, não há edital 100% aderente ao seu perfil em destaque/);
+});
+
+test('replayChatSessionHistory restaura dashboard_options sem duplicar cards', () => {
+  assert.match(mainSource, /restoreChatMessageUi\(msg, entry\?\.ui\)/);
+  assert.match(mainSource, /function restoreDashboardOptionsUi\(msgEl, rawUi\)/);
+  assert.match(mainSource, /ui\.type === 'dashboard_options'/);
+  assert.match(mainSource, /pendingDashboardOptionsRestores\.push\(\{ msgEl, ui \}\)/);
+  assert.match(mainSource, /msgEl\.querySelectorAll\('\.chat-options'\)\.forEach\(\(node\) => node\.remove\(\)\)/);
+  assert.match(mainSource, /if \(msgEl\.querySelector\('\.chat-options'\)\) return true;/);
 });
