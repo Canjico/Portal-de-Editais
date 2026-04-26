@@ -12,10 +12,10 @@ test('recommended card badge supports 100 percent adherence label', () => {
   assert.match(renderSource, /status-chip status-chip--highlight/);
 });
 
-test('cards render short recommendation reasons only when present', () => {
-  assert.match(renderSource, /card-relevance-reasons/);
-  assert.match(renderSource, /relevanceReasons\.length\s*\?/);
-  assert.match(renderSource, /Motivos da recomenda/);
+test('dashboard cards do not render recommendation reason bullets', () => {
+  assert.doesNotMatch(renderSource, /card-relevance-reasons/);
+  assert.doesNotMatch(renderSource, /relevanceReasonsHtml/);
+  assert.doesNotMatch(renderSource, /Motivos da recomenda/);
 });
 
 test('modal exposes recommendation explanation section', () => {

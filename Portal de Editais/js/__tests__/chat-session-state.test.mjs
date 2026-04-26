@@ -37,6 +37,7 @@ test('memória temporária permanece durante a sessão ativa', () => {
   const restored = loadChatSessionState(storage);
   assert.equal(restored.activeContextType, 'edital');
   assert.equal(restored.activeEntityId, '77');
+  assert.equal(restored.activeTitle, 'Edital Teste Sessao');
   assert.equal(restored.conversationHistory.length >= 2, true);
   assert.equal(restored.conversationHistory.at(-1).role, 'assistant');
 });

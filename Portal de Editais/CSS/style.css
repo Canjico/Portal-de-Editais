@@ -833,34 +833,6 @@ a, button, summary, [role="button"]{
   overflow:hidden;
 }
 
-.card-relevance-reasons{
-  display:grid;
-  gap:5px;
-  margin:10px 0 0;
-  padding:0;
-  list-style:none;
-}
-
-.card-relevance-reasons li{
-  position:relative;
-  padding-left:13px;
-  color:#355E57;
-  font-size:12px;
-  font-weight:800;
-  line-height:1.35;
-}
-
-.card-relevance-reasons li::before{
-  content:'';
-  position:absolute;
-  left:0;
-  top:.62em;
-  width:5px;
-  height:5px;
-  border-radius:999px;
-  background:var(--athos-teal);
-}
-
 .card-context{
   margin-top:10px;
   border:1px solid var(--border);
@@ -5790,10 +5762,6 @@ body.chat-open .e-contact-buttons__chat-button-container {
   background:rgba(129,140,248,0.18);
   border-color:rgba(129,140,248,0.42);
   color:#C7D2FE;
-}
-
-:root[data-theme='dark'] .card-relevance-reasons li{
-  color:#B8FFF6;
 }
 
 :root[data-theme='dark'] .recommendation-section,

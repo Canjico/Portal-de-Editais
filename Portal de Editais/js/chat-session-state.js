@@ -192,12 +192,14 @@ function toLegacyFields(state) {
       mode: 'edital',
       edital_id: state.activeEntityId,
       titulo: state.activeEntityTitle || 'Edital',
+      activeTitle: state.activeEntityTitle || 'Edital',
     };
   }
   return {
     mode: 'general',
     edital_id: null,
     titulo: '',
+    activeTitle: '',
   };
 }
 
@@ -205,7 +207,7 @@ export function createChatSessionState(overrides = {}) {
   const history = normalizeHistory(overrides.conversationHistory);
   const activeContextType = String(overrides.activeContextType || '').trim().toLowerCase() || 'general';
   const activeEntityId = overrides.activeEntityId == null ? null : String(overrides.activeEntityId).trim();
-  const activeEntityTitle = normalizeText(overrides.activeEntityTitle, 180);
+  const activeEntityTitle = normalizeText(overrides.activeEntityTitle ?? overrides.activeTitle, 180);
   const state = {
     sessionId: String(overrides.sessionId || '').trim() || createSessionId(),
     activeContext: normalizeText(overrides.activeContext, 240),
@@ -244,7 +246,7 @@ export function sanitizeChatSessionState(rawState) {
   const inferredType = String(rawState.activeContextType || '').trim().toLowerCase()
     || (String(rawState.mode || '').trim().toLowerCase() === 'edital' ? 'edital' : 'general');
   const inferredEntityId = rawState.activeEntityId ?? rawState.edital_id ?? null;
-  const inferredEntityTitle = rawState.activeEntityTitle ?? rawState.titulo ?? '';
+  const inferredEntityTitle = rawState.activeEntityTitle ?? rawState.activeTitle ?? rawState.titulo ?? '';
   const inferredContext = rawState.activeContext
     || (inferredType === 'edital' && inferredEntityId ? `edital:${inferredEntityId}` : '');
 

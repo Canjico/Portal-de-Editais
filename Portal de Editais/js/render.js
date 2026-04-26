@@ -42,12 +42,6 @@
 
     const valorFomento = formatFundingValue(edital.valor_total) || 'Não informado';
     const publicoAlvo = formatPublicoAlvo(edital.publico_alvo) || 'Não informado';
-    const relevanceReasons = Array.isArray(edital.relevance_reasons)
-      ? edital.relevance_reasons.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 3)
-      : [];
-    const relevanceReasonsHtml = relevanceReasons.length
-      ? `<ul class="card-relevance-reasons" aria-label="Motivos da recomendação">${relevanceReasons.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>`
-      : '';
 
     card.innerHTML = `
       <div class="card-top">
@@ -76,7 +70,6 @@
 
       <h3 class="card-title">${escapeHtml(edital.titulo || 'Sem título')}</h3>
       <p class="card-desc">${escapeHtml(edital.descricao || 'Sem descrição')}</p>
-      ${relevanceReasonsHtml}
 
       <div class="card-kpis" aria-label="Informações principais">
         <div class="card-kpi">
@@ -216,10 +209,11 @@ function resolveLogoSrc(value) {
   return raw;
 }
 
-function buildStatusBadges(edital) {
+export function buildStatusBadges(edital) {
   const dataFechamento = edital?.data_fechamento ?? edital;
   const highlighted = Boolean(edital?.is_highlighted);
   const explicitOpen = typeof edital?.is_open === 'boolean' ? edital.is_open : null;
+  const fluxoContinuo = edital?.fluxo_continuo === true;
   const COUNTDOWN_WINDOW_DAYS = 30;
   const t = parseAnyDateToTime(dataFechamento);
   const badges = [];
@@ -236,6 +230,11 @@ function buildStatusBadges(edital) {
     return [{ label: 'Encerrado', className: 'status-chip status-chip--closed' }];
   }
 
+  if (fluxoContinuo) {
+    badges.push({ label: 'Fluxo contínuo', className: 'status-chip status-chip--open' });
+    return badges;
+  }
+
   if (t === null) {
     badges.push({ label: 'Aberto', className: 'status-chip status-chip--open' });
     return badges;
@@ -245,12 +244,11 @@ function buildStatusBadges(edital) {
   const today = toStartOfDayTime(Date.now());
   const diffDays = Math.floor((target - today) / 86400000);
 
-  if (diffDays < 0 && explicitOpen !== true) {
+  if (diffDays < 0) {
     return [{ label: 'Encerrado', className: 'status-chip status-chip--closed' }];
   }
 
   badges.push({ label: 'Aberto', className: 'status-chip status-chip--open' });
-  if (diffDays < 0) return badges;
   if (diffDays > COUNTDOWN_WINDOW_DAYS) return badges;
 
   const urgencyTone = buildUrgencyTone(diffDays, COUNTDOWN_WINDOW_DAYS);

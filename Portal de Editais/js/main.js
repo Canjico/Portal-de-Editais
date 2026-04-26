@@ -21,7 +21,7 @@ import {
   setLatestAssistantConversationTurn,
   setPendingTopicExitConfirmation,
   updateTopicDetection,
-} from './chat-session-state.js?v=20260401.1';
+} from './chat-session-state.js?v=20260426.1';
 import {
   markInitialChatInteraction,
   prefersReducedMotion,
@@ -50,6 +50,9 @@ import {
   buildSourcesDetails,
   normalizeSources,
 } from './chat-sources.js?v=20260425.1';
+import {
+  isDocumentalSemanticQuestion,
+} from './chat-routing-detector.js?v=20260426.1';
 
 // =========================
 // CONFIGURAÇÕES & SEGURANÇA
@@ -70,7 +73,7 @@ import {
 import { runDashboardBootstrapFlow } from './bootstrap-flows.js?v=20260416.1';
 import { readAuthHandoff } from './auth-handoff.js?v=20260422.1';
 
-console.info('[Athos][main.js] versão chat refinamento acumulado 20260426.3 carregada');
+console.info('[Athos][main.js] versão chat documental RAG 20260426.4 carregada');
 
 const APP_BASE_URL = new URL('../', import.meta.url);
 const SHARE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{20,255}$/;
@@ -1262,8 +1265,14 @@ function normalizeEdital(api) {
   const arquivos = typeof api?.arquivos_json === 'string' ? safeJsonParse(api.arquivos_json, []) : (api?.arquivos_json || []);
   const rawArea = data.area || (Array.isArray(data.tags) && data.tags.length ? data.tags[0] : 'Geral');
   const titulo = data.titulo || api?.titulo || 'Sem título';
+  const fluxoContinuo = [api?.fluxo_continuo, api?.fluxoContinuo, data.fluxo_continuo, data.fluxoContinuo]
+    .some((value) => {
+      if (value === true) return true;
+      const token = String(value ?? '').trim().toLowerCase();
+      return token === 'true' || token === '1' || token === 'sim';
+    });
 
-  return {
+  const normalized = {
     id: api?.id,
     titulo,
     slug: generateSlug(titulo),
@@ -1295,6 +1304,7 @@ function normalizeEdital(api) {
     is_favorite: false,
     share_link: api?.share_link || '',
     is_open: typeof api?.is_open === 'boolean' ? api.is_open : undefined,
+    fluxo_continuo: fluxoContinuo,
     relevance_score: normalizeRelevanceScore(api?.relevance_score),
     relevance_level: normalizeRelevanceLevel(api?.relevance_level),
     is_highlighted: !!api?.is_highlighted,
@@ -1306,6 +1316,17 @@ function normalizeEdital(api) {
     blockers: normalizeStringList(api?.blockers),
     details_loaded: Boolean(api?.details_loaded) || arquivos.length > 0,
   };
+
+  if (isClosedEdital(normalized)) {
+    normalized.is_open = false;
+    normalized.is_highlighted = false;
+    if (normalized.relevance_level === 'perfect' || normalized.relevance_level === 'high') {
+      normalized.relevance_level = normalized.relevance_score > 0 ? 'medium' : 'not_recommended';
+      normalized.recommendation_label = normalized.relevance_score > 0 ? 'Pode interessar como referência' : '';
+    }
+  }
+
+  return normalized;
 }
 
 async function ensureEditalDetailLoaded(edital) {
@@ -2322,7 +2343,7 @@ function applyFiltersAndRender({ resetPage } = { resetPage: false }) {
   // 2.4) Recorte por KPI clicado
   if (kpiFilter === 'abertos') filtered = filtered.filter((edital) => !isClosedEdital(edital));
   if (kpiFilter === 'fechados') filtered = filtered.filter((edital) => isClosedEdital(edital));
-  if (kpiFilter === 'recomendados') filtered = filtered.filter((edital) => edital?.is_highlighted || edital?.relevance_level === 'perfect');
+  if (kpiFilter === 'recomendados') filtered = filtered.filter((edital) => !isClosedEdital(edital) && (edital?.is_highlighted || edital?.relevance_level === 'perfect'));
 
   // 2.5) Só salvos
   if (onlyFavoritos) filtered = filtered.filter(e => !!e.is_favorite);
@@ -2345,14 +2366,14 @@ function applyFiltersAndRender({ resetPage } = { resetPage: false }) {
     filtered = [...filtered].sort((a, b) => collate(a.estado, b.estado) * directionFactor);
   } else if (sort === 'relevancia') {
     const compareRelevance = (a, b) => {
+      const openDiff = (isClosedEdital(a) ? 0 : 1) - (isClosedEdital(b) ? 0 : 1);
+      if (openDiff !== 0) return openDiff;
+
       const relDiff = normalizeRelevanceScore(a?.relevance_score) - normalizeRelevanceScore(b?.relevance_score);
       if (relDiff !== 0) return relDiff;
 
       const highlightDiff = (a?.is_highlighted ? 1 : 0) - (b?.is_highlighted ? 1 : 0);
       if (highlightDiff !== 0) return highlightDiff;
-
-      const openDiff = (isClosedEdital(a) ? 0 : 1) - (isClosedEdital(b) ? 0 : 1);
-      if (openDiff !== 0) return openDiff;
 
       return collate(a?.titulo, b?.titulo) * -1;
     };
@@ -2449,14 +2470,17 @@ function buildEmptyState({ total, termo }) {
 }
 
 function isClosedEdital(edital) {
-  if (typeof edital?.is_open === 'boolean') return !edital.is_open;
+  if (edital?.fluxo_continuo === true) return false;
   const t = parseAnyDateToTime(edital?.data_fechamento);
-  if (t === null) return false;
-  const d = new Date(t);
-  const prazo = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-  return prazo < today;
+  if (t !== null) {
+    const d = new Date(t);
+    const prazo = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    return prazo < today;
+  }
+  if (typeof edital?.is_open === 'boolean') return !edital.is_open;
+  return false;
 }
 
 function compareIsoDate(a, b) {
@@ -2471,23 +2495,14 @@ function compareIsoDate(a, b) {
 function updateHeroStats(filtered) {
   if (statTotal) statTotal.textContent = String(filtered.length);
 
-  const now = new Date();
-  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-
   let abertos = 0;
   let fechados = 0;
   let recomendados = 0;
 
   for (const e of filtered) {
-    if (e?.is_highlighted || e?.relevance_level === 'perfect') recomendados++;
-    const t = parseAnyDateToTime(e.data_fechamento);
-    // Sem data final: considera como aberto (melhor UX do que sumir com números)
-    if (t === null) {
-      abertos++;
-      continue;
-    }
-    // Data final no passado (ou hoje): fechado
-    if (t < todayStart) fechados++;
+    const closed = isClosedEdital(e);
+    if (!closed && (e?.is_highlighted || e?.relevance_level === 'perfect')) recomendados++;
+    if (closed) fechados++;
     else abertos++;
   }
 
@@ -3697,6 +3712,10 @@ function consumeSsePayload(typingMsg, streamState, payload) {
     nextState.sources = normalizeSources(nextState.sources);
   }
 
+  if (payload?.type === 'meta' && payload?.semantic_rag) {
+    console.info('[CHAT][semantic_rag]', payload.semantic_rag);
+  }
+
   const shouldRefreshText =
     payload?.type === 'delta' ||
     payload?.type === 'sources' ||
@@ -3791,6 +3810,7 @@ async function tryChatStreamRequest({
       text: finalText,
       sources: finalSources,
       donePayload: streamState.donePayload || null,
+      meta: streamState.meta || null,
     };
   } catch (err) {
     if (err?.name === 'AbortError') {
@@ -4067,6 +4087,7 @@ function messageHasAnyPhrase(normalizedQuery, phrases) {
 }
 
 function isDashboardListingQuestion(question) {
+  if (isDocumentalSemanticQuestion(question)) return false;
   const normalizedQuery = normalizeAssistantQuery(question);
   if (!normalizedQuery) return false;
   if (messageHasAnyPhrase(normalizedQuery, DASHBOARD_LISTING_QUESTION_HINTS)) return true;
@@ -4204,7 +4225,7 @@ function detectDashboardRefinementDeadline(normalizedQuery) {
 
 function getDashboardRefinementSignals(question) {
   const normalizedQuery = normalizeAssistantQuery(question);
-  if (!normalizedQuery) {
+  if (!normalizedQuery || isDocumentalSemanticQuestion(question)) {
     return {
       hasSignal: false,
       isComplementary: false,
@@ -4252,6 +4273,7 @@ function dashboardFiltersFromRefinementQuestion(question) {
 }
 
 function isDashboardRefinementQuestion(question) {
+  if (isDocumentalSemanticQuestion(question)) return false;
   if (!hasDashboardSearchMemory()) return false;
   const signals = getDashboardRefinementSignals(question);
   return Boolean(signals.hasSignal && signals.isComplementary);
@@ -4422,6 +4444,9 @@ function describeDashboardRefinement(plan, question, noun) {
 
 function buildDashboardShortReply(plan, question) {
   if (!plan || typeof plan !== 'object') return '';
+  if (plan.intent === 'insufficient_context' && String(plan.suggested_reply || '').trim()) {
+    return sanitizeAssistantReplyText(plan.suggested_reply);
+  }
 
   const filters = plan.filters && typeof plan.filters === 'object' ? plan.filters : {};
   const total = Math.max(0, Number(plan?.result_summary?.total || 0));
@@ -4817,15 +4842,17 @@ function parseChatDeadline(edital) {
 
 function isOpenEditalForChat(edital) {
   if (!edital) return false;
-  if (typeof edital.is_open === 'boolean') return edital.is_open;
   if (edital.fluxo_continuo === true) return true;
 
   const deadline = parseChatDeadline(edital);
-  if (deadline === null) return true;
+  if (deadline !== null) {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return deadline >= today.getTime();
+  }
 
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  return deadline >= today.getTime();
+  if (typeof edital.is_open === 'boolean') return edital.is_open;
+  return true;
 }
 
 function isDeadlineWithinNextDays(edital, days = 7) {
@@ -5755,8 +5782,9 @@ async function handleChatSend(options = {}) {
   persistChatState(chatState);
 
   const forceDashboardRefinement = Boolean(options?.forceDashboardRefinement);
-  const dashboardListingQuestion = isDashboardListingQuestion(question);
-  const dashboardRefinementQuestion = forceDashboardRefinement || isDashboardRefinementQuestion(question);
+  const documentalSemanticQuestion = isDocumentalSemanticQuestion(question);
+  const dashboardListingQuestion = !documentalSemanticQuestion && isDashboardListingQuestion(question);
+  const dashboardRefinementQuestion = !documentalSemanticQuestion && (forceDashboardRefinement || isDashboardRefinementQuestion(question));
   const dashboardRefinementSignals = getDashboardRefinementSignals(question);
   let activeContext = getActiveEditalContext();
   if (activeContext?.editalId && (dashboardListingQuestion || dashboardRefinementQuestion)) {
@@ -5824,6 +5852,18 @@ async function handleChatSend(options = {}) {
   }
 
   const contextualEditalId = getActiveEditalContext()?.editalId ?? null;
+  const routeEndpoint = (dashboardListingQuestion || dashboardRefinementQuestion)
+    ? '/chat/dashboard-intelligence'
+    : (contextualEditalId ? `/chat/edital/${encodeURIComponent(contextualEditalId)}/stream` : '/chat/stream');
+  console.info('[CHAT][route]', {
+    question,
+    isDocumentalSemanticQuestion: documentalSemanticQuestion,
+    dashboardListingQuestion,
+    dashboardRefinementQuestion,
+    activeEditalId: contextualEditalId,
+    endpoint: routeEndpoint,
+  });
+
   if (dashboardListingQuestion || dashboardRefinementQuestion) {
     const dashboardBaseQuestion = dashboardRefinementQuestion
       ? getDashboardBaseQuestionForRefinement()
