@@ -6,6 +6,48 @@ import {
   parseSseDataPayload,
   readSsePayloadsFromBuffer,
 } from '../chat-stream-sse.js';
+import {
+  buildSourcesDetails,
+  normalizeSources,
+} from '../chat-sources.js';
+
+class FakeElement {
+  constructor(tagName) {
+    this.tagName = String(tagName || '').toUpperCase();
+    this.children = [];
+    this.attributes = {};
+    this.className = '';
+    this.textContent = '';
+    this.href = '';
+    this.target = '';
+    this.rel = '';
+  }
+
+  appendChild(child) {
+    this.children.push(child);
+    return child;
+  }
+
+  setAttribute(name, value) {
+    this.attributes[name] = String(value);
+  }
+}
+
+const fakeDocument = {
+  createElement(tagName) {
+    return new FakeElement(tagName);
+  },
+};
+
+function findElement(root, predicate) {
+  if (!root) return null;
+  if (predicate(root)) return root;
+  for (const child of root.children || []) {
+    const found = findElement(child, predicate);
+    if (found) return found;
+  }
+  return null;
+}
 
 test('parseSseDataPayload interpreta evento SSE valido', () => {
   const payload = parseSseDataPayload(
@@ -120,4 +162,59 @@ test('applyChatStreamPayload sinaliza erro para acionar fallback legado', () => 
   assert.equal(state.done, true);
   assert.equal(state.isTyping, false);
   assert.equal(state.error, 'falha-stream');
+});
+
+test('normalizeSources aceita source_name, source_url e source_type do backend', () => {
+  const sources = normalizeSources([
+    {
+      source_type: 'edital_attachment',
+      source_name: 'arquivo.pdf',
+      source_url: 'https://example.com/arquivo.pdf',
+      edital_id: 42,
+      status: 'ok',
+    },
+  ]);
+
+  assert.equal(sources.length, 1);
+  assert.equal(sources[0].title, 'arquivo.pdf');
+  assert.equal(sources[0].url, 'https://example.com/arquivo.pdf');
+  assert.equal(sources[0].type, 'edital_attachment');
+  assert.equal(sources[0].editalId, 42);
+});
+
+test('buildSourcesDetails renderiza source_url como link clicavel', () => {
+  const details = buildSourcesDetails(
+    [
+      {
+        source_type: 'edital_attachment',
+        source_name: 'regulamento.pdf',
+        source_url: 'https://example.com/regulamento.pdf',
+        status: 'ok',
+      },
+    ],
+    fakeDocument
+  );
+
+  const link = findElement(details, (node) => node.tagName === 'A');
+  assert.ok(link);
+  assert.equal(link.href, 'https://example.com/regulamento.pdf');
+  assert.match(link.textContent, /Anexo: regulamento\.pdf/);
+});
+
+test('normalizeSources preserva fonte com erro sem url', () => {
+  const sources = normalizeSources([
+    {
+      source_type: 'edital_attachment',
+      source_name: 'arquivo invalido',
+      status: 'error',
+      error: 'Nao foi possivel extrair texto',
+    },
+  ]);
+
+  assert.equal(sources.length, 1);
+  assert.equal(sources[0].title, 'arquivo invalido');
+  assert.equal(sources[0].url, '');
+  assert.equal(sources[0].status, 'error');
+  assert.equal(sources[0].type, 'edital_attachment');
+  assert.equal(sources[0].error, 'Nao foi possivel extrair texto');
 });

@@ -45,6 +45,10 @@ import {
   applyChatStreamPayload,
   readSsePayloadsFromBuffer,
 } from './chat-stream-sse.js?v=20260425.1';
+import {
+  buildSourcesDetails,
+  normalizeSources,
+} from './chat-sources.js?v=20260425.1';
 
 // =========================
 // CONFIGURAÇÕES & SEGURANÇA
@@ -3285,65 +3289,6 @@ function extractEmbeddedSources(text) {
   return { text: cleanText || raw, names };
 }
 
-function normalizeSources(rawSources, fallbackNames = []) {
-  const byTitle = new Map();
-  const seenUrls = new Set();
-
-  const addSource = (titleRaw, urlRaw = '', status = 'ok') => {
-    const title = String(titleRaw ?? '').trim();
-    const url = String(urlRaw ?? '').trim();
-    if (!title && !url) return;
-
-    const safeTitle = title || url || 'Fonte';
-    const titleKey = safeTitle.toLowerCase().replace(/\s+/g, ' ').trim();
-    const urlKey = url.toLowerCase();
-    const existing = byTitle.get(titleKey);
-
-    if (urlKey && seenUrls.has(urlKey)) return;
-
-    if (!existing) {
-      byTitle.set(titleKey, { title: safeTitle, url, status });
-      if (urlKey) seenUrls.add(urlKey);
-      return;
-    }
-
-    const existingHasUrl = Boolean(existing.url);
-    const incomingHasUrl = Boolean(url);
-
-    // Se já existe item com o mesmo nome, mantém a versão clicável.
-    if (!existingHasUrl && incomingHasUrl) {
-      byTitle.set(titleKey, { title: safeTitle, url, status });
-      seenUrls.add(urlKey);
-    }
-  };
-
-  if (Array.isArray(rawSources)) {
-    rawSources.forEach((s, idx) => {
-      if (!s || typeof s !== 'object') return;
-
-      const title = s.title || s.name || s.nome || `Fonte ${idx + 1}`;
-      const url = s.url || s.link || '';
-      const status = s.status || (s.ok === false ? 'error' : 'ok');
-      const isOk = status === 'ok' || s.ok === true || !('status' in s);
-
-      if (!isOk && !url) return;
-      addSource(title, url, isOk ? 'ok' : status);
-    });
-  }
-
-  if (Array.isArray(fallbackNames)) {
-    fallbackNames.forEach((name) => {
-      const label = String(name ?? '').trim();
-      if (!label) return;
-
-      const url = /^https?:\/\//i.test(label) ? label : '';
-      addSource(label, url, 'ok');
-    });
-  }
-
-  return Array.from(byTitle.values());
-}
-
 // =========================
 // CHATBOT (mantido)
 // =========================
@@ -3396,53 +3341,6 @@ function setMessageText(msgEl, text, sources = null, opts = {}) {
   if (!opts?.keepTyping) {
     msgEl.classList.remove('is-typing');
   }
-}
-
-function buildSourcesDetails(sources) {
-  const total = sources.length;
-  const ok = sources.filter(s => s && (s.status === 'ok' || s.ok === true || !('status' in s))).length;
-
-  const details = document.createElement('details');
-  details.className = 'chat-sources-details';
-
-  const summary = document.createElement('summary');
-  const icon = document.createElement('i');
-  icon.className = 'fas fa-file-lines';
-  icon.setAttribute('aria-hidden', 'true');
-  const label = document.createElement('span');
-  label.textContent = `Fontes consultadas (${ok}/${total})`;
-  summary.appendChild(icon);
-  summary.appendChild(label);
-  details.appendChild(summary);
-
-  const ul = document.createElement('ul');
-  ul.className = 'chat-sources-list';
-
-  sources.forEach((s) => {
-    const li = document.createElement('li');
-    li.className = 'chat-source-item';
-
-    const title = String(s?.title || s?.name || s?.nome || 'Fonte').trim();
-    const url = String(s?.url || '').trim();
-
-    if (url) {
-      const a = document.createElement('a');
-      a.href = url;
-      a.target = '_blank';
-      a.rel = 'noopener noreferrer';
-      a.textContent = title;
-      li.appendChild(a);
-    } else {
-      const span = document.createElement('span');
-      span.textContent = title;
-      li.appendChild(span);
-    }
-
-    ul.appendChild(li);
-  });
-
-  details.appendChild(ul);
-  return details;
 }
 
 function updateStreamTypingMessage(msgEl, streamState, { forceDone = false } = {}) {
@@ -4455,7 +4353,7 @@ async function handleChatSend(options = {}) {
     try {
       const dashboardContext = buildDashboardIntelligenceContext();
       const streamOutcome = await tryChatStreamRequest({
-        endpoint: '/chat/stream',
+        endpoint: '/chat/dashboard-intelligence/stream',
         requestBody: {
           message: question,
           question,
