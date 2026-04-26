@@ -766,6 +766,18 @@ a, button, summary, [role="button"]{
   border-color:rgba(245,158,11,0.42);
 }
 
+.status-chip--recommendation{
+  background:rgba(47,143,131,0.14);
+  color:#0F766E;
+  border-color:rgba(47,143,131,0.38);
+}
+
+.status-chip--recommendation-muted{
+  background:rgba(99,102,241,0.10);
+  color:#4338CA;
+  border-color:rgba(99,102,241,0.24);
+}
+
 .status-chip--closed{
   background:rgba(220,38,38,0.14);
   color:#991B1B;
@@ -819,6 +831,34 @@ a, button, summary, [role="button"]{
   -webkit-line-clamp:4;
   -webkit-box-orient:vertical;
   overflow:hidden;
+}
+
+.card-relevance-reasons{
+  display:grid;
+  gap:5px;
+  margin:10px 0 0;
+  padding:0;
+  list-style:none;
+}
+
+.card-relevance-reasons li{
+  position:relative;
+  padding-left:13px;
+  color:#355E57;
+  font-size:12px;
+  font-weight:800;
+  line-height:1.35;
+}
+
+.card-relevance-reasons li::before{
+  content:'';
+  position:absolute;
+  left:0;
+  top:.62em;
+  width:5px;
+  height:5px;
+  border-radius:999px;
+  background:var(--athos-teal);
 }
 
 .card-context{
@@ -3388,6 +3428,69 @@ body.cookie-consent-required{
   overflow-wrap: anywhere;
 }
 
+.recommendation-section{
+  margin-top:14px;
+  border:1px solid #DDE7E4;
+  border-radius:12px;
+  background:#FBFDFC;
+  padding:12px;
+}
+
+.recommendation-header{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:12px;
+  margin-bottom:10px;
+}
+
+.recommendation-header h3{
+  margin:0 0 3px;
+  font-size:15px;
+  color:#102F2B;
+}
+
+.recommendation-header p{
+  margin:0;
+  font-size:12px;
+  font-weight:800;
+  color:#47736B;
+}
+
+.recommendation-grid{
+  display:grid;
+  grid-template-columns:repeat(auto-fit, minmax(170px, 1fr));
+  gap:10px;
+}
+
+.recommendation-grid article{
+  border:1px solid #E6ECEA;
+  border-radius:10px;
+  background:#fff;
+  padding:10px;
+}
+
+.recommendation-grid h4{
+  margin:0 0 7px;
+  font-size:12px;
+  color:#334155;
+}
+
+.recommendation-grid ul{
+  margin:0;
+  padding-left:16px;
+  color:#475569;
+  font-size:12px;
+  line-height:1.45;
+}
+
+.recommendation-empty{
+  margin:0;
+  color:#64748B;
+  font-size:12px;
+  line-height:1.45;
+}
+
 .attachment-list a {
   align-items: center;
 }
@@ -5675,6 +5778,39 @@ body.chat-open .e-contact-buttons__chat-button-container {
   background:rgba(245,158,11,0.22);
   border-color:rgba(245,158,11,0.52);
   color:#FDE68A;
+}
+
+:root[data-theme='dark'] .status-chip--recommendation{
+  background:rgba(82,188,176,0.18);
+  border-color:rgba(82,188,176,0.48);
+  color:#B8FFF6;
+}
+
+:root[data-theme='dark'] .status-chip--recommendation-muted{
+  background:rgba(129,140,248,0.18);
+  border-color:rgba(129,140,248,0.42);
+  color:#C7D2FE;
+}
+
+:root[data-theme='dark'] .card-relevance-reasons li{
+  color:#B8FFF6;
+}
+
+:root[data-theme='dark'] .recommendation-section,
+:root[data-theme='dark'] .recommendation-grid article{
+  background:rgba(17,28,47,0.86);
+  border-color:rgba(82,188,176,0.28);
+}
+
+:root[data-theme='dark'] .recommendation-header h3,
+:root[data-theme='dark'] .recommendation-grid h4{
+  color:var(--text);
+}
+
+:root[data-theme='dark'] .recommendation-header p,
+:root[data-theme='dark'] .recommendation-grid ul,
+:root[data-theme='dark'] .recommendation-empty{
+  color:#A8BED8;
 }
 
 :root[data-theme='dark'] .card-tags .pill.gray{

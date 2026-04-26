@@ -42,6 +42,12 @@
 
     const valorFomento = formatFundingValue(edital.valor_total) || 'Não informado';
     const publicoAlvo = formatPublicoAlvo(edital.publico_alvo) || 'Não informado';
+    const relevanceReasons = Array.isArray(edital.relevance_reasons)
+      ? edital.relevance_reasons.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 3)
+      : [];
+    const relevanceReasonsHtml = relevanceReasons.length
+      ? `<ul class="card-relevance-reasons" aria-label="Motivos da recomendação">${relevanceReasons.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>`
+      : '';
 
     card.innerHTML = `
       <div class="card-top">
@@ -70,6 +76,7 @@
 
       <h3 class="card-title">${escapeHtml(edital.titulo || 'Sem título')}</h3>
       <p class="card-desc">${escapeHtml(edital.descricao || 'Sem descrição')}</p>
+      ${relevanceReasonsHtml}
 
       <div class="card-kpis" aria-label="Informações principais">
         <div class="card-kpi">
@@ -218,7 +225,11 @@ function buildStatusBadges(edital) {
   const badges = [];
 
   if (highlighted) {
-    badges.push({ label: 'Em destaque', className: 'status-chip status-chip--highlight' });
+    badges.push({ label: getRecommendationBadgeLabel(edital), className: 'status-chip status-chip--highlight' });
+  } else if (edital?.relevance_level === 'high') {
+    badges.push({ label: 'Alta aderência', className: 'status-chip status-chip--recommendation' });
+  } else if (edital?.relevance_level === 'medium') {
+    badges.push({ label: 'Pode interessar', className: 'status-chip status-chip--recommendation-muted' });
   }
 
   if (explicitOpen === false) {
@@ -274,6 +285,13 @@ function buildStatusBadges(edital) {
   });
 
   return badges;
+}
+
+function getRecommendationBadgeLabel(edital) {
+  const explicit = String(edital?.recommendation_label || '').trim();
+  if (explicit) return explicit;
+  if (edital?.relevance_level === 'perfect') return '100% aderente ao seu perfil';
+  return 'Recomendado para você';
 }
 
 function buildUrgencyTone(daysLeft, maxWindow = 30) {

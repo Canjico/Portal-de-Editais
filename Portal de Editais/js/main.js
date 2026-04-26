@@ -229,9 +229,11 @@ let sortDirection = getDefaultSortDirection(sortField);
 const statTotal = document.getElementById('statTotal');
 const statAbertos = document.getElementById('statAbertos');
 const statFechados = document.getElementById('statFechados');
+const statRecomendados = document.getElementById('statRecomendados');
 const statChipTotal = document.getElementById('statChipTotal');
 const statChipAbertos = document.getElementById('statChipAbertos');
 const statChipFechados = document.getElementById('statChipFechados');
+const statChipRecomendados = document.getElementById('statChipRecomendados');
 
 // Filtros
 const filtersPanel = document.getElementById('filtersPanel');
@@ -758,6 +760,7 @@ function syncKpiButtons() {
     { btn: statChipTotal, key: 'all' },
     { btn: statChipAbertos, key: 'abertos' },
     { btn: statChipFechados, key: 'fechados' },
+    { btn: statChipRecomendados, key: 'recomendados' },
   ];
   rows.forEach(({ btn, key }) => {
     if (!btn) return;
@@ -825,7 +828,9 @@ function renderActiveFilters() {
   }
 
   if (kpiFilter !== 'all') {
-    const kpiLabel = kpiFilter === 'abertos' ? 'KPI: Abertos' : 'KPI: Encerrados';
+    const kpiLabel = kpiFilter === 'abertos'
+      ? 'KPI: Abertos'
+      : (kpiFilter === 'fechados' ? 'KPI: Encerrados' : 'KPI: 100% aderentes');
     chips.push(makeFilterChip(kpiLabel, () => {
       kpiFilter = 'all';
       syncKpiButtons();
@@ -1274,8 +1279,14 @@ function normalizeEdital(api) {
     share_link: api?.share_link || '',
     is_open: typeof api?.is_open === 'boolean' ? api.is_open : undefined,
     relevance_score: normalizeRelevanceScore(api?.relevance_score),
+    relevance_level: normalizeRelevanceLevel(api?.relevance_level),
     is_highlighted: !!api?.is_highlighted,
-    relevance_reasons: Array.isArray(api?.relevance_reasons) ? api.relevance_reasons.map((item) => String(item || '').trim()).filter(Boolean) : [],
+    recommendation_label: String(api?.recommendation_label || '').trim(),
+    relevance_reasons: normalizeStringList(api?.relevance_reasons),
+    relevance_warnings: normalizeStringList(api?.relevance_warnings),
+    missing_profile_fields: normalizeStringList(api?.missing_profile_fields),
+    matched_criteria: api?.matched_criteria && typeof api.matched_criteria === 'object' ? { ...api.matched_criteria } : {},
+    blockers: normalizeStringList(api?.blockers),
     details_loaded: Boolean(api?.details_loaded) || arquivos.length > 0,
   };
 }
@@ -1306,6 +1317,17 @@ function normalizeRelevanceScore(value) {
   if (n < 0) return 0;
   if (n > 100) return 100;
   return Math.round(n);
+}
+
+function normalizeRelevanceLevel(value) {
+  const level = String(value || '').trim();
+  const allowed = new Set(['perfect', 'high', 'medium', 'low', 'not_recommended']);
+  return allowed.has(level) ? level : '';
+}
+
+function normalizeStringList(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => String(item || '').trim()).filter(Boolean);
 }
 
 function safeJsonParse(str, fallback) {
@@ -1965,7 +1987,14 @@ function normalizeDashboardCardForIntelligence(rawCard) {
     area: String(rawCard?.area || '').trim(),
     tags: Array.isArray(rawCard?.tags) ? rawCard.tags.slice(0, 12).map((tag) => String(tag || '').trim()).filter(Boolean) : [],
     relevance_score: Number(rawCard?.relevance_score || 0) || 0,
+    relevance_level: String(rawCard?.relevance_level || '').trim(),
     is_highlighted: Boolean(rawCard?.is_highlighted),
+    recommendation_label: String(rawCard?.recommendation_label || '').trim(),
+    relevance_reasons: normalizeStringList(rawCard?.relevance_reasons).slice(0, 5),
+    relevance_warnings: normalizeStringList(rawCard?.relevance_warnings).slice(0, 5),
+    missing_profile_fields: normalizeStringList(rawCard?.missing_profile_fields).slice(0, 8),
+    matched_criteria: rawCard?.matched_criteria && typeof rawCard.matched_criteria === 'object' ? { ...rawCard.matched_criteria } : {},
+    blockers: normalizeStringList(rawCard?.blockers).slice(0, 5),
     is_open: status === 'aberto',
   };
 }
@@ -2276,6 +2305,7 @@ function applyFiltersAndRender({ resetPage } = { resetPage: false }) {
   // 2.4) Recorte por KPI clicado
   if (kpiFilter === 'abertos') filtered = filtered.filter((edital) => !isClosedEdital(edital));
   if (kpiFilter === 'fechados') filtered = filtered.filter((edital) => isClosedEdital(edital));
+  if (kpiFilter === 'recomendados') filtered = filtered.filter((edital) => edital?.is_highlighted || edital?.relevance_level === 'perfect');
 
   // 2.5) Só salvos
   if (onlyFavoritos) filtered = filtered.filter(e => !!e.is_favorite);
@@ -2429,8 +2459,10 @@ function updateHeroStats(filtered) {
 
   let abertos = 0;
   let fechados = 0;
+  let recomendados = 0;
 
   for (const e of filtered) {
+    if (e?.is_highlighted || e?.relevance_level === 'perfect') recomendados++;
     const t = parseAnyDateToTime(e.data_fechamento);
     // Sem data final: considera como aberto (melhor UX do que sumir com números)
     if (t === null) {
@@ -2444,6 +2476,7 @@ function updateHeroStats(filtered) {
 
   if (statAbertos) statAbertos.textContent = String(abertos);
   if (statFechados) statFechados.textContent = String(fechados);
+  if (statRecomendados) statRecomendados.textContent = String(recomendados);
 }
 
 
@@ -2684,7 +2717,7 @@ const doLogout = async () => {
     });
   }
 
-  [statChipTotal, statChipAbertos, statChipFechados].forEach((btn) => {
+  [statChipTotal, statChipAbertos, statChipFechados, statChipRecomendados].forEach((btn) => {
     if (!btn) return;
     btn.addEventListener('click', () => {
       const next = String(btn.getAttribute('data-kpi-filter') || 'all');
@@ -3027,11 +3060,97 @@ function extractFileNameFromUrl(url) {
 function getModalStatusChip(edital) {
   const chips = [];
   if (edital?.is_highlighted) {
-    chips.push('<span class="status-chip status-chip--highlight">Em destaque</span>');
+    chips.push(`<span class="status-chip status-chip--highlight">${escapeHtml(getRecommendationBadgeLabel(edital))}</span>`);
+  } else if (edital?.relevance_level === 'high') {
+    chips.push('<span class="status-chip status-chip--recommendation">Alta aderência</span>');
+  } else if (edital?.relevance_level === 'medium') {
+    chips.push('<span class="status-chip status-chip--recommendation-muted">Pode interessar</span>');
   }
   if (isClosedEdital(edital)) chips.push('<span class="status-chip status-chip--closed">Encerrado</span>');
   else chips.push('<span class="status-chip status-chip--open">Aberto</span>');
   return chips.join('');
+}
+
+function getRecommendationBadgeLabel(edital) {
+  const explicit = String(edital?.recommendation_label || '').trim();
+  if (explicit) return explicit;
+  if (edital?.relevance_level === 'perfect') return '100% aderente ao seu perfil';
+  return 'Recomendado para você';
+}
+
+function formatProfileFieldLabel(field) {
+  const labels = {
+    porte_empresa: 'porte da empresa',
+    tipo_participante: 'tipo de participante',
+    documentos_disponiveis: 'documentos disponíveis',
+    estado_uf: 'estado (UF)',
+    areas_interesse: 'áreas de interesse',
+    setor_atuacao: 'setor de atuação',
+  };
+  return labels[field] || String(field || '').replace(/_/g, ' ');
+}
+
+function formatMatchedCriteriaLabel(key) {
+  const labels = {
+    area: 'Área/categoria',
+    estado: 'Estado/abrangência',
+    publico_alvo: 'Público-alvo',
+    porte_empresa: 'Porte da empresa',
+    setor: 'Setor',
+    prazo: 'Prazo/status',
+    documentos: 'Documentos',
+    instrumento: 'Instrumento',
+  };
+  return labels[key] || String(key || '').replace(/_/g, ' ');
+}
+
+function buildRecommendationModalSection(edital) {
+  const score = normalizeRelevanceScore(edital?.relevance_score);
+  const level = normalizeRelevanceLevel(edital?.relevance_level);
+  const label = getRecommendationBadgeLabel(edital);
+  const reasons = normalizeStringList(edital?.relevance_reasons).slice(0, 4);
+  const warnings = normalizeStringList(edital?.relevance_warnings).slice(0, 4);
+  const missing = normalizeStringList(edital?.missing_profile_fields).slice(0, 6);
+  const blockers = normalizeStringList(edital?.blockers).slice(0, 4);
+  const matchedCriteria = edital?.matched_criteria && typeof edital.matched_criteria === 'object' ? edital.matched_criteria : {};
+  const attended = Object.entries(matchedCriteria)
+    .filter(([, value]) => value === true)
+    .map(([key]) => formatMatchedCriteriaLabel(key));
+  const notAttended = Object.entries(matchedCriteria)
+    .filter(([, value]) => value === false)
+    .map(([key]) => formatMatchedCriteriaLabel(key));
+
+  if (!score && !level && !reasons.length && !warnings.length && !missing.length && !blockers.length) return '';
+
+  const listHtml = (items, emptyText = '') => {
+    if (!items.length) return emptyText ? `<p class="recommendation-empty">${escapeHtml(emptyText)}</p>` : '';
+    return `<ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>`;
+  };
+
+  return `
+    <section class="recommendation-section" aria-label="Por que este edital foi recomendado?">
+      <div class="recommendation-header">
+        <div>
+          <h3>Por que recomendado?</h3>
+          <p>${escapeHtml(label)}${score ? ` · ${score}/100` : ''}</p>
+        </div>
+      </div>
+      <div class="recommendation-grid">
+        <article>
+          <h4>Critérios atendidos</h4>
+          ${listHtml([...attended, ...reasons].slice(0, 6), 'Nenhum critério atendido com segurança.')}
+        </article>
+        <article>
+          <h4>Pontos de atenção</h4>
+          ${listHtml([...blockers, ...warnings, ...notAttended.map((item) => `${item} não confirmado`)].slice(0, 6), 'Sem pontos de atenção relevantes.')}
+        </article>
+        <article>
+          <h4>Informações faltantes</h4>
+          ${listHtml(missing.map(formatProfileFieldLabel), 'Perfil suficiente para esta análise.')}
+        </article>
+      </div>
+    </section>
+  `;
 }
 
 function isNotInformedLabel(value) {
@@ -3180,6 +3299,7 @@ async function openModal(edital) {
     </div>
 
     ${tagsHtml}
+    ${buildRecommendationModalSection(edital)}
 
     <div class="edital-ai-cta">
       <div class="cta-text">

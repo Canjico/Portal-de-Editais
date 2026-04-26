@@ -30,6 +30,8 @@ const EXPLAIN_FILTER_HINTS = [
 const EXPLAIN_CARD_HINTS = [
   'esse edital', 'este edital', 'esse card', 'este card', 'me explique esse', 'explica esse', 'detalhes desse',
   'qual o prazo desse', 'qual o prazo deste', 'qual o valor desse', 'quem pode participar desse',
+  'por que recomendado', 'por que foi recomendado', 'porque recomendado', 'combina comigo',
+  'documentos desse', 'documentos deste', 'quais documentos',
 ];
 
 const COMPARE_HINTS = [
@@ -325,7 +327,14 @@ export function normalizeAssistantCard(rawCard, { now = new Date() } = {}) {
     area: firstNonEmpty(rawCard?.area),
     tags: Array.isArray(rawCard?.tags) ? rawCard.tags.map((item) => String(item || '').trim()).filter(Boolean) : [],
     relevanceScore: Number(rawCard?.relevance_score || 0) || 0,
+    relevanceLevel: String(rawCard?.relevance_level || '').trim(),
     isHighlighted: Boolean(rawCard?.is_highlighted),
+    recommendationLabel: String(rawCard?.recommendation_label || '').trim(),
+    relevanceReasons: Array.isArray(rawCard?.relevance_reasons) ? rawCard.relevance_reasons.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 5) : [],
+    relevanceWarnings: Array.isArray(rawCard?.relevance_warnings) ? rawCard.relevance_warnings.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 5) : [],
+    missingProfileFields: Array.isArray(rawCard?.missing_profile_fields) ? rawCard.missing_profile_fields.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 8) : [],
+    matchedCriteria: rawCard?.matched_criteria && typeof rawCard.matched_criteria === 'object' ? { ...rawCard.matched_criteria } : {},
+    blockers: Array.isArray(rawCard?.blockers) ? rawCard.blockers.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 5) : [],
     source: rawCard,
   };
 }
@@ -678,6 +687,18 @@ function formatCardListLine(card) {
   return `- ${title} | ${instituicao} | ${estado} | ${statusLabel} | Prazo: ${prazoLabel}${linkText}`;
 }
 
+function formatProfileFieldName(field) {
+  const labels = {
+    porte_empresa: 'porte da empresa',
+    tipo_participante: 'tipo de participante',
+    documentos_disponiveis: 'documentos disponiveis',
+    estado_uf: 'estado (UF)',
+    areas_interesse: 'areas de interesse',
+    setor_atuacao: 'setor de atuacao',
+  };
+  return labels[field] || String(field || '').replace(/_/g, ' ');
+}
+
 function formatExplainCard(card) {
   if (!card) return '';
   const parts = [
@@ -689,6 +710,13 @@ function formatExplainCard(card) {
     `Valor do fomento: ${card.valorFomentoInformado ? card.valorFomento : 'Nao informado'}`,
     `Resumo: ${card.descricao || 'Nao informado'}`,
   ];
+  if (card.relevanceScore || card.recommendationLabel || card.relevanceReasons.length || card.blockers.length) {
+    parts.push(`Aderencia: ${card.recommendationLabel || card.relevanceLevel || 'Nao informada'}${card.relevanceScore ? ` (${card.relevanceScore}/100)` : ''}`);
+  }
+  if (card.relevanceReasons.length) parts.push(`Por que: ${card.relevanceReasons.slice(0, 3).join('; ')}`);
+  if (card.blockers.length) parts.push(`Bloqueios: ${card.blockers.slice(0, 2).join('; ')}`);
+  if (card.relevanceWarnings.length) parts.push(`Atencao: ${card.relevanceWarnings.slice(0, 2).join('; ')}`);
+  if (card.missingProfileFields.length) parts.push(`Falta no perfil: ${card.missingProfileFields.slice(0, 4).map(formatProfileFieldName).join(', ')}`);
   if (card.link) parts.push(`Link: ${card.link}`);
   return parts.join('\n');
 }
@@ -816,6 +844,14 @@ function buildChatOptions(results) {
     estado: card.estado,
     data_fechamento: card.prazoFinal,
     is_highlighted: Boolean(card.isHighlighted),
+    relevance_score: Number(card.relevanceScore || 0) || 0,
+    relevance_level: card.relevanceLevel || '',
+    recommendation_label: card.recommendationLabel || '',
+    relevance_reasons: card.relevanceReasons || [],
+    relevance_warnings: card.relevanceWarnings || [],
+    missing_profile_fields: card.missingProfileFields || [],
+    matched_criteria: card.matchedCriteria || {},
+    blockers: card.blockers || [],
     status: formatStatusLabel(card.status),
     share_link: card.link || '',
   }));
@@ -928,6 +964,9 @@ export function runDashboardAssistantSemanticQuery({
 
   const criteria = buildCriteria(normalizedQuestion, normalizedCards, now);
   const intent = classifyIntent(normalizedQuestion, criteria);
+  if (intent === 'explain_specific_card' || intent === 'sort_cards') {
+    criteria.keywords = [];
+  }
   const baseScope = resolveBaseScope(normalizedQuestion, normalizedCards, normalizedVisibleCards, safeMemory, cardById);
 
   if (intent === 'explain_filters') {
@@ -958,9 +997,18 @@ export function runDashboardAssistantSemanticQuery({
     };
   }
 
-  const filtered = applyCriteriaFilters(baseScope.cards, criteria, { now });
+  let filtered = applyCriteriaFilters(baseScope.cards, criteria, { now });
+  const wantsPerfectRecommendation = hasAnyPhrase(normalizedQuestion, ['100% aderente', 'cem por cento aderente', 'totalmente aderente']);
+  const wantsRecommendationList = wantsPerfectRecommendation || hasAnyPhrase(normalizedQuestion, ['recomendados para mim', 'recomendado para mim', 'alta aderencia', 'aderentes ao meu perfil']);
+  if (wantsRecommendationList) {
+    filtered = filtered.filter((card) => (
+      wantsPerfectRecommendation
+        ? card.relevanceLevel === 'perfect'
+        : (card.isHighlighted || card.relevanceLevel === 'perfect' || card.relevanceLevel === 'high' || Number(card.relevanceScore || 0) >= 75)
+    ));
+  }
   const explicitSortInstruction = detectSortInstruction(normalizedQuestion);
-  const sortInstruction = explicitSortInstruction || (criteria.deadline ? { field: 'prazo', direction: 'asc', mode: 'list' } : null);
+  const sortInstruction = explicitSortInstruction || (wantsRecommendationList ? { field: 'relevancia', direction: 'desc', mode: 'list' } : (criteria.deadline ? { field: 'prazo', direction: 'asc', mode: 'list' } : null));
   const sorted = sortCards(filtered, sortInstruction);
   const total = sorted.length;
   const transparency = buildTransparencyLine(baseScope, uiState);
@@ -1222,6 +1270,8 @@ export function runDashboardAssistantSemanticQuery({
   if (criteria.deadline?.label) criteriaDetails.push(`Prazo: ${criteria.deadline.label}`);
   if (criteria.funding === 'missing') criteriaDetails.push('Valor de fomento: nao informado');
   if (criteria.funding === 'informed') criteriaDetails.push('Valor de fomento: informado');
+  if (wantsPerfectRecommendation) criteriaDetails.push('100% aderentes ao perfil');
+  else if (wantsRecommendationList) criteriaDetails.push('Recomendados para o perfil');
 
   const header = criteriaDetails.length
     ? `Encontrei ${total} card(s) com o recorte (${criteriaDetails.join(' | ')}).`
