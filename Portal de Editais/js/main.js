@@ -2741,7 +2741,7 @@ const doLogout = async () => {
   // opções clicáveis do chat (ex: lista de editais)
   if (messageContainer) {
     messageContainer.addEventListener('click', (e) => {
-      const btn = e.target.closest('button.chat-option-btn');
+      const btn = e.target.closest('button.chat-option-btn, button.chat-refine-chip');
       if (!btn) return;
 
       const action = btn.getAttribute('data-action');
@@ -2772,6 +2772,14 @@ const doLogout = async () => {
       if (action === 'send_refinement') {
         const q = btn.getAttribute('data-query') || '';
         if (!q || !chatInput) return;
+        const panel = btn.closest('.chat-refine-panel');
+        if (panel?.dataset.submitted === 'true') return;
+        if (panel) {
+          panel.dataset.submitted = 'true';
+          panel.querySelectorAll('button.chat-refine-chip').forEach((chip) => {
+            chip.disabled = true;
+          });
+        }
         chatInput.value = q;
         handleChatSend({ source: 'quick_refinement' });
         return;
@@ -2783,8 +2791,7 @@ const doLogout = async () => {
           chatInput.value = '';
           chatInput.focus();
         }
-        const refineMsg = addMessage('Você pode refinar por estado, instituição, status ou prazo. Exemplo: "Quero em SP", "Só abertas", "Da FAPESP" ou "Vencem esta semana".', 'bot');
-        attachRefinementSuggestionOptions(refineMsg);
+        showDashboardRefinementPanel();
         return;
       }
     });
@@ -4850,28 +4857,109 @@ function attachEditaisOptions(msgEl, query, rawOptions = null, rawStructuredPayl
   scrollToBottom();
 }
 
+function getLastDashboardResultCards() {
+  const ids = Array.isArray(assistantSemanticMemory?.lastResultIds)
+    ? assistantSemanticMemory.lastResultIds.map((id) => String(id || '').trim()).filter(Boolean)
+    : [];
+  if (!ids.length || !Array.isArray(editaisOriginais) || !editaisOriginais.length) return [];
+
+  const byId = new Map(editaisOriginais.map((item) => [String(item?.id ?? ''), item]));
+  return ids.map((id) => byId.get(id)).filter(Boolean);
+}
+
+function mostFrequentString(values) {
+  const counts = new Map();
+  values
+    .map((value) => String(value || '').trim())
+    .filter(Boolean)
+    .forEach((value) => {
+      const key = normalizeAssistantQuery(value);
+      if (!key) return;
+      const current = counts.get(key) || { value, count: 0 };
+      current.count += 1;
+      counts.set(key, current);
+    });
+
+  return Array.from(counts.values()).sort((a, b) => b.count - a.count || a.value.localeCompare(b.value, 'pt-BR'))[0]?.value || '';
+}
+
+function inferInstitutionShortLabel(institution) {
+  const text = String(institution || '').trim();
+  if (!text) return '';
+  const acronym = text.match(/\b[A-ZÀ-Ý]{3,}(?:[-/][A-ZÀ-Ý0-9]{2,})?\b/);
+  if (acronym) return acronym[0];
+  return truncateText(text, 14);
+}
+
+function buildDashboardRefinementSuggestions() {
+  const cards = getLastDashboardResultCards();
+  const states = cards.map((card) => String(normalizeEstadoValue(card?.estado) || '').trim().toUpperCase()).filter(Boolean);
+  const stateLabel = states.includes('SP') ? 'SP' : (mostFrequentString(states) || 'SP');
+  const institution = mostFrequentString(cards.map((card) => card?.instituicao));
+  const institutionLabel = inferInstitutionShortLabel(institution) || 'FAPESP';
+  const institutionQuery = institution || institutionLabel || 'FAPESP';
+
+  const rawSuggestions = [
+    { label: stateLabel || 'SP', query: `Quero em ${stateLabel || 'SP'}` },
+    { label: 'Só abertas', query: 'Só abertas' },
+    { label: 'Esta semana', query: 'Vencem esta semana' },
+    { label: institutionLabel, query: `Da ${institutionQuery}` },
+  ];
+
+  const seen = new Set();
+  return rawSuggestions.filter((suggestion) => {
+    const key = normalizeAssistantQuery(suggestion.label);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function removeRefinementPanels() {
+  if (!messageContainer) return;
+  messageContainer.querySelectorAll('.chat-refine-message').forEach((node) => node.remove());
+}
+
+function showDashboardRefinementPanel() {
+  if (!hasDashboardSearchMemory()) {
+    addMessage('Faça uma busca primeiro, por exemplo: "Mostre oportunidades para inovação" ou "Quais editais estão abertos em SP".', 'bot');
+    return;
+  }
+
+  removeRefinementPanels();
+  const msg = addMessage('', 'bot');
+  if (!msg) return;
+  msg.classList.add('chat-refine-message');
+  attachRefinementSuggestionOptions(msg);
+}
+
 function attachRefinementSuggestionOptions(msgEl) {
   if (!msgEl) return;
-  const suggestions = [
-    'Quero em SP',
-    'Só abertas',
-    'Vencem esta semana',
-    'Da FAPESP',
-  ];
-  const wrap = document.createElement('div');
-  wrap.className = 'chat-options';
+  const bubble = msgEl.querySelector('.bubble');
+  if (!bubble) return;
 
-  suggestions.forEach((label) => {
+  const panel = document.createElement('div');
+  panel.className = 'chat-refine-panel';
+  panel.setAttribute('data-refine-panel', 'true');
+  panel.innerHTML = `
+    <div class="chat-refine-title">Refinar busca</div>
+    <div class="chat-refine-subtitle">Escolha um atalho ou digite seu próprio filtro.</div>
+    <div class="chat-refine-actions"></div>
+  `.trim();
+
+  const actions = panel.querySelector('.chat-refine-actions');
+  buildDashboardRefinementSuggestions().forEach((suggestion) => {
     const btn = document.createElement('button');
     btn.type = 'button';
-    btn.className = 'chat-option-btn';
+    btn.className = 'chat-refine-chip';
     btn.setAttribute('data-action', 'send_refinement');
-    btn.setAttribute('data-query', label);
-    btn.innerHTML = `<div class="chat-opt-title">${escapeHtml(label)}</div>`;
-    wrap.appendChild(btn);
+    btn.setAttribute('data-query', suggestion.query);
+    btn.textContent = suggestion.label;
+    actions.appendChild(btn);
   });
 
-  msgEl.appendChild(wrap);
+  bubble.innerHTML = '';
+  bubble.appendChild(panel);
   scrollToBottom();
 }
 
