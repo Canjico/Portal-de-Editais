@@ -3511,6 +3511,20 @@ const CHAT_LISTING_HINTS = [
   'tem edital', 'tem editais', 'oportunidade', 'oportunidades',
 ];
 
+const DASHBOARD_LISTING_QUESTION_HINTS = [
+  'quais editais',
+  'quantos editais',
+  'mostre editais',
+  'liste editais',
+  'editais abertos',
+  'editais em',
+  'vencem',
+  'prazo nesta semana',
+  'tem edital',
+  'edital da',
+  'edital de',
+];
+
 const CHAT_REFINE_HINTS = [
   'quero edital', 'quero editais', 'quero buscar', 'quero buscar algo',
   'me mostra oportunidade', 'me mostra oportunidades', 'tem alguma oportunidade',
@@ -3630,6 +3644,18 @@ function hasSpecificChatKeywords(keywords) {
 function messageHasAnyPhrase(normalizedQuery, phrases) {
   if (!normalizedQuery || !Array.isArray(phrases) || !phrases.length) return false;
   return phrases.some((phrase) => normalizedQuery.includes(normalizeAssistantQuery(phrase)));
+}
+
+function isDashboardListingQuestion(question) {
+  const normalizedQuery = normalizeAssistantQuery(question);
+  if (!normalizedQuery) return false;
+  if (messageHasAnyPhrase(normalizedQuery, DASHBOARD_LISTING_QUESTION_HINTS)) return true;
+
+  return (
+    /\bmostre\s+(os\s+|as\s+)?editais\b/.test(normalizedQuery) ||
+    /\bliste\s+(os\s+|as\s+)?editais\b/.test(normalizedQuery) ||
+    /\beditais\s+(em|no|na|nos|nas)\b/.test(normalizedQuery)
+  );
 }
 
 function classifyAssistantIntent(question) {
@@ -4346,51 +4372,12 @@ async function handleChatSend(options = {}) {
   }
 
   const contextualEditalId = getActiveEditalContext()?.editalId ?? null;
-  if (!contextualEditalId) {
+  if (!contextualEditalId && isDashboardListingQuestion(question)) {
     setChatBusy(true);
     const typingMsg = addMessage('pensando...', 'bot', null, { isTyping: true });
 
     try {
       const dashboardContext = buildDashboardIntelligenceContext();
-      const streamOutcome = await tryChatStreamRequest({
-        endpoint: '/chat/dashboard-intelligence/stream',
-        requestBody: {
-          message: question,
-          question,
-          state: chatState,
-          dashboard_context: dashboardContext,
-        },
-        typingMsg,
-      });
-
-      if (streamOutcome.ok) {
-        const donePayload = streamOutcome?.donePayload && typeof streamOutcome.donePayload === 'object'
-          ? streamOutcome.donePayload
-          : {};
-        const hasBackendState = Boolean(donePayload?.state && typeof donePayload.state === 'object');
-
-        if (hasBackendState) {
-          chatState = ensureChatSessionState(donePayload.state);
-          persistChatState(chatState);
-          updateChatHeader();
-        } else {
-          chatState = appendConversationTurn(chatState, 'assistant', streamOutcome.text || '');
-          persistChatState(chatState);
-        }
-
-        const streamOptions = Array.isArray(donePayload?.options) ? donePayload.options : [];
-        if (donePayload?.should_search) {
-          attachEditaisOptions(
-            typingMsg,
-            question,
-            streamOptions.length ? streamOptions : null,
-            null
-          );
-        }
-        return;
-      }
-      if (streamOutcome.aborted) return;
-
       setMessageText(typingMsg, 'digitando...', null, { keepTyping: true });
       const { res, data } = await apiFetchJson('/chat/dashboard-intelligence', {
         method: 'POST',
