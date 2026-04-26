@@ -69,6 +69,8 @@ import {
 import { runDashboardBootstrapFlow } from './bootstrap-flows.js?v=20260416.1';
 import { readAuthHandoff } from './auth-handoff.js?v=20260422.1';
 
+console.info('[Athos][main.js] versão chat refinamento acumulado 20260426.2 carregada');
+
 const APP_BASE_URL = new URL('../', import.meta.url);
 const SHARE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{20,255}$/;
 
@@ -1891,11 +1893,11 @@ function rememberAssistantResultSetFromPayload(payload, { question = '', intent 
     ? payload.result_ids.map((id) => String(id || '').trim()).filter(Boolean)
     : [];
 
-  if (!ids.length) return;
-
   const nextFilters = hasDashboardFilterValue(dashboardFilters)
     ? normalizeDashboardFilterState(dashboardFilters)
     : normalizeDashboardFilterState(payload.filters || assistantSemanticMemory?.lastDashboardFilters);
+
+  if (!ids.length && !hasDashboardFilterValue(nextFilters)) return;
 
   assistantSemanticMemory = createDashboardMemoryState({
     ...assistantSemanticMemory,
@@ -2873,7 +2875,7 @@ const doLogout = async () => {
           });
         }
         chatInput.value = q;
-        handleChatSend({ source: 'quick_refinement' });
+        handleChatSend({ source: 'quick_refinement', forceDashboardRefinement: true });
         return;
       }
 
@@ -4519,14 +4521,7 @@ function applyAccumulatedFiltersToDashboardPlan(plan, rawFilters) {
   if (!hasDashboardFilterValue(filters)) return plan;
 
   const allCards = Array.isArray(editaisOriginais) ? editaisOriginais : [];
-  const byId = new Map(allCards.map((card) => [String(card?.id ?? ''), card]));
-  const planIds = Array.isArray(plan?.matched_card_ids)
-    ? plan.matched_card_ids.map((id) => String(id || '').trim()).filter(Boolean)
-    : [];
-  const candidates = planIds.length
-    ? planIds.map((id) => byId.get(id)).filter(Boolean)
-    : allCards;
-  const filteredCards = candidates.filter((card) => dashboardCardMatchesFilters(card, filters));
+  const filteredCards = allCards.filter((card) => dashboardCardMatchesFilters(card, filters));
   const filteredIds = filteredCards.map((card) => String(card?.id ?? '')).filter(Boolean);
 
   return {
@@ -5317,8 +5312,9 @@ async function handleChatSend(options = {}) {
   chatState = appendConversationTurn(chatState, 'user', question);
   persistChatState(chatState);
 
+  const forceDashboardRefinement = Boolean(options?.forceDashboardRefinement);
   const dashboardListingQuestion = isDashboardListingQuestion(question);
-  const dashboardRefinementQuestion = isDashboardRefinementQuestion(question);
+  const dashboardRefinementQuestion = forceDashboardRefinement || isDashboardRefinementQuestion(question);
   const dashboardRefinementSignals = getDashboardRefinementSignals(question);
   let activeContext = getActiveEditalContext();
   if (activeContext?.editalId && (dashboardListingQuestion || dashboardRefinementQuestion)) {
@@ -5394,10 +5390,21 @@ async function handleChatSend(options = {}) {
     const refinementDashboardFilters = dashboardRefinementQuestion
       ? dashboardFiltersFromRefinementQuestion(question)
       : normalizeDashboardFilterState();
+    const requestAccumulatedDashboardFilters = dashboardRefinementQuestion
+      ? mergeDashboardFilterState(priorDashboardFilters, refinementDashboardFilters)
+      : priorDashboardFilters;
     const dashboardRequestQuestion = dashboardRefinementQuestion
-      ? buildDashboardRefinementQuestion(question, priorDashboardFilters)
+      ? buildDashboardRefinementQuestion(question, requestAccumulatedDashboardFilters)
       : question;
     const dashboardOptionsQuestion = dashboardRequestQuestion;
+    if (dashboardRefinementQuestion) {
+      console.info('[CHAT][refinement]', {
+        question,
+        priorDashboardFilters,
+        refinementDashboardFilters,
+        accumulatedDashboardFilters: requestAccumulatedDashboardFilters,
+      });
+    }
     setChatBusy(true);
     const typingMsg = addMessage('Analisando os editais...', 'bot', null, { isTyping: true });
     const requestController = new AbortController();
@@ -5430,7 +5437,7 @@ async function handleChatSend(options = {}) {
       if (!plan) throw new Error('invalid-dashboard-plan');
       const planFilters = dashboardFiltersFromPlan(plan);
       const accumulatedDashboardFilters = dashboardRefinementQuestion
-        ? mergeDashboardFilterState(mergeDashboardFilterState(priorDashboardFilters, planFilters), refinementDashboardFilters)
+        ? mergeDashboardFilterState(planFilters, requestAccumulatedDashboardFilters)
         : planFilters;
       const displayPlan = applyAccumulatedFiltersToDashboardPlan(plan, accumulatedDashboardFilters);
 
@@ -5490,7 +5497,7 @@ async function handleChatSend(options = {}) {
       });
       const fallbackPlanFilters = dashboardFiltersFromPlan(fallbackPlan);
       const accumulatedFallbackFilters = dashboardRefinementQuestion
-        ? mergeDashboardFilterState(mergeDashboardFilterState(priorDashboardFilters, fallbackPlanFilters), refinementDashboardFilters)
+        ? mergeDashboardFilterState(fallbackPlanFilters, requestAccumulatedDashboardFilters)
         : fallbackPlanFilters;
       const displayFallbackPlan = applyAccumulatedFiltersToDashboardPlan(fallbackPlan, accumulatedFallbackFilters);
       const filteredSemanticPayload = normalizeAssistantSearchPayload(

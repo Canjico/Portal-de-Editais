@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
 const mainSource = await readFile(new URL('../main.js', import.meta.url), 'utf8');
+const indexSource = await readFile(new URL('../../index.html', import.meta.url), 'utf8');
 
 test('dashboard list endpoint uses paginated summary mode on initial load', () => {
   assert.match(mainSource, /params\.set\('summary', '1'\)/);
@@ -40,4 +41,20 @@ test('legacy fallback requests full dataset and does not use summary mode', () =
 test('server paged hero uses global stats metadata from backend', () => {
   assert.match(mainSource, /updateHeroStats\(editaisOriginais,\s*\{\s*globalStats:\s*serverPageMeta\.stats\s*\}\)/);
   assert.match(mainSource, /function normalizeHeroStatsFromMeta\(globalStats, fallbackStats\)/);
+});
+
+test('chat refinement build is cache busted and logged', () => {
+  assert.match(indexSource, /src="\.\/js\/main\.js\?v=20260426\.2"/);
+  assert.match(mainSource, /console\.info\('\[Athos\]\[main\.js\] versão chat refinamento acumulado 20260426\.2 carregada'\)/);
+});
+
+test('dashboard refinements use accumulated filters and dashboard intelligence endpoint', () => {
+  assert.doesNotMatch(mainSource, /\{\s*\.assistantSemanticMemory\s*,?\s*\}/);
+  assert.match(mainSource, /handleChatSend\(\{ source: 'quick_refinement', forceDashboardRefinement: true \}\)/);
+  assert.match(mainSource, /const dashboardRefinementQuestion = forceDashboardRefinement \|\| isDashboardRefinementQuestion\(question\);/);
+  assert.match(mainSource, /buildDashboardRefinementQuestion\(question, requestAccumulatedDashboardFilters\)/);
+  assert.match(mainSource, /apiFetchJson\('\/chat\/dashboard-intelligence'/);
+  assert.match(mainSource, /console\.info\('\[CHAT\]\[refinement\]'/);
+  assert.match(mainSource, /mergeDashboardFilterState\(planFilters, requestAccumulatedDashboardFilters\)/);
+  assert.match(mainSource, /const filteredCards = allCards\.filter\(\(card\) => dashboardCardMatchesFilters\(card, filters\)\);/);
 });
