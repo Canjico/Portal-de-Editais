@@ -2769,13 +2769,22 @@ const doLogout = async () => {
         return;
       }
 
+      if (action === 'send_refinement') {
+        const q = btn.getAttribute('data-query') || '';
+        if (!q || !chatInput) return;
+        chatInput.value = q;
+        handleChatSend({ source: 'quick_refinement' });
+        return;
+      }
+
       if (action === 'ask_new') {
         clearActiveEditalContext();
         if (chatInput) {
           chatInput.value = '';
           chatInput.focus();
         }
-        addMessage('Me diga um tema (ex: inovação, saúde, educação, agricultura) ou uma instituição (ex: FAPEAL, FINEP).', 'bot');
+        const refineMsg = addMessage('Você pode refinar por estado, instituição, status ou prazo. Exemplo: "Quero em SP", "Só abertas", "Da FAPESP" ou "Vencem esta semana".', 'bot');
+        attachRefinementSuggestionOptions(refineMsg);
         return;
       }
     });
@@ -3679,6 +3688,45 @@ const DASHBOARD_OPPORTUNITY_HINTS = [
   'selecoes',
 ];
 
+const DASHBOARD_REFINEMENT_PREFIX_HINTS = [
+  'quero',
+  'em',
+  'no',
+  'na',
+  'so',
+  'só',
+  'apenas',
+  'filtra',
+  'filtrar',
+  'filtre',
+  'agora',
+  'da',
+  'do',
+  'de',
+  'com',
+  'vencendo',
+];
+
+const DASHBOARD_REFINEMENT_CATEGORY_HINTS = [
+  'tecnologia',
+  'inovacao',
+  'inovação',
+  'saude',
+  'saúde',
+  'educacao',
+  'educação',
+  'agricultura',
+  'cultura',
+  'ciencia',
+  'ciência',
+  'pesquisa',
+  'meio ambiente',
+  'sustentabilidade',
+  'social',
+  'esporte',
+  'infraestrutura',
+];
+
 const CHAT_REFINE_HINTS = [
   'quero edital', 'quero editais', 'quero buscar', 'quero buscar algo',
   'me mostra oportunidade', 'me mostra oportunidades', 'tem alguma oportunidade',
@@ -3816,6 +3864,158 @@ function isDashboardListingQuestion(question) {
   );
 }
 
+function hasDashboardSearchMemory() {
+  const lastQuestion = String(assistantSemanticMemory?.lastQuestion || '').trim();
+  const resultIds = Array.isArray(assistantSemanticMemory?.lastResultIds)
+    ? assistantSemanticMemory.lastResultIds.map((id) => String(id || '').trim()).filter(Boolean)
+    : [];
+  return Boolean(lastQuestion || resultIds.length);
+}
+
+function getDashboardStateAliases() {
+  const aliases = [];
+  Object.entries(ESTADO_LABELS).forEach(([uf, name]) => {
+    aliases.push({ alias: normalizeAssistantQuery(uf), value: uf });
+    aliases.push({ alias: normalizeAssistantQuery(name), value: uf });
+  });
+  return aliases
+    .filter((item) => item.alias)
+    .sort((a, b) => b.alias.length - a.alias.length);
+}
+
+function detectDashboardRefinementStates(normalizedQuery) {
+  if (!normalizedQuery) return [];
+  const found = [];
+  const seen = new Set();
+
+  getDashboardStateAliases().forEach(({ alias, value }) => {
+    if (!alias || seen.has(value)) return;
+    if (alias === 'para' && !/(?:^|\s)(?:pa|estado\s+do\s+para|estado\s+de\s+para|no\s+para|em\s+para)(?:\s|$)/.test(normalizedQuery)) {
+      return;
+    }
+    const pattern = alias.length <= 2
+      ? new RegExp(`(?:^|\\s)${alias}(?:\\s|$)`)
+      : new RegExp(`(?:^|\\s)${alias}(?:\\s|$)`);
+    if (!pattern.test(normalizedQuery)) return;
+    seen.add(value);
+    found.push(value);
+  });
+
+  return found;
+}
+
+function detectDashboardRefinementStatus(normalizedQuery) {
+  if (!normalizedQuery) return [];
+  const wantsClosed = hasAnyChatHint(normalizedQuery, ['encerrado', 'encerrados', 'encerrada', 'encerradas', 'fechado', 'fechados', 'fechada', 'fechadas', 'vencido', 'vencidos', 'expirado']);
+  const wantsOpen = !wantsClosed && hasAnyChatHint(normalizedQuery, ['aberto', 'abertos', 'aberta', 'abertas', 'vigente', 'vigentes', 'ativo', 'ativos']);
+  if (wantsOpen) return ['aberto'];
+  if (wantsClosed) return ['encerrado'];
+  return [];
+}
+
+function detectDashboardRefinementInstitution(question, normalizedQuery) {
+  const raw = String(question || '');
+  const acronymMatch = raw.match(/\b[A-ZÀ-Ý]{3,}(?:[-/][A-ZÀ-Ý0-9]{2,})?\b/);
+  if (acronymMatch) {
+    const acronym = acronymMatch[0].trim();
+    if (!ESTADO_LABELS[acronym.toUpperCase()]) return acronym;
+  }
+
+  const institutions = Array.from(
+    new Set(
+      (Array.isArray(editaisOriginais) ? editaisOriginais : [])
+        .map((item) => String(item?.instituicao || '').trim())
+        .filter(Boolean)
+    )
+  ).sort((a, b) => b.length - a.length);
+
+  const match = institutions.find((institution) => {
+    const normalizedInstitution = normalizeAssistantQuery(institution);
+    return normalizedInstitution && new RegExp(`(?:^|\\s)${normalizedInstitution.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:\\s|$)`).test(normalizedQuery);
+  });
+  return match || '';
+}
+
+function detectDashboardRefinementCategory(normalizedQuery) {
+  if (!normalizedQuery) return '';
+  const option = CATEGORY_OPTIONS.find((item) => {
+    const valueKey = normalizeAssistantQuery(item.value);
+    const labelKey = normalizeAssistantQuery(item.label);
+    return (valueKey && normalizedQuery.includes(valueKey)) || (labelKey && normalizedQuery.includes(labelKey));
+  });
+  if (option) return option.label;
+
+  const hint = DASHBOARD_REFINEMENT_CATEGORY_HINTS.find((item) => normalizedQuery.includes(normalizeAssistantQuery(item)));
+  return hint || '';
+}
+
+function detectDashboardRefinementDeadline(normalizedQuery) {
+  if (!normalizedQuery) return false;
+  return (
+    hasAnyChatHint(normalizedQuery, ['semana', 'esta semana', 'essa semana', 'nesta semana', 'proximos dias', 'próximos dias', '7 dias']) ||
+    hasAnyChatHint(normalizedQuery, ['vencem', 'vence', 'vencendo', 'prazo', 'prazos'])
+  ) && (
+    hasAnyChatHint(normalizedQuery, ['semana', 'proximos dias', 'próximos dias', '7 dias']) ||
+    hasAnyChatHint(normalizedQuery, ['vencem', 'vence', 'vencendo'])
+  );
+}
+
+function getDashboardRefinementSignals(question) {
+  const normalizedQuery = normalizeAssistantQuery(question);
+  if (!normalizedQuery) {
+    return {
+      hasSignal: false,
+      isComplementary: false,
+      states: [],
+      status: [],
+      institution: '',
+      category: '',
+      deadline: false,
+    };
+  }
+
+  const tokens = normalizedQuery.split(/\s+/).filter(Boolean);
+  const startsLikeRefinement = messageHasAnyPhrase(
+    tokens.slice(0, 2).join(' '),
+    DASHBOARD_REFINEMENT_PREFIX_HINTS
+  ) || DASHBOARD_REFINEMENT_PREFIX_HINTS.includes(tokens[0]);
+  const isShort = tokens.length <= 8;
+  const states = detectDashboardRefinementStates(normalizedQuery);
+  const status = detectDashboardRefinementStatus(normalizedQuery);
+  const institution = detectDashboardRefinementInstitution(question, normalizedQuery);
+  const category = detectDashboardRefinementCategory(normalizedQuery);
+  const deadline = detectDashboardRefinementDeadline(normalizedQuery);
+  const hasSignal = Boolean(states.length || status.length || institution || category || deadline);
+
+  return {
+    hasSignal,
+    isComplementary: isShort || startsLikeRefinement || /\b(filtr|apenas|so|só|agora)\b/.test(normalizedQuery),
+    states,
+    status,
+    institution,
+    category,
+    deadline,
+  };
+}
+
+function isDashboardRefinementQuestion(question) {
+  if (!hasDashboardSearchMemory()) return false;
+  const signals = getDashboardRefinementSignals(question);
+  return Boolean(signals.hasSignal && signals.isComplementary);
+}
+
+function buildDashboardRefinementQuestion(question) {
+  const lastQuestion = String(assistantSemanticMemory?.lastQuestion || '').trim();
+  const baseQuestion = lastQuestion || 'a última busca do dashboard';
+  return `Refine a busca anterior: ${baseQuestion}. Novo filtro: ${String(question || '').trim()}.`;
+}
+
+function getDashboardRefinementText(question) {
+  const text = String(question || '').trim();
+  const match = text.match(/Novo filtro:\s*(.+?)\.?\s*$/i);
+  return String(match?.[1] || '').trim();
+}
+
 function formatDashboardCategoryLabel(value) {
   const canonical = toCanonicalCategory(value);
   const canonicalKey = normalizeCategoryKey(canonical);
@@ -3862,6 +4062,52 @@ function getDashboardKeywordReference(plan) {
   return clean.slice(0, 2).join(' e ');
 }
 
+function buildDashboardRefinementFilterLabel(plan, question, noun) {
+  const refinementText = getDashboardRefinementText(question);
+  const referenceText = refinementText || question;
+  const normalizedReference = normalizeAssistantQuery(referenceText);
+  const filters = plan?.filters && typeof plan.filters === 'object' ? plan.filters : {};
+  const status = Array.isArray(filters.status) ? filters.status : [];
+  const estados = Array.isArray(filters.estado) ? filters.estado : [];
+  const instituicoes = Array.isArray(filters.instituicao) ? filters.instituicao : [];
+  const deadlineDays = Number(filters.deadline_days || 0);
+  const categoryLabel = findDashboardCategoryLabel(plan, referenceText);
+
+  if (estados.length) {
+    return `para ${formatDashboardStateReference(estados[0], referenceText)}`;
+  }
+  if (status.includes('aberto') && !status.includes('encerrado')) {
+    return `para ${noun.openPlural}`;
+  }
+  if (status.includes('encerrado') && !status.includes('aberto')) {
+    return `para ${noun.plural === 'editais' ? 'editais encerrados' : 'oportunidades encerradas'}`;
+  }
+  if ((deadlineDays > 0 && deadlineDays <= 7) || detectDashboardRefinementDeadline(normalizedReference)) {
+    return 'com prazo nesta semana';
+  }
+  if (instituicoes.length) {
+    return `por ${instituicoes[0]}`;
+  }
+  if (categoryLabel) {
+    return `para ${categoryLabel}`;
+  }
+
+  const detectedStates = detectDashboardRefinementStates(normalizedReference);
+  if (detectedStates.length) return `para ${formatDashboardStateReference(detectedStates[0], referenceText)}`;
+
+  const detectedStatus = detectDashboardRefinementStatus(normalizedReference);
+  if (detectedStatus.includes('aberto')) return `para ${noun.openPlural}`;
+  if (detectedStatus.includes('encerrado')) return `para ${noun.plural === 'editais' ? 'editais encerrados' : 'oportunidades encerradas'}`;
+
+  const detectedInstitution = detectDashboardRefinementInstitution(referenceText, normalizedReference);
+  if (detectedInstitution) return `por ${detectedInstitution}`;
+
+  const detectedCategory = detectDashboardRefinementCategory(normalizedReference);
+  if (detectedCategory) return `para ${formatDashboardCategoryLabel(detectedCategory)}`;
+
+  return 'com o novo filtro';
+}
+
 function buildDashboardShortReply(plan, question) {
   if (!plan || typeof plan !== 'object') return '';
 
@@ -3905,6 +4151,18 @@ function buildDashboardShortReply(plan, question) {
   const itemLabel = total === 1 ? noun.singular : noun.plural;
   const relatedLabel = total === 1 ? noun.relatedSingular : noun.relatedPlural;
   const openLabel = total === 1 ? noun.openSingular : noun.openPlural;
+  const refinementText = getDashboardRefinementText(question);
+
+  if (refinementText) {
+    const filterLabel = buildDashboardRefinementFilterLabel(plan, question, noun);
+    if (total <= 0) {
+      return sanitizeAssistantReplyText(`Filtrei a busca anterior ${filterLabel}. Não encontrei resultados nesse recorte.`);
+    }
+    const countLabel = (filterLabel.includes('abertas') || filterLabel.includes('encerradas'))
+      ? (total === 1 ? 'resultado' : 'resultados')
+      : itemLabel;
+    return sanitizeAssistantReplyText(`Filtrei a busca anterior ${filterLabel}. Encontrei ${totalLabel} ${countLabel} e separei ${noun.below} abaixo.`);
+  }
 
   const status = Array.isArray(filters.status) ? filters.status : [];
   const estados = Array.isArray(filters.estado) ? filters.estado : [];
@@ -3956,6 +4214,38 @@ function buildDashboardShortReply(plan, question) {
   }
 
   return sanitizeAssistantReplyText(`${firstSentence} ${secondSentence}`);
+}
+
+function buildDashboardPlanFromLegacyPayload(payload, { intent = 'list_cards' } = {}) {
+  if (!payload || typeof payload !== 'object') return null;
+  const filters = payload.filters && typeof payload.filters === 'object' ? payload.filters : {};
+  const resultIds = Array.isArray(payload.result_ids)
+    ? payload.result_ids.map((id) => String(id || '').trim()).filter(Boolean)
+    : [];
+  const total = Number(payload.total || resultIds.length || 0);
+  return {
+    intent: intent || payload.intent || 'list_cards',
+    filters: {
+      estado: Array.isArray(filters.estado) ? filters.estado : [],
+      status: Array.isArray(filters.status) ? filters.status : [],
+      instituicao: Array.isArray(filters.instituicoes) ? filters.instituicoes : [],
+      area: Array.isArray(filters.categories) ? filters.categories : [],
+      deadline_days: filters.deadline_range === 'next_7_days' ? 7 : 0,
+      keywords: Array.isArray(filters.keywords) ? filters.keywords : [],
+    },
+    matched_card_ids: resultIds,
+    result_summary: {
+      total: Number.isFinite(total) ? total : resultIds.length,
+      returned: resultIds.length,
+    },
+    ui_action: {
+      type: 'highlight_cards_and_offer_filter',
+      cta: '',
+      auto_apply: false,
+    },
+    suggested_reply: String(payload.summary || '').trim(),
+    query: String(payload.query || '').trim(),
+  };
 }
 
 function classifyAssistantIntent(question) {
@@ -4560,6 +4850,31 @@ function attachEditaisOptions(msgEl, query, rawOptions = null, rawStructuredPayl
   scrollToBottom();
 }
 
+function attachRefinementSuggestionOptions(msgEl) {
+  if (!msgEl) return;
+  const suggestions = [
+    'Quero em SP',
+    'Só abertas',
+    'Vencem esta semana',
+    'Da FAPESP',
+  ];
+  const wrap = document.createElement('div');
+  wrap.className = 'chat-options';
+
+  suggestions.forEach((label) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'chat-option-btn';
+    btn.setAttribute('data-action', 'send_refinement');
+    btn.setAttribute('data-query', label);
+    btn.innerHTML = `<div class="chat-opt-title">${escapeHtml(label)}</div>`;
+    wrap.appendChild(btn);
+  });
+
+  msgEl.appendChild(wrap);
+  scrollToBottom();
+}
+
 
 function resolveBackendSearchDecision({ data, question, backendOptions, backendStructuredPayload }) {
   const normalizedIntent = normalizeAssistantIntent(
@@ -4621,10 +4936,20 @@ async function handleChatSend(options = {}) {
   persistChatState(chatState);
 
   const dashboardListingQuestion = isDashboardListingQuestion(question);
+  const dashboardRefinementQuestion = isDashboardRefinementQuestion(question);
+  const dashboardRefinementSignals = getDashboardRefinementSignals(question);
   let activeContext = getActiveEditalContext();
-  if (activeContext?.editalId && dashboardListingQuestion) {
+  if (activeContext?.editalId && (dashboardListingQuestion || dashboardRefinementQuestion)) {
     clearActiveEditalContext({ clearAssistantContext: true });
     activeContext = null;
+  }
+
+  if (activeContext?.editalId && dashboardRefinementSignals.hasSignal && dashboardRefinementSignals.isComplementary) {
+    const notice = 'Para refinar o painel, faça primeiro uma busca geral de editais. Exemplo: "Mostre oportunidades para tecnologia e inovação".';
+    addMessage(notice, 'bot');
+    chatState = appendConversationTurn(chatState, 'assistant', notice);
+    persistChatState(chatState);
+    return;
   }
 
   if (activeContext?.editalId) {
@@ -4679,7 +5004,11 @@ async function handleChatSend(options = {}) {
   }
 
   const contextualEditalId = getActiveEditalContext()?.editalId ?? null;
-  if (dashboardListingQuestion) {
+  if (dashboardListingQuestion || dashboardRefinementQuestion) {
+    const dashboardRequestQuestion = dashboardRefinementQuestion
+      ? buildDashboardRefinementQuestion(question)
+      : question;
+    const dashboardOptionsQuestion = dashboardRequestQuestion;
     setChatBusy(true);
     const typingMsg = addMessage('Analisando os editais...', 'bot', null, { isTyping: true });
     const requestController = new AbortController();
@@ -4693,8 +5022,8 @@ async function handleChatSend(options = {}) {
         headers: { 'Content-Type': 'application/json' },
         signal: requestController.signal,
         body: JSON.stringify({
-          message: question,
-          question,
+          message: dashboardRequestQuestion,
+          question: dashboardRequestQuestion,
           state: chatState,
           dashboard_context: dashboardContext,
         }),
@@ -4712,7 +5041,7 @@ async function handleChatSend(options = {}) {
       if (!plan) throw new Error('invalid-dashboard-plan');
 
       const finalReply = sanitizeAssistantReplyText(
-        buildDashboardShortReply(plan, question) ||
+        buildDashboardShortReply(plan, dashboardRequestQuestion) ||
         normalizeConciseBotText(plan?.suggested_reply || data?.reply || 'Não consegui responder com os dados do painel.')
       );
       stopLegacyAssistantLoading(loadingController);
@@ -4725,20 +5054,20 @@ async function handleChatSend(options = {}) {
       const normalizedPlanPayload = normalizeAssistantSearchPayload(planPayload);
       if (normalizedPlanPayload) {
         rememberAssistantResultSetFromPayload(normalizedPlanPayload, {
-          question,
+          question: dashboardRequestQuestion,
           intent: plan.intent || normalizedPlanPayload.intent || '',
         });
       }
 
       if (plan?.ui_action?.auto_apply && normalizedPlanPayload) {
-        applyAssistantPayloadToDashboard(normalizedPlanPayload, { fallbackQuery: question });
+        applyAssistantPayloadToDashboard(normalizedPlanPayload, { fallbackQuery: dashboardOptionsQuestion });
       }
 
-      const optionSeed = buildDashboardPlanOptions(plan, question, Array.isArray(data?.options) ? data.options : []);
+      const optionSeed = buildDashboardPlanOptions(plan, dashboardOptionsQuestion, Array.isArray(data?.options) ? data.options : []);
       if (Array.isArray(optionSeed) && optionSeed.length) {
         attachEditaisOptions(
           typingMsg,
-          question,
+          dashboardOptionsQuestion,
           optionSeed,
           normalizedPlanPayload || planPayload || null
         );
@@ -4749,20 +5078,25 @@ async function handleChatSend(options = {}) {
         return;
       }
       console.warn('[CHAT][dashboard-intelligence] fallback local ativado', err);
-      const semanticOutcome = runLocalDashboardSemanticAssistant(question);
-      const semanticReply = normalizeConciseBotText(
-        semanticOutcome?.reply || 'Não consegui responder com os dados do painel.'
-      );
+      const localSemanticQuestion = dashboardRefinementQuestion
+        ? `${question} nesses resultados`
+        : question;
+      const semanticOutcome = runLocalDashboardSemanticAssistant(localSemanticQuestion);
+      const semanticPayload = normalizeAssistantSearchPayload(semanticOutcome?.structuredPayload || null);
+      const fallbackPlan = buildDashboardPlanFromLegacyPayload(semanticPayload, {
+        intent: semanticOutcome?.intent || 'list_cards',
+      });
+      const semanticReply = buildDashboardShortReply(fallbackPlan, dashboardRequestQuestion) ||
+        normalizeConciseBotText(semanticOutcome?.reply || 'Não consegui responder com os dados do painel.');
       const finalSemanticReply = sanitizeAssistantReplyText(semanticReply);
       stopLegacyAssistantLoading(loadingController);
       setMessageText(typingMsg, finalSemanticReply);
       chatState = setLatestAssistantConversationTurn(chatState, finalSemanticReply);
       persistChatState(chatState);
 
-      const semanticPayload = normalizeAssistantSearchPayload(semanticOutcome?.structuredPayload || null);
       if (semanticPayload) {
         rememberAssistantResultSetFromPayload(semanticPayload, {
-          question,
+          question: dashboardRequestQuestion,
           intent: semanticOutcome?.intent || semanticPayload?.intent || '',
         });
       }
@@ -4770,7 +5104,7 @@ async function handleChatSend(options = {}) {
       if (Array.isArray(semanticOutcome?.options) && semanticOutcome.options.length) {
         attachEditaisOptions(
           typingMsg,
-          question,
+          dashboardOptionsQuestion,
           semanticOutcome.options,
           semanticPayload || semanticOutcome?.structuredPayload || null
         );
