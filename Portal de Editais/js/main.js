@@ -4011,9 +4011,29 @@ function isDashboardRefinementQuestion(question) {
   return Boolean(signals.hasSignal && signals.isComplementary);
 }
 
-function buildDashboardRefinementQuestion(question) {
+function getDashboardBaseQuestionForRefinement() {
   const lastQuestion = String(assistantSemanticMemory?.lastQuestion || '').trim();
-  const baseQuestion = lastQuestion || 'a última busca do dashboard';
+  if (!lastQuestion) return 'a última busca do dashboard';
+
+  let baseQuestion = lastQuestion;
+  for (let i = 0; i < 5; i += 1) {
+    const enrichedMatch = baseQuestion.match(/^Refine a busca anterior:\s*(.*?)\.\s*Novo filtro:/i);
+    if (enrichedMatch?.[1]) {
+      baseQuestion = String(enrichedMatch[1] || '').trim();
+      continue;
+    }
+    const prefixMatch = baseQuestion.match(/^Refine a busca anterior:\s*(.+)$/i);
+    if (prefixMatch?.[1]) {
+      baseQuestion = String(prefixMatch[1] || '').trim();
+      continue;
+    }
+    break;
+  }
+  return baseQuestion || 'a última busca do dashboard';
+}
+
+function buildDashboardRefinementQuestion(question) {
+  const baseQuestion = getDashboardBaseQuestionForRefinement();
   return `Refine a busca anterior: ${baseQuestion}. Novo filtro: ${String(question || '').trim()}.`;
 }
 
@@ -4069,20 +4089,50 @@ function getDashboardKeywordReference(plan) {
   return clean.slice(0, 2).join(' e ');
 }
 
-function buildDashboardRefinementFilterLabel(plan, question, noun) {
+function describeDashboardRefinement(plan, question, noun) {
   const refinementText = getDashboardRefinementText(question);
   const referenceText = refinementText || question;
   const normalizedReference = normalizeAssistantQuery(referenceText);
+  const signals = getDashboardRefinementSignals(referenceText);
   const filters = plan?.filters && typeof plan.filters === 'object' ? plan.filters : {};
   const status = Array.isArray(filters.status) ? filters.status : [];
   const estados = Array.isArray(filters.estado) ? filters.estado : [];
   const instituicoes = Array.isArray(filters.instituicao) ? filters.instituicao : [];
   const deadlineDays = Number(filters.deadline_days || 0);
-  const categoryLabel = findDashboardCategoryLabel(plan, referenceText);
+  const stateSuffix = estados.length
+    ? ` em ${formatDashboardStateReference(estados[0], referenceText)}`
+    : '';
 
-  if (estados.length) {
-    return `para ${formatDashboardStateReference(estados[0], referenceText)}`;
+  if (signals.institution) {
+    return `por ${signals.institution}${stateSuffix}`;
   }
+  if (signals.states.length) {
+    return `para ${formatDashboardStateReference(signals.states[0], referenceText)}`;
+  }
+  if (signals.status.includes('aberto')) {
+    return `para ${noun.openPlural}`;
+  }
+  if (signals.status.includes('encerrado')) {
+    return `para ${noun.plural === 'editais' ? 'editais encerrados' : 'oportunidades encerradas'}`;
+  }
+  if (signals.deadline) {
+    return 'para prazos desta semana';
+  }
+  if (signals.category) {
+    return `para ${formatDashboardCategoryLabel(signals.category)}`;
+  }
+
+  const detectedInstitution = detectDashboardRefinementInstitution(referenceText, normalizedReference);
+  if (detectedInstitution) {
+    return `por ${detectedInstitution}${stateSuffix}`;
+  }
+  const detectedStates = detectDashboardRefinementStates(normalizedReference);
+  if (detectedStates.length) return `para ${formatDashboardStateReference(detectedStates[0], referenceText)}`;
+  const detectedStatus = detectDashboardRefinementStatus(normalizedReference);
+  if (detectedStatus.includes('aberto')) return `para ${noun.openPlural}`;
+  if (detectedStatus.includes('encerrado')) return `para ${noun.plural === 'editais' ? 'editais encerrados' : 'oportunidades encerradas'}`;
+  if (detectDashboardRefinementDeadline(normalizedReference)) return 'para prazos desta semana';
+
   if (status.includes('aberto') && !status.includes('encerrado')) {
     return `para ${noun.openPlural}`;
   }
@@ -4090,27 +4140,16 @@ function buildDashboardRefinementFilterLabel(plan, question, noun) {
     return `para ${noun.plural === 'editais' ? 'editais encerrados' : 'oportunidades encerradas'}`;
   }
   if ((deadlineDays > 0 && deadlineDays <= 7) || detectDashboardRefinementDeadline(normalizedReference)) {
-    return 'com prazo nesta semana';
+    return 'para prazos desta semana';
   }
   if (instituicoes.length) {
-    return `por ${instituicoes[0]}`;
+    return `por ${instituicoes[0]}${stateSuffix}`;
   }
+
+  const categoryLabel = findDashboardCategoryLabel(plan, referenceText);
   if (categoryLabel) {
     return `para ${categoryLabel}`;
   }
-
-  const detectedStates = detectDashboardRefinementStates(normalizedReference);
-  if (detectedStates.length) return `para ${formatDashboardStateReference(detectedStates[0], referenceText)}`;
-
-  const detectedStatus = detectDashboardRefinementStatus(normalizedReference);
-  if (detectedStatus.includes('aberto')) return `para ${noun.openPlural}`;
-  if (detectedStatus.includes('encerrado')) return `para ${noun.plural === 'editais' ? 'editais encerrados' : 'oportunidades encerradas'}`;
-
-  const detectedInstitution = detectDashboardRefinementInstitution(referenceText, normalizedReference);
-  if (detectedInstitution) return `por ${detectedInstitution}`;
-
-  const detectedCategory = detectDashboardRefinementCategory(normalizedReference);
-  if (detectedCategory) return `para ${formatDashboardCategoryLabel(detectedCategory)}`;
 
   return 'com o novo filtro';
 }
@@ -4161,13 +4200,16 @@ function buildDashboardShortReply(plan, question) {
   const refinementText = getDashboardRefinementText(question);
 
   if (refinementText) {
-    const filterLabel = buildDashboardRefinementFilterLabel(plan, question, noun);
+    const filterLabel = describeDashboardRefinement(plan, question, noun);
     if (total <= 0) {
       return sanitizeAssistantReplyText(`Filtrei a busca anterior ${filterLabel}. Não encontrei resultados nesse recorte.`);
     }
-    const countLabel = (filterLabel.includes('abertas') || filterLabel.includes('encerradas'))
-      ? (total === 1 ? 'resultado' : 'resultados')
-      : itemLabel;
+    const usesGenericCount = (
+      filterLabel.includes('abertas') ||
+      filterLabel.includes('encerradas') ||
+      filterLabel.includes('prazos')
+    );
+    const countLabel = usesGenericCount ? (total === 1 ? 'resultado' : 'resultados') : itemLabel;
     return sanitizeAssistantReplyText(`Filtrei a busca anterior ${filterLabel}. Encontrei ${totalLabel} ${countLabel} e separei ${noun.below} abaixo.`);
   }
 
@@ -5093,6 +5135,9 @@ async function handleChatSend(options = {}) {
 
   const contextualEditalId = getActiveEditalContext()?.editalId ?? null;
   if (dashboardListingQuestion || dashboardRefinementQuestion) {
+    const dashboardBaseQuestion = dashboardRefinementQuestion
+      ? getDashboardBaseQuestionForRefinement()
+      : question;
     const dashboardRequestQuestion = dashboardRefinementQuestion
       ? buildDashboardRefinementQuestion(question)
       : question;
@@ -5142,7 +5187,7 @@ async function handleChatSend(options = {}) {
       const normalizedPlanPayload = normalizeAssistantSearchPayload(planPayload);
       if (normalizedPlanPayload) {
         rememberAssistantResultSetFromPayload(normalizedPlanPayload, {
-          question: dashboardRequestQuestion,
+          question: dashboardBaseQuestion,
           intent: plan.intent || normalizedPlanPayload.intent || '',
         });
       }
@@ -5170,6 +5215,12 @@ async function handleChatSend(options = {}) {
         ? `${question} nesses resultados`
         : question;
       const semanticOutcome = runLocalDashboardSemanticAssistant(localSemanticQuestion);
+      if (dashboardRefinementQuestion) {
+        assistantSemanticMemory = createDashboardAssistantMemory({
+          ...assistantSemanticMemory,
+          lastQuestion: dashboardBaseQuestion,
+        });
+      }
       const semanticPayload = normalizeAssistantSearchPayload(semanticOutcome?.structuredPayload || null);
       const fallbackPlan = buildDashboardPlanFromLegacyPayload(semanticPayload, {
         intent: semanticOutcome?.intent || 'list_cards',
@@ -5184,7 +5235,7 @@ async function handleChatSend(options = {}) {
 
       if (semanticPayload) {
         rememberAssistantResultSetFromPayload(semanticPayload, {
-          question: dashboardRequestQuestion,
+          question: dashboardBaseQuestion,
           intent: semanticOutcome?.intent || semanticPayload?.intent || '',
         });
       }
