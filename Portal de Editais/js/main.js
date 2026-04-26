@@ -293,7 +293,7 @@ let chatQuickPromptsTransitionCleanup = null;
 let activeLegacyAssistantLoading = null;
 
 function persistChatState(nextState = chatState) {
-  chatState = saveChatSessionState(ensureChatSessionState(nextState));
+  chatState = saveChatSessionState(sanitizeChatStateAssistantReplies(ensureChatSessionState(nextState)));
   return chatState;
 }
 
@@ -1975,9 +1975,15 @@ function buildDashboardPlanOptions(plan, query, backendOptions = []) {
   const matchedIds = Array.isArray(plan?.matched_card_ids) ? plan.matched_card_ids.map((id) => String(id || '').trim()).filter(Boolean) : [];
 
   const backendNormalized = normalizeBackendChatOptions(backendOptions);
-  if (backendNormalized.length && total <= 5) {
-    options.push(...backendNormalized.slice(0, 5));
-  } else if (!backendNormalized.length && total > 0 && total <= 5 && matchedIds.length) {
+  const backendCards = backendNormalized.filter((opt) => String(opt?.action || '').trim() === 'open_edital' && opt.id != null);
+  const backendActions = backendNormalized.filter((opt) => {
+    const action = String(opt?.action || '').trim();
+    return action !== 'open_edital' && action !== 'view_all' && action !== 'ask_new';
+  });
+
+  if (backendCards.length) {
+    options.push(...backendCards.slice(0, 5));
+  } else if (total > 0 && matchedIds.length) {
     matchedIds.slice(0, 5).forEach((id) => {
       const card = (Array.isArray(editaisOriginais) ? editaisOriginais : []).find((item) => String(item?.id) === id);
       if (!card) return;
@@ -1994,17 +2000,29 @@ function buildDashboardPlanOptions(plan, query, backendOptions = []) {
     });
   }
 
+  backendActions.forEach((actionOption) => {
+    const action = String(actionOption?.action || '').trim();
+    const title = String(actionOption?.title || '').trim().toLowerCase();
+    const alreadyAdded = options.some((opt) => (
+      String(opt?.action || '').trim() === action &&
+      String(opt?.title || '').trim().toLowerCase() === title
+    ));
+    if (!alreadyAdded) options.push(actionOption);
+  });
+
   if (total > 0 && payload) {
-    options.push({
+    const hasViewAllAction = options.some((opt) => String(opt?.action || '').trim() === 'view_all');
+    if (!hasViewAllAction) options.push({
       action: 'view_all',
       query,
-      title: total > 5 ? `Aplicar filtro no painel (${total})` : 'Aplicar recorte no painel',
-      meta: plan?.ui_action?.cta || 'Usar a IA para orientar os cards na interface',
+      title: total > 5 ? `Ver todos no painel (${total})` : 'Ver no painel',
+      meta: 'Aplicar filtro no painel',
       payload,
     });
 
     if (total > 5 && matchedIds.length > 5) {
-      options.push({
+      const hasTopUrgentAction = options.some((opt) => String(opt?.title || '').toLowerCase().includes('mais urgentes'));
+      if (!hasTopUrgentAction) options.push({
         action: 'view_all',
         query,
         title: 'Mostrar 5 mais urgentes',
@@ -3236,6 +3254,55 @@ function sanitizeAssistantReplyText(text) {
     .trim();
 }
 
+function sanitizeChatStateAssistantReplies(state) {
+  const safeState = ensureChatSessionState(state);
+  const history = Array.isArray(safeState.conversationHistory)
+    ? safeState.conversationHistory
+    : [];
+  let changed = false;
+  const sanitizedHistory = history
+    .map((turn) => {
+      if (turn?.role !== 'assistant') return turn;
+      const cleanText = sanitizeAssistantReplyText(turn.text);
+      if (cleanText !== turn.text) changed = true;
+      return { ...turn, text: cleanText };
+    })
+    .filter((turn) => String(turn?.text || '').trim());
+
+  if (!changed) return safeState;
+  return ensureChatSessionState({
+    ...safeState,
+    conversationHistory: sanitizedHistory,
+    shortSummary: '',
+  });
+}
+
+function setLatestAssistantConversationTurn(state, text) {
+  const cleanText = sanitizeAssistantReplyText(text);
+  if (!cleanText) return ensureChatSessionState(state);
+
+  const safeState = ensureChatSessionState(state);
+  const history = Array.isArray(safeState.conversationHistory)
+    ? [...safeState.conversationHistory]
+    : [];
+  const lastUserIndex = history.map((turn) => turn?.role).lastIndexOf('user');
+  const lastAssistantIndex = history.map((turn) => turn?.role).lastIndexOf('assistant');
+
+  if (lastAssistantIndex > lastUserIndex) {
+    history[lastAssistantIndex] = {
+      ...history[lastAssistantIndex],
+      text: cleanText,
+    };
+    return ensureChatSessionState({
+      ...safeState,
+      conversationHistory: history,
+      shortSummary: '',
+    });
+  }
+
+  return appendConversationTurn(safeState, 'assistant', cleanText);
+}
+
 function normalizeBotText(value) {
   const s = String(value ?? '').trim();
   if (!s) return '';
@@ -3749,6 +3816,148 @@ function isDashboardListingQuestion(question) {
   );
 }
 
+function formatDashboardCategoryLabel(value) {
+  const canonical = toCanonicalCategory(value);
+  const canonicalKey = normalizeCategoryKey(canonical);
+  const option = CATEGORY_OPTIONS.find((item) => (
+    normalizeCategoryKey(item.value) === canonicalKey ||
+    normalizeCategoryKey(item.label) === canonicalKey
+  ));
+  return option?.label || canonical;
+}
+
+function findDashboardCategoryLabel(plan, question) {
+  const filters = plan?.filters && typeof plan.filters === 'object' ? plan.filters : {};
+  const area = Array.isArray(filters.area) ? filters.area.find(Boolean) : '';
+  if (area) return formatDashboardCategoryLabel(area);
+
+  const questionKey = normalizeCategoryKey(question);
+  if (!questionKey) return '';
+  const option = CATEGORY_OPTIONS.find((item) => {
+    const valueKey = normalizeCategoryKey(item.value);
+    const labelKey = normalizeCategoryKey(item.label);
+    return questionKey.includes(valueKey) || questionKey.includes(labelKey);
+  });
+  return option?.label || '';
+}
+
+function formatDashboardStateReference(uf, question, { preferFullName = false } = {}) {
+  const rawLabel = String(normalizeEstadoValue(uf) || uf || '').trim();
+  const code = rawLabel.toUpperCase();
+  const name = ESTADO_LABELS[code] || '';
+  const isKnownUf = Boolean(name);
+  const normalizedQuestion = normalizeAssistantQuery(question);
+  const questionUsesName = Boolean(name && normalizedQuestion.includes(normalizeAssistantQuery(name)));
+  if (preferFullName || questionUsesName) return name || rawLabel || code;
+  return isKnownUf ? code : rawLabel;
+}
+
+function getDashboardKeywordReference(plan) {
+  const filters = plan?.filters && typeof plan.filters === 'object' ? plan.filters : {};
+  const keywords = Array.isArray(filters.keywords) ? filters.keywords : [];
+  const clean = keywords
+    .map((item) => String(item || '').trim())
+    .filter(Boolean)
+    .filter((item) => !CHAT_GENERIC_QUERY_KEYWORDS.has(normalizeAssistantQuery(item)));
+  return clean.slice(0, 2).join(' e ');
+}
+
+function buildDashboardShortReply(plan, question) {
+  if (!plan || typeof plan !== 'object') return '';
+
+  const filters = plan.filters && typeof plan.filters === 'object' ? plan.filters : {};
+  const total = Math.max(0, Number(plan?.result_summary?.total || 0));
+  const totalLabel = String(Number.isFinite(total) ? Math.round(total) : 0);
+  const normalizedQuestion = normalizeAssistantQuery(question);
+  const isCountQuestion = plan.intent === 'count_cards' || /\b(quantos|quantas|total|contagem)\b/.test(normalizedQuestion);
+  const wantsOpportunityLanguage = messageHasAnyPhrase(normalizedQuestion, [
+    'oportunidade',
+    'oportunidades',
+    'chamada',
+    'chamadas',
+    'programa',
+    'programas',
+    'fomento',
+    'financiamento',
+    'apoio',
+  ]);
+  const noun = wantsOpportunityLanguage
+    ? {
+      singular: 'oportunidade',
+      plural: 'oportunidades',
+      relatedSingular: 'relacionada',
+      relatedPlural: 'relacionadas',
+      openSingular: 'oportunidade aberta',
+      openPlural: 'oportunidades abertas',
+      below: 'as principais',
+      all: 'todas',
+    }
+    : {
+      singular: 'edital',
+      plural: 'editais',
+      relatedSingular: 'relacionado',
+      relatedPlural: 'relacionados',
+      openSingular: 'edital aberto',
+      openPlural: 'editais abertos',
+      below: 'os principais',
+      all: 'todos',
+    };
+  const itemLabel = total === 1 ? noun.singular : noun.plural;
+  const relatedLabel = total === 1 ? noun.relatedSingular : noun.relatedPlural;
+  const openLabel = total === 1 ? noun.openSingular : noun.openPlural;
+
+  const status = Array.isArray(filters.status) ? filters.status : [];
+  const estados = Array.isArray(filters.estado) ? filters.estado : [];
+  const instituicoes = Array.isArray(filters.instituicao) ? filters.instituicao : [];
+  const deadlineDays = Number(filters.deadline_days || 0);
+  const categoryLabel = findDashboardCategoryLabel(plan, question);
+  const keywordLabel = getDashboardKeywordReference(plan);
+  const hasDeadlineIntent =
+    (deadlineDays > 0 && deadlineDays <= 7) ||
+    hasAnyChatHint(normalizedQuestion, ['vencem', 'vence', 'prazo nesta semana', 'prazo nessa semana', 'esta semana', 'nesta semana']);
+  const wantsOpen = status.includes('aberto') && !status.includes('encerrado');
+
+  let firstSentence = '';
+  if (total <= 0) {
+    firstSentence = 'Não encontrei editais para esse recorte.';
+  } else if (hasDeadlineIntent) {
+    firstSentence = `Encontrei ${totalLabel} ${total === 1 ? 'edital com prazo nesta semana' : 'editais com prazo nesta semana'}.`;
+  } else if (wantsOpen && estados.length) {
+    const stateLabel = formatDashboardStateReference(estados[0], question);
+    firstSentence = `Encontrei ${totalLabel} ${openLabel} em ${stateLabel}.`;
+  } else if (wantsOpen) {
+    firstSentence = `Encontrei ${totalLabel} ${openLabel}.`;
+  } else if (categoryLabel) {
+    firstSentence = `Encontrei ${totalLabel} ${itemLabel} ${relatedLabel} a ${categoryLabel}.`;
+  } else if (estados.length) {
+    const stateLabel = formatDashboardStateReference(estados[0], question, { preferFullName: isCountQuestion });
+    firstSentence = isCountQuestion
+      ? `Encontrei ${totalLabel} ${itemLabel} ${relatedLabel} a ${stateLabel}.`
+      : `Encontrei ${totalLabel} ${itemLabel} em ${stateLabel}.`;
+  } else if (instituicoes.length) {
+    firstSentence = `Encontrei ${totalLabel} ${itemLabel} ${relatedLabel} a ${instituicoes[0]}.`;
+  } else if (keywordLabel) {
+    firstSentence = `Encontrei ${totalLabel} ${itemLabel} ${relatedLabel} a ${keywordLabel}.`;
+  } else {
+    firstSentence = `Encontrei ${totalLabel} ${itemLabel} para esse recorte.`;
+  }
+
+  let secondSentence = '';
+  if (total <= 0) {
+    secondSentence = 'Tente ajustar tema, estado ou prazo.';
+  } else if (hasDeadlineIntent) {
+    secondSentence = 'Mostrei os mais urgentes abaixo.';
+  } else if (isCountQuestion) {
+    secondSentence = 'Você pode ver todos aplicando o filtro no painel.';
+  } else if (total > 5) {
+    secondSentence = `Separei ${noun.below} abaixo e você pode aplicar o filtro para ver ${noun.all} no painel.`;
+  } else {
+    secondSentence = `Separei ${noun.below} abaixo.`;
+  }
+
+  return sanitizeAssistantReplyText(`${firstSentence} ${secondSentence}`);
+}
+
 function classifyAssistantIntent(question) {
   const normalizedQuery = normalizeAssistantQuery(question);
   if (!normalizedQuery) return 'unknown';
@@ -4252,14 +4461,14 @@ function attachEditaisOptions(msgEl, query, rawOptions = null, rawStructuredPayl
   if (hasBackendOptions) {
     const panelPayload = structuredPayload || buildAssistantPayloadFromQuery(query);
     const panelTotal = Number(panelPayload?.total) > 0 ? Number(panelPayload.total) : fromBackend.length;
-    options = fromBackend.slice(0, 6);
+    options = fromBackend.slice(0, 8);
     const hasViewAllAction = options.some((opt) => String(opt?.action || '').trim() === 'view_all');
     if (panelTotal > options.length && !hasViewAllAction) {
       options.push({
         action: 'view_all',
         query,
         title: `Ver todos no painel (${panelTotal})`,
-        meta: 'Aplicar filtros da IA no Dashboard',
+        meta: 'Aplicar filtro no painel',
         payload: panelPayload,
       });
     }
@@ -4308,7 +4517,7 @@ function attachEditaisOptions(msgEl, query, rawOptions = null, rawStructuredPayl
         action: 'view_all',
         query,
         title: `Ver todos no painel (${panelTotal})`,
-        meta: 'Aplicar filtros da IA no Dashboard',
+        meta: 'Aplicar filtro no painel',
         payload: panelPayload,
       });
     }
@@ -4411,7 +4620,13 @@ async function handleChatSend(options = {}) {
   chatState = appendConversationTurn(chatState, 'user', question);
   persistChatState(chatState);
 
-  const activeContext = getActiveEditalContext();
+  const dashboardListingQuestion = isDashboardListingQuestion(question);
+  let activeContext = getActiveEditalContext();
+  if (activeContext?.editalId && dashboardListingQuestion) {
+    clearActiveEditalContext({ clearAssistantContext: true });
+    activeContext = null;
+  }
+
   if (activeContext?.editalId) {
     const detection = detectTopicTransition({
       message: question,
@@ -4464,7 +4679,7 @@ async function handleChatSend(options = {}) {
   }
 
   const contextualEditalId = getActiveEditalContext()?.editalId ?? null;
-  if (!contextualEditalId && isDashboardListingQuestion(question)) {
+  if (dashboardListingQuestion) {
     setChatBusy(true);
     const typingMsg = addMessage('Analisando os editais...', 'bot', null, { isTyping: true });
     const requestController = new AbortController();
@@ -4490,23 +4705,20 @@ async function handleChatSend(options = {}) {
       const hasBackendState = Boolean(data?.state && typeof data.state === 'object');
       if (hasBackendState) {
         chatState = ensureChatSessionState(data.state);
-        persistChatState(chatState);
         updateChatHeader();
       }
 
       const plan = normalizeDashboardPlanFromBackend(data);
       if (!plan) throw new Error('invalid-dashboard-plan');
 
-      const backendReply = normalizeConciseBotText(
-        data?.reply || plan?.suggested_reply || 'Não consegui responder com os dados do painel.'
+      const finalReply = sanitizeAssistantReplyText(
+        buildDashboardShortReply(plan, question) ||
+        normalizeConciseBotText(plan?.suggested_reply || data?.reply || 'Não consegui responder com os dados do painel.')
       );
-      const finalReply = normalizeConciseBotText(plan?.suggested_reply || backendReply) || backendReply || 'Não consegui responder com os dados do painel.';
       stopLegacyAssistantLoading(loadingController);
       setMessageText(typingMsg, finalReply);
 
-      if (!hasBackendState) {
-        chatState = appendConversationTurn(chatState, 'assistant', finalReply);
-      }
+      chatState = setLatestAssistantConversationTurn(chatState, finalReply);
       persistChatState(chatState);
 
       const planPayload = dashboardPlanToLegacySearchPayload(plan);
@@ -4541,9 +4753,10 @@ async function handleChatSend(options = {}) {
       const semanticReply = normalizeConciseBotText(
         semanticOutcome?.reply || 'Não consegui responder com os dados do painel.'
       );
+      const finalSemanticReply = sanitizeAssistantReplyText(semanticReply);
       stopLegacyAssistantLoading(loadingController);
-      setMessageText(typingMsg, semanticReply);
-      chatState = appendConversationTurn(chatState, 'assistant', semanticReply);
+      setMessageText(typingMsg, finalSemanticReply);
+      chatState = setLatestAssistantConversationTurn(chatState, finalSemanticReply);
       persistChatState(chatState);
 
       const semanticPayload = normalizeAssistantSearchPayload(semanticOutcome?.structuredPayload || null);
