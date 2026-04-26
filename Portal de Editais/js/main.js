@@ -39,6 +39,11 @@ import {
   dashboardPlanToLegacySearchPayload,
   normalizeDashboardAssistantPlan,
 } from './chat-dashboard-contract.js?v=20260403.1';
+import {
+  buildDashboardChatOptionsFromPayload,
+  isDashboardCardOpen,
+  normalizeDashboardEstadoUf,
+} from './chat-dashboard-options.js?v=20260425.1';
 import { createSingleFlight } from './bootstrap-utils.js?v=20260415.1';
 import { createAbortableRequestTracker } from './chat-stream-controller.js?v=20260425.1';
 import {
@@ -1693,7 +1698,7 @@ function normalizeAssistantSearchPayload(raw) {
   });
   const instituicoes = toUniqueStringList(rawFilters.instituicoes || rawFilters.instituicao);
   const estado = toUniqueStringList(rawFilters.estado || rawFilters.estados, {
-    normalize: (v) => String(v || '').trim().toUpperCase(),
+    normalize: (v) => normalizeDashboardEstadoUf(v, { estadoLabels: ESTADO_LABELS }),
   });
   const keywords = toUniqueStringList(rawFilters.keywords || rawFilters.termos || rawFilters.temas, {
     normalize: (v) => normalizeAssistantQuery(v),
@@ -1856,7 +1861,7 @@ function runLocalDashboardSemanticAssistant(question) {
 
 function normalizeDashboardCardForIntelligence(rawCard) {
   const status = isOpenEditalForChat(rawCard) ? 'aberto' : 'encerrado';
-  const estadoUf = String(rawCard?.estado || '').trim().toUpperCase();
+  const estadoUf = normalizeDashboardEstadoUf(rawCard?.estado || '', { estadoLabels: ESTADO_LABELS });
   const estadoLabel = formatEstadoLabel(estadoUf);
   const prazoFinal = String(rawCard?.data_fechamento || '').trim();
   const updatedAt = String(rawCard?.data_abertura || rawCard?.updated_at || '').trim();
@@ -1884,6 +1889,7 @@ function buildDashboardFiltersAvailable(cards) {
     new Set(
       (Array.isArray(cards) ? cards : [])
         .map((card) => String(card?.estado || '').trim().toUpperCase())
+        .map((estado) => normalizeDashboardEstadoUf(estado, { estadoLabels: ESTADO_LABELS }))
         .filter(Boolean)
     )
   ).slice(0, 40);
@@ -2025,16 +2031,52 @@ function buildDashboardPlanOptions(plan, query, backendOptions = []) {
   return options;
 }
 
+function buildAppliedFiltersFromAssistantPayload(payload) {
+  const filters = payload?.filters || {};
+  return {
+    estado: Array.isArray(filters.estado)
+      ? filters.estado.map((uf) => normalizeDashboardEstadoUf(uf, { estadoLabels: ESTADO_LABELS })).filter(Boolean)
+      : [],
+    instituicao: Array.isArray(filters.instituicoes)
+      ? filters.instituicoes.map((item) => String(item || '').trim()).filter(Boolean)
+      : [],
+    area: Array.isArray(filters.categories)
+      ? filters.categories.map((item) => toCanonicalCategory(item)).filter(Boolean)
+      : [],
+  };
+}
+
+function syncFilterCheckboxesFromApplied() {
+  document.querySelectorAll('.filter-options input[type="checkbox"]').forEach((cb) => {
+    cb.checked = false;
+  });
+
+  Object.entries(applied || {}).forEach(([type, values]) => {
+    if (!Array.isArray(values) || !values.length) return;
+    values.forEach((value) => {
+      const checkbox = document.querySelector(`.filter-options[data-filter-type="${type}"] input[value="${cssEscape(value)}"]`);
+      if (checkbox) checkbox.checked = true;
+    });
+  });
+}
+
+function resolveKpiFilterFromAssistantPayload(payload) {
+  const status = Array.isArray(payload?.filters?.status) ? payload.filters.status : [];
+  const onlyOpen = status.includes('aberto') && !status.includes('encerrado');
+  const onlyClosed = status.includes('encerrado') && !status.includes('aberto');
+  if (onlyOpen) return 'abertos';
+  if (onlyClosed) return 'fechados';
+  return 'all';
+}
+
 function applyAssistantPayloadToDashboard(rawPayload, { fallbackQuery = '' } = {}) {
   const normalized = normalizeAssistantSearchPayload(rawPayload) || buildAssistantPayloadFromQuery(fallbackQuery);
   if (!normalized) return false;
 
   // Evita divergência com filtros antigos antes de aplicar o contexto da IA.
-  applied = { estado: [], instituicao: [], area: [] };
-  document.querySelectorAll('.filter-options input[type="checkbox"]').forEach((cb) => {
-    cb.checked = false;
-  });
-  kpiFilter = 'all';
+  applied = buildAppliedFiltersFromAssistantPayload(normalized);
+  syncFilterCheckboxesFromApplied();
+  kpiFilter = resolveKpiFilterFromAssistantPayload(normalized);
   syncKpiButtons();
   if (onlyFavoritos) {
     onlyFavoritos = false;
@@ -2065,7 +2107,6 @@ function applyAssistantContextFilters(items) {
 
   if (idSet.size > 0) {
     scoped = scoped.filter((edital) => idSet.has(String(edital?.id)));
-    return scoped;
   }
 
   const status = Array.isArray(filters.status) ? filters.status : [];
@@ -2079,8 +2120,12 @@ function applyAssistantContextFilters(items) {
   }
 
   if (Array.isArray(filters.estado) && filters.estado.length) {
-    const ufSet = new Set(filters.estado.map((uf) => String(uf || '').trim().toUpperCase()).filter(Boolean));
-    scoped = scoped.filter((edital) => ufSet.has(String(edital?.estado || '').trim().toUpperCase()));
+    const ufSet = new Set(
+      filters.estado
+        .map((uf) => normalizeDashboardEstadoUf(uf, { estadoLabels: ESTADO_LABELS }))
+        .filter(Boolean)
+    );
+    scoped = scoped.filter((edital) => ufSet.has(normalizeDashboardEstadoUf(edital?.estado || '', { estadoLabels: ESTADO_LABELS })));
   }
 
   if (Array.isArray(filters.instituicoes) && filters.instituicoes.length) {
@@ -2288,14 +2333,7 @@ function buildEmptyState({ total, termo }) {
 }
 
 function isClosedEdital(edital) {
-  if (typeof edital?.is_open === 'boolean') return !edital.is_open;
-  const t = parseAnyDateToTime(edital?.data_fechamento);
-  if (t === null) return false;
-  const d = new Date(t);
-  const prazo = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-  return prazo < today;
+  return !isOpenEditalForChat(edital);
 }
 
 function compareIsoDate(a, b) {
@@ -3787,16 +3825,7 @@ function parseChatDeadline(edital) {
 }
 
 function isOpenEditalForChat(edital) {
-  if (!edital) return false;
-  if (typeof edital.is_open === 'boolean') return edital.is_open;
-  if (edital.fluxo_continuo === true) return true;
-
-  const deadline = parseChatDeadline(edital);
-  if (deadline === null) return true;
-
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  return deadline >= today.getTime();
+  return isDashboardCardOpen(edital);
 }
 
 function isDeadlineWithinNextDays(edital, days = 7) {
@@ -4127,12 +4156,33 @@ function normalizeBackendChatOptions(rawOptions) {
 function attachEditaisOptions(msgEl, query, rawOptions = null, rawStructuredPayload = null) {
   if (!msgEl) return;
 
-  const structuredPayload = normalizeAssistantSearchPayload(rawStructuredPayload);
+  let structuredPayload = normalizeAssistantSearchPayload(rawStructuredPayload);
   const fromBackend = normalizeBackendChatOptions(rawOptions);
   const hasBackendOptions = fromBackend.length > 0;
   let options = [];
 
-  if (hasBackendOptions) {
+  if (structuredPayload) {
+    const dashboardOptionSet = buildDashboardChatOptionsFromPayload({
+      cards: Array.isArray(editaisOriginais) ? editaisOriginais : [],
+      payload: structuredPayload,
+      query,
+      maxCards: 5,
+      formatDate: formatChatDate,
+      formatEstadoLabel,
+      estadoLabels: ESTADO_LABELS,
+      normalizeCategory: toCanonicalCategory,
+    });
+
+    if (dashboardOptionSet?.payload) {
+      structuredPayload = normalizeAssistantSearchPayload(dashboardOptionSet.payload) || structuredPayload;
+    }
+
+    if (Array.isArray(dashboardOptionSet?.options) && dashboardOptionSet.options.length) {
+      options = dashboardOptionSet.options;
+    } else {
+      return;
+    }
+  } else if (hasBackendOptions) {
     const panelPayload = structuredPayload || buildAssistantPayloadFromQuery(query);
     const panelTotal = Number(panelPayload?.total) > 0 ? Number(panelPayload.total) : fromBackend.length;
     options = fromBackend.slice(0, 6);
@@ -4295,6 +4345,10 @@ async function handleChatSend(options = {}) {
 
   const activeContext = getActiveEditalContext();
   if (activeContext?.editalId) {
+    const dashboardTransition = analyzeEditalContextTransition(question, activeContext.editalId);
+    if (dashboardTransition?.action === 'exit_to_general') {
+      clearActiveEditalContext({ clearAssistantContext: true });
+    } else {
     const detection = detectTopicTransition({
       message: question,
       state: chatState,
@@ -4343,6 +4397,7 @@ async function handleChatSend(options = {}) {
       chatState = setPendingTopicExitConfirmation(chatState, false);
       persistChatState(chatState);
     }
+    }
   }
 
   const contextualEditalId = getActiveEditalContext()?.editalId ?? null;
@@ -4379,12 +4434,24 @@ async function handleChatSend(options = {}) {
         }
 
         const streamOptions = Array.isArray(donePayload?.options) ? donePayload.options : [];
+        const streamStructuredPayload = normalizeAssistantSearchPayload(
+          donePayload?.search_payload ||
+          donePayload?.intent_payload ||
+          donePayload?.searchPayload ||
+          null
+        );
+        if (streamStructuredPayload) {
+          rememberAssistantResultSetFromPayload(streamStructuredPayload, {
+            question,
+            intent: donePayload?.assistant_intent || donePayload?.intent || streamStructuredPayload.intent || '',
+          });
+        }
         if (donePayload?.should_search) {
           attachEditaisOptions(
             typingMsg,
             question,
             streamOptions.length ? streamOptions : null,
-            null
+            streamStructuredPayload || donePayload?.search_payload || null
           );
         }
         return;
