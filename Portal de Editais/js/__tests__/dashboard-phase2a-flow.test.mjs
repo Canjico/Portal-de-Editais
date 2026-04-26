@@ -44,8 +44,9 @@ test('server paged hero uses global stats metadata from backend', () => {
 });
 
 test('chat refinement build is cache busted and logged', () => {
-  assert.match(indexSource, /src="\.\/js\/main\.js\?v=20260426\.2"/);
-  assert.match(mainSource, /console\.info\('\[Athos\]\[main\.js\] versão chat refinamento acumulado 20260426\.2 carregada'\)/);
+  assert.match(indexSource, /src="\.\/js\/main\.js\?v=20260426\.3"/);
+  assert.match(indexSource, /href="\.\/css\/style\.css\?v=20260426\.1"/);
+  assert.match(mainSource, /console\.info\('\[Athos\]\[main\.js\] versão chat refinamento acumulado 20260426\.3 carregada'\)/);
 });
 
 test('dashboard refinements use accumulated filters and dashboard intelligence endpoint', () => {
@@ -57,4 +58,14 @@ test('dashboard refinements use accumulated filters and dashboard intelligence e
   assert.match(mainSource, /console\.info\('\[CHAT\]\[refinement\]'/);
   assert.match(mainSource, /mergeDashboardFilterState\(planFilters, requestAccumulatedDashboardFilters\)/);
   assert.match(mainSource, /const filteredCards = allCards\.filter\(\(card\) => dashboardCardMatchesFilters\(card, filters\)\);/);
+});
+
+test('refinement panel marks active filters and clears refinements locally', () => {
+  assert.match(mainSource, /btn\.className = `chat-refine-chip\$\{isActive \? ' is-active' : ''\}\$\{isClear \? ' is-clear' : ''\}`;/);
+  assert.match(mainSource, /btn\.disabled = true;/);
+  assert.match(mainSource, /label: 'Limpar refinamentos'/);
+  assert.match(mainSource, /action: 'clear_refinements'/);
+  assert.match(mainSource, /function clearDashboardRefinementsFromChat\(\)/);
+  assert.match(mainSource, /lastDashboardFilters: normalizeDashboardFilterState\(\)/);
+  assert.match(mainSource, /Refinamentos limpos\. Você pode buscar novamente ou aplicar outro filtro\./);
 });

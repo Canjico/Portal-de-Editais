@@ -69,7 +69,7 @@ import {
 import { runDashboardBootstrapFlow } from './bootstrap-flows.js?v=20260416.1';
 import { readAuthHandoff } from './auth-handoff.js?v=20260422.1';
 
-console.info('[Athos][main.js] versão chat refinamento acumulado 20260426.2 carregada');
+console.info('[Athos][main.js] versão chat refinamento acumulado 20260426.3 carregada');
 
 const APP_BASE_URL = new URL('../', import.meta.url);
 const SHARE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{20,255}$/;
@@ -2864,6 +2864,7 @@ const doLogout = async () => {
       }
 
       if (action === 'send_refinement') {
+        if (btn.disabled || btn.classList.contains('is-active')) return;
         const q = btn.getAttribute('data-query') || '';
         if (!q || !chatInput) return;
         const panel = btn.closest('.chat-refine-panel');
@@ -2876,6 +2877,11 @@ const doLogout = async () => {
         }
         chatInput.value = q;
         handleChatSend({ source: 'quick_refinement', forceDashboardRefinement: true });
+        return;
+      }
+
+      if (action === 'clear_refinements') {
+        clearDashboardRefinementsFromChat();
         return;
       }
 
@@ -5182,26 +5188,44 @@ function inferInstitutionShortLabel(institution) {
 
 function buildDashboardRefinementSuggestions() {
   const cards = getLastDashboardResultCards();
+  const activeFilters = normalizeDashboardFilterState(assistantSemanticMemory?.lastDashboardFilters);
   const states = cards.map((card) => String(normalizeEstadoValue(card?.estado) || '').trim().toUpperCase()).filter(Boolean);
   const stateLabel = states.includes('SP') ? 'SP' : (mostFrequentString(states) || 'SP');
   const institution = mostFrequentString(cards.map((card) => card?.instituicao));
   const institutionLabel = inferInstitutionShortLabel(institution) || 'FAPESP';
   const institutionQuery = institution || institutionLabel || 'FAPESP';
+  const stateActive = Boolean(stateLabel && activeFilters.estado.includes(stateLabel));
+  const openActive = activeFilters.status.includes('aberto') && !activeFilters.status.includes('encerrado');
+  const weekActive = activeFilters.deadline_range === 'next_7_days';
+  const institutionActive = Boolean(institutionQuery && activeFilters.instituicoes.some((activeInstitution) => (
+    dashboardInstitutionMatches(institutionQuery, activeInstitution) ||
+    dashboardInstitutionMatches(activeInstitution, institutionQuery)
+  )));
 
   const rawSuggestions = [
-    { label: stateLabel || 'SP', query: `Quero em ${stateLabel || 'SP'}` },
-    { label: 'Só abertas', query: 'Só abertas' },
-    { label: 'Esta semana', query: 'Vencem esta semana' },
-    { label: institutionLabel, query: `Da ${institutionQuery}` },
+    { label: stateLabel || 'SP', query: `Quero em ${stateLabel || 'SP'}`, active: stateActive },
+    { label: 'Abertas', query: 'Só abertas', active: openActive },
+    { label: 'Esta semana', query: 'Vencem esta semana', active: weekActive },
+    { label: institutionLabel, query: `Da ${institutionQuery}`, active: institutionActive },
   ];
 
   const seen = new Set();
-  return rawSuggestions.filter((suggestion) => {
+  const suggestions = rawSuggestions.filter((suggestion) => {
     const key = normalizeAssistantQuery(suggestion.label);
     if (!key || seen.has(key)) return false;
     seen.add(key);
     return true;
   });
+
+  if (hasDashboardFilterValue(activeFilters)) {
+    suggestions.push({
+      label: 'Limpar refinamentos',
+      action: 'clear_refinements',
+      clear: true,
+    });
+  }
+
+  return suggestions;
 }
 
 function removeRefinementPanels() {
@@ -5226,13 +5250,17 @@ function attachRefinementSuggestionOptions(msgEl) {
   if (!msgEl) return;
   const bubble = msgEl.querySelector('.bubble');
   if (!bubble) return;
+  const hasActiveFilters = hasDashboardFilterValue(assistantSemanticMemory?.lastDashboardFilters);
+  const subtitle = hasActiveFilters
+    ? 'Você já está refinando a busca. Escolha outro filtro ou limpe os refinamentos.'
+    : 'Escolha um atalho ou digite seu próprio filtro.';
 
   const panel = document.createElement('div');
   panel.className = 'chat-refine-panel';
   panel.setAttribute('data-refine-panel', 'true');
   panel.innerHTML = `
     <div class="chat-refine-title">Refinar busca</div>
-    <div class="chat-refine-subtitle">Escolha um atalho ou digite seu próprio filtro.</div>
+    <div class="chat-refine-subtitle">${escapeHtml(subtitle)}</div>
     <div class="chat-refine-actions"></div>
   `.trim();
 
@@ -5240,15 +5268,42 @@ function attachRefinementSuggestionOptions(msgEl) {
   buildDashboardRefinementSuggestions().forEach((suggestion) => {
     const btn = document.createElement('button');
     btn.type = 'button';
-    btn.className = 'chat-refine-chip';
-    btn.setAttribute('data-action', 'send_refinement');
-    btn.setAttribute('data-query', suggestion.query);
-    btn.textContent = suggestion.label;
+    const isActive = Boolean(suggestion.active);
+    const isClear = Boolean(suggestion.clear);
+    btn.className = `chat-refine-chip${isActive ? ' is-active' : ''}${isClear ? ' is-clear' : ''}`;
+    btn.setAttribute('data-action', suggestion.action || 'send_refinement');
+    if (suggestion.query) btn.setAttribute('data-query', suggestion.query);
+    if (isActive) {
+      btn.disabled = true;
+      btn.setAttribute('aria-disabled', 'true');
+      btn.setAttribute('title', 'Refinamento já aplicado');
+    }
+    btn.textContent = isActive ? `${suggestion.label} ✓` : suggestion.label;
     actions.appendChild(btn);
   });
 
   bubble.innerHTML = '';
   bubble.appendChild(panel);
+  scrollToBottom();
+}
+
+function clearDashboardRefinementsFromChat() {
+  const baseQuestion = getDashboardBaseQuestionForRefinement();
+  assistantSemanticMemory = createDashboardMemoryState({
+    ...assistantSemanticMemory,
+    lastQuestion: baseQuestion,
+    lastDashboardFilters: normalizeDashboardFilterState(),
+    lastRefinementQuestion: '',
+    updatedAt: new Date().toISOString(),
+  });
+  clearAssistantPanelContext();
+  removeRefinementPanels();
+  applyFiltersAndRender({ resetPage: true });
+
+  const notice = 'Refinamentos limpos. Você pode buscar novamente ou aplicar outro filtro.';
+  addMessage(notice, 'bot');
+  chatState = appendConversationTurn(chatState, 'assistant', notice);
+  persistChatState(chatState);
   scrollToBottom();
 }
 
