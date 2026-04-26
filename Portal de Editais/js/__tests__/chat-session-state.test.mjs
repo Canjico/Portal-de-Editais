@@ -8,6 +8,7 @@ import {
   restoreConversationHistory,
   saveChatSessionState,
   setActiveEditalContextInState,
+  setLatestAssistantConversationTurn,
 } from '../chat-session-state.js';
 
 function createMemoryStorage() {
@@ -91,4 +92,59 @@ test('historico preserva metadados de UI das opcoes do dashboard', () => {
   assert.equal(assistantTurn.ui.search_payload.query, 'tecnologia inovacao');
   assert.equal(assistantTurn.ui.options.length, 2);
   assert.equal(assistantTurn.ui.options[0].id, '101');
+});
+
+test('setLatestAssistantConversationTurn atualiza ultima resposta assistant preservando ui', () => {
+  let state = createChatSessionState();
+  state = appendConversationTurn(state, 'user', 'Mostre oportunidades para tecnologia');
+  state = appendConversationTurn(state, 'assistant', 'Resposta inicial');
+  state = setLatestAssistantConversationTurn(state, {
+    text: 'Separei os editais abaixo.',
+    ui: {
+      type: 'dashboard_options',
+      result_ids: [201],
+      search_payload: {
+        intent: 'edital_search',
+        total: 1,
+        result_ids: [201],
+      },
+      options: [
+        { action: 'open_edital', id: 201, title: 'Edital 201' },
+      ],
+    },
+  });
+
+  const history = restoreConversationHistory(state);
+
+  assert.equal(history.length, 2);
+  assert.equal(history.at(-1).role, 'assistant');
+  assert.equal(history.at(-1).text, 'Separei os editais abaixo.');
+  assert.equal(history.at(-1).ui.type, 'dashboard_options');
+  assert.deepEqual(history.at(-1).ui.result_ids, ['201']);
+});
+
+test('setLatestAssistantConversationTurn adiciona assistant quando nao existe resposta no turno atual', () => {
+  let state = createChatSessionState();
+  state = appendConversationTurn(state, 'user', 'Mostre oportunidades para inovacao');
+  state = setLatestAssistantConversationTurn(state, 'Encontrei 2 editais.');
+
+  let history = restoreConversationHistory(state);
+  assert.equal(history.length, 2);
+  assert.equal(history.at(-1).role, 'assistant');
+  assert.equal(history.at(-1).text, 'Encontrei 2 editais.');
+
+  state = appendConversationTurn(state, 'user', 'Da FINEP');
+  state = setLatestAssistantConversationTurn(state, {
+    text: 'Filtrei por FINEP.',
+    ui: {
+      type: 'dashboard_options',
+      result_ids: [301],
+      options: [{ action: 'open_edital', id: 301, title: 'Edital FINEP' }],
+    },
+  });
+
+  history = restoreConversationHistory(state);
+  assert.equal(history.length, 4);
+  assert.equal(history.at(-1).role, 'assistant');
+  assert.equal(history.at(-1).ui.result_ids[0], '301');
 });

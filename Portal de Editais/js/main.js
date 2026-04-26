@@ -18,6 +18,7 @@ import {
   restoreConversationHistory,
   saveChatSessionState,
   setActiveEditalContextInState,
+  setLatestAssistantConversationTurn,
   setPendingTopicExitConfirmation,
   updateTopicDetection,
 } from './chat-session-state.js?v=20260401.1';
@@ -3527,36 +3528,6 @@ function sanitizeChatStateAssistantReplies(state) {
     conversationHistory: sanitizedHistory,
     shortSummary: '',
   });
-}
-
-function setLatestAssistantConversationTurn(state, turn) {
-  const isStructuredTurn = turn && typeof turn === 'object' && !Array.isArray(turn);
-  const cleanText = sanitizeAssistantReplyText(isStructuredTurn ? turn.text : turn);
-  const hasUi = isStructuredTurn && Object.prototype.hasOwnProperty.call(turn, 'ui');
-  if (!cleanText) return ensureChatSessionState(state);
-
-  const safeState = ensureChatSessionState(state);
-  const history = Array.isArray(safeState.conversationHistory)
-    ? [...safeState.conversationHistory]
-    : [];
-  const lastUserIndex = history.map((turn) => turn?.role).lastIndexOf('user');
-  const lastAssistantIndex = history.map((turn) => turn?.role).lastIndexOf('assistant');
-
-  if (lastAssistantIndex > lastUserIndex) {
-    history[lastAssistantIndex] = {
-      ...history[lastAssistantIndex],
-      text: cleanText,
-      ...(hasUi && turn.ui ? { ui: turn.ui } : {}),
-    };
-    if (hasUi && !turn.ui) delete history[lastAssistantIndex].ui;
-    return ensureChatSessionState({
-      ...safeState,
-      conversationHistory: history,
-      shortSummary: '',
-    });
-  }
-
-  return appendConversationTurn(safeState, 'assistant', cleanText, hasUi ? { ui: turn.ui } : {});
 }
 
 function normalizeBotText(value) {

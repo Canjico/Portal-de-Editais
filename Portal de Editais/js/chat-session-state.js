@@ -396,6 +396,49 @@ export function appendConversationTurn(state, role, text, metadata = {}) {
   });
 }
 
+export function setLatestAssistantConversationTurn(state, turn) {
+  const current = sanitizeChatSessionState(state);
+  const isStructuredTurn = turn && typeof turn === 'object' && !Array.isArray(turn);
+  const entry = normalizeHistoryEntry({
+    role: 'assistant',
+    text: isStructuredTurn ? turn.text : turn,
+    ui: isStructuredTurn ? turn.ui : null,
+    createdAt: new Date().toISOString(),
+  });
+  if (!entry) return current;
+
+  const conversationHistory = Array.isArray(current.conversationHistory)
+    ? [...current.conversationHistory]
+    : [];
+  const roles = conversationHistory.map((historyTurn) => String(historyTurn?.role || '').trim().toLowerCase());
+  const lastUserIndex = roles.lastIndexOf('user');
+  const lastAssistantIndex = roles.lastIndexOf('assistant');
+
+  if (lastAssistantIndex > lastUserIndex) {
+    conversationHistory[lastAssistantIndex] = {
+      ...conversationHistory[lastAssistantIndex],
+      text: entry.text,
+      createdAt: conversationHistory[lastAssistantIndex]?.createdAt || entry.createdAt,
+      ...(entry.ui ? { ui: entry.ui } : {}),
+    };
+    if (!entry.ui) delete conversationHistory[lastAssistantIndex].ui;
+
+    return sanitizeChatSessionState({
+      ...current,
+      conversationHistory,
+      shortSummary: buildShortSummary(conversationHistory),
+    });
+  }
+
+  conversationHistory.push(entry);
+  const trimmed = conversationHistory.slice(-MAX_HISTORY_ITEMS);
+  return sanitizeChatSessionState({
+    ...current,
+    conversationHistory: trimmed,
+    shortSummary: buildShortSummary(trimmed),
+  });
+}
+
 export function restoreConversationHistory(state) {
   const current = sanitizeChatSessionState(state);
   return Array.isArray(current.conversationHistory) ? [...current.conversationHistory] : [];
