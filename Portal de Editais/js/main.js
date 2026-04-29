@@ -5785,7 +5785,7 @@ async function handleChatSend(options = {}) {
   const backendRoutedFreeText = isConceptualOrAdvisoryQuestion(question);
   const documentalSemanticQuestion = isDocumentalSemanticQuestion(question);
   const dashboardListingQuestion = !backendRoutedFreeText && !documentalSemanticQuestion && isDashboardListingQuestion(question);
-  const dashboardRefinementQuestion = !backendRoutedFreeText && !documentalSemanticQuestion && (forceDashboardRefinement || isDashboardRefinementQuestion(question));
+  const dashboardRefinementQuestion = !dashboardListingQuestion && !backendRoutedFreeText && !documentalSemanticQuestion && (forceDashboardRefinement || isDashboardRefinementQuestion(question));
   const dashboardRefinementSignals = getDashboardRefinementSignals(question);
   let activeContext = getActiveEditalContext();
   if (activeContext?.editalId && (dashboardListingQuestion || dashboardRefinementQuestion)) {

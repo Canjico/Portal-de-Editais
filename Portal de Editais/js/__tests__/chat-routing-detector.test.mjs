@@ -51,7 +51,7 @@ test('main router blocks dashboard-intelligence for documental questions', () =>
   assert.match(mainSource, /const backendRoutedFreeText = isConceptualOrAdvisoryQuestion\(question\);/);
   assert.match(mainSource, /const documentalSemanticQuestion = isDocumentalSemanticQuestion\(question\);/);
   assert.match(mainSource, /const dashboardListingQuestion = !backendRoutedFreeText && !documentalSemanticQuestion && isDashboardListingQuestion\(question\);/);
-  assert.match(mainSource, /const dashboardRefinementQuestion = !backendRoutedFreeText && !documentalSemanticQuestion && \(forceDashboardRefinement \|\| isDashboardRefinementQuestion\(question\)\);/);
+  assert.match(mainSource, /const dashboardRefinementQuestion = !dashboardListingQuestion && !backendRoutedFreeText && !documentalSemanticQuestion && \(forceDashboardRefinement \|\| isDashboardRefinementQuestion\(question\)\);/);
   assert.match(mainSource, /if \(isConceptualOrAdvisoryQuestion\(question\)\) return false;[\s\S]*if \(isDocumentalSemanticQuestion\(question\)\) return false;[\s\S]*function hasDashboardSearchMemory/);
   assert.match(mainSource, /console\.info\('\[CHAT\]\[route\]'/);
 });

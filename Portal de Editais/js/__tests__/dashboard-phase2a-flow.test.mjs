@@ -52,7 +52,7 @@ test('chat refinement build is cache busted and logged', () => {
 test('dashboard refinements use accumulated filters and dashboard intelligence endpoint', () => {
   assert.doesNotMatch(mainSource, /\{\s*\.assistantSemanticMemory\s*,?\s*\}/);
   assert.match(mainSource, /handleChatSend\(\{ source: 'quick_refinement', forceDashboardRefinement: true \}\)/);
-  assert.match(mainSource, /const dashboardRefinementQuestion = !documentalSemanticQuestion && \(forceDashboardRefinement \|\| isDashboardRefinementQuestion\(question\)\);/);
+  assert.match(mainSource, /const dashboardRefinementQuestion = !dashboardListingQuestion && !backendRoutedFreeText && !documentalSemanticQuestion && \(forceDashboardRefinement \|\| isDashboardRefinementQuestion\(question\)\);/);
   assert.match(mainSource, /buildDashboardRefinementQuestion\(question, requestAccumulatedDashboardFilters\)/);
   assert.match(mainSource, /apiFetchJson\('\/chat\/dashboard-intelligence'/);
   assert.match(mainSource, /console\.info\('\[CHAT\]\[refinement\]'/);
