@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { isDocumentalSemanticQuestion } from '../chat-routing-detector.js';
+import { isConceptualOrAdvisoryQuestion, isDocumentalSemanticQuestion } from '../chat-routing-detector.js';
 
 const mainSource = await readFile(new URL('../main.js', import.meta.url), 'utf8');
 
@@ -35,10 +35,23 @@ test('dashboard listing and refinement examples remain non-documental', () => {
   }
 });
 
+test('conceptual and advisory free text stays backend-routed', () => {
+  const questions = [
+    'O que é uma ICT em um edital de inovação?',
+    'Minha empresa é uma startup de software. Em um edital, faz mais sentido eu entrar como proponente ou coexecutora?',
+  ];
+
+  for (const question of questions) {
+    assert.equal(isConceptualOrAdvisoryQuestion(question), true, question);
+    assert.equal(isDocumentalSemanticQuestion(question), false, question);
+  }
+});
+
 test('main router blocks dashboard-intelligence for documental questions', () => {
+  assert.match(mainSource, /const backendRoutedFreeText = isConceptualOrAdvisoryQuestion\(question\);/);
   assert.match(mainSource, /const documentalSemanticQuestion = isDocumentalSemanticQuestion\(question\);/);
-  assert.match(mainSource, /const dashboardListingQuestion = !documentalSemanticQuestion && isDashboardListingQuestion\(question\);/);
-  assert.match(mainSource, /const dashboardRefinementQuestion = !documentalSemanticQuestion && \(forceDashboardRefinement \|\| isDashboardRefinementQuestion\(question\)\);/);
-  assert.match(mainSource, /if \(isDocumentalSemanticQuestion\(question\)\) return false;[\s\S]*function hasDashboardSearchMemory/);
+  assert.match(mainSource, /const dashboardListingQuestion = !backendRoutedFreeText && !documentalSemanticQuestion && isDashboardListingQuestion\(question\);/);
+  assert.match(mainSource, /const dashboardRefinementQuestion = !backendRoutedFreeText && !documentalSemanticQuestion && \(forceDashboardRefinement \|\| isDashboardRefinementQuestion\(question\)\);/);
+  assert.match(mainSource, /if \(isConceptualOrAdvisoryQuestion\(question\)\) return false;[\s\S]*if \(isDocumentalSemanticQuestion\(question\)\) return false;[\s\S]*function hasDashboardSearchMemory/);
   assert.match(mainSource, /console\.info\('\[CHAT\]\[route\]'/);
 });

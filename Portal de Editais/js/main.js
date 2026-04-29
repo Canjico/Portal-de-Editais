@@ -51,8 +51,9 @@ import {
   normalizeSources,
 } from './chat-sources.js?v=20260425.1';
 import {
+  isConceptualOrAdvisoryQuestion,
   isDocumentalSemanticQuestion,
-} from './chat-routing-detector.js?v=20260426.1';
+} from './chat-routing-detector.js?v=20260429.1';
 
 // =========================
 // CONFIGURAÇÕES & SEGURANÇA
@@ -3882,8 +3883,6 @@ const DASHBOARD_LISTING_QUESTION_HINTS = [
   'vencem',
   'prazo nesta semana',
   'tem edital',
-  'edital da',
-  'edital de',
 ];
 
 const DASHBOARD_LISTING_ACTION_HINTS = [
@@ -4087,6 +4086,7 @@ function messageHasAnyPhrase(normalizedQuery, phrases) {
 }
 
 function isDashboardListingQuestion(question) {
+  if (isConceptualOrAdvisoryQuestion(question)) return false;
   if (isDocumentalSemanticQuestion(question)) return false;
   const normalizedQuery = normalizeAssistantQuery(question);
   if (!normalizedQuery) return false;
@@ -4225,7 +4225,7 @@ function detectDashboardRefinementDeadline(normalizedQuery) {
 
 function getDashboardRefinementSignals(question) {
   const normalizedQuery = normalizeAssistantQuery(question);
-  if (!normalizedQuery || isDocumentalSemanticQuestion(question)) {
+  if (!normalizedQuery || isConceptualOrAdvisoryQuestion(question) || isDocumentalSemanticQuestion(question)) {
     return {
       hasSignal: false,
       isComplementary: false,
@@ -5782,9 +5782,10 @@ async function handleChatSend(options = {}) {
   persistChatState(chatState);
 
   const forceDashboardRefinement = Boolean(options?.forceDashboardRefinement);
+  const backendRoutedFreeText = isConceptualOrAdvisoryQuestion(question);
   const documentalSemanticQuestion = isDocumentalSemanticQuestion(question);
-  const dashboardListingQuestion = !documentalSemanticQuestion && isDashboardListingQuestion(question);
-  const dashboardRefinementQuestion = !documentalSemanticQuestion && (forceDashboardRefinement || isDashboardRefinementQuestion(question));
+  const dashboardListingQuestion = !backendRoutedFreeText && !documentalSemanticQuestion && isDashboardListingQuestion(question);
+  const dashboardRefinementQuestion = !backendRoutedFreeText && !documentalSemanticQuestion && (forceDashboardRefinement || isDashboardRefinementQuestion(question));
   const dashboardRefinementSignals = getDashboardRefinementSignals(question);
   let activeContext = getActiveEditalContext();
   if (activeContext?.editalId && (dashboardListingQuestion || dashboardRefinementQuestion)) {
@@ -5857,6 +5858,7 @@ async function handleChatSend(options = {}) {
     : (contextualEditalId ? `/chat/edital/${encodeURIComponent(contextualEditalId)}/stream` : '/chat/stream');
   console.info('[CHAT][route]', {
     question,
+    backendRoutedFreeText,
     isDocumentalSemanticQuestion: documentalSemanticQuestion,
     dashboardListingQuestion,
     dashboardRefinementQuestion,

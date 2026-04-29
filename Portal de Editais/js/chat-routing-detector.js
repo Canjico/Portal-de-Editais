@@ -48,9 +48,22 @@ export function normalizeChatRouteQuery(value) {
     .trim();
 }
 
+export function isConceptualOrAdvisoryQuestion(question) {
+  const normalized = normalizeChatRouteQuery(question);
+  if (!normalized) return false;
+
+  const startsConceptual = /^(o que|o que e|o que significa|qual a diferenca|qual diferenca|diferenca entre|explique|defina|como funciona)\b/.test(normalized);
+  const hasDomainTerm = /\b(ict|proponente|executora|coexecutora|subvencao|contrapartida|lei do bem|edital de inovacao|fomento|mei|startup)\b/.test(normalized);
+  if (startsConceptual && hasDomainTerm) return true;
+
+  const hasAdvisorySignal = /\b(minha empresa|sou mei|sou uma startup|somos uma startup|startup de|faz sentido|vale a pena|melhor caminho|devo|deveria|antes de tentar)\b/.test(normalized);
+  return hasAdvisorySignal && /\b(edital|fomento|proponente|coexecutora|ict|mei|startup)\b/.test(normalized);
+}
+
 export function isDocumentalSemanticQuestion(question) {
   const normalized = normalizeChatRouteQuery(question);
   if (!normalized) return false;
+  if (isConceptualOrAdvisoryQuestion(question)) return false;
 
   if (DOCUMENTAL_SEMANTIC_PHRASES.some((phrase) => normalized.includes(normalizeChatRouteQuery(phrase)))) {
     return true;
