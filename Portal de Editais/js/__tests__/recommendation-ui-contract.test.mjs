@@ -51,7 +51,7 @@ test('renderResultsStateHint diferencia aderencia perfeita alta e perfil incompl
 });
 
 test('replayChatSessionHistory restaura dashboard_options sem duplicar cards', () => {
-  assert.match(mainSource, /setLatestAssistantConversationTurn,\s*[\s\S]*\} from '\.\/chat-session-state\.js\?v=20260401\.1';/);
+  assert.match(mainSource, /setLatestAssistantConversationTurn,\s*[\s\S]*\} from '\.\/chat-session-state\.js\?v=\d+(?:\.\d+)?';/);
   assert.match(mainSource, /restoreChatMessageUi\(msg, entry\?\.ui\)/);
   assert.match(mainSource, /function restoreDashboardOptionsUi\(msgEl, rawUi\)/);
   assert.match(mainSource, /ui\.type === 'dashboard_options'/);

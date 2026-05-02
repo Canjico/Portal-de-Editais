@@ -30,7 +30,7 @@ test('normaliza contrato estruturado e preserva campos principais', () => {
   assert.deepEqual(out.matched_card_ids, ['1', '2']);
   assert.equal(out.result_summary.total, 2);
   assert.equal(out.ui_action.type, 'highlight_cards_and_offer_filter');
-  assert.match(out.suggested_reply, /Base:/);
+  assert.doesNotMatch(out.suggested_reply, /Base:/);
 });
 
 test('remove url inline e limita resposta a 3 linhas', () => {
@@ -48,7 +48,7 @@ test('remove url inline e limita resposta a 3 linhas', () => {
   const lines = out.suggested_reply.split('\n');
   assert.equal(lines.length <= 3, true);
   assert.equal(/https?:\/\//i.test(out.suggested_reply), false);
-  assert.match(out.suggested_reply, /Base: cards visiveis no painel/i);
+  assert.doesNotMatch(out.suggested_reply, /Base:/i);
 });
 
 test('converte contrato para payload legado de busca', () => {
@@ -77,8 +77,7 @@ test('converte contrato para payload legado de busca', () => {
 });
 
 test('scope disclosure segue o contrato esperado', () => {
-  assert.equal(scopeDisclosure('all_loaded_cards'), 'Base: todos os cards carregados.');
-  assert.equal(scopeDisclosure('visible_cards'), 'Base: cards visiveis no painel.');
-  assert.equal(scopeDisclosure('focused_cards'), 'Base: cards em foco da conversa.');
+  assert.equal(scopeDisclosure('all_loaded_cards'), 'todos os cards carregados');
+  assert.equal(scopeDisclosure('visible_cards'), 'cards visiveis no painel');
+  assert.equal(scopeDisclosure('focused_cards'), 'cards em foco da conversa');
 });
-

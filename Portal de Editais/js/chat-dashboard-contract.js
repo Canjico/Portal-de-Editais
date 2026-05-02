@@ -110,9 +110,9 @@ function clampReplyLines(reply, maxLines = 3) {
 }
 
 export function scopeDisclosure(scope) {
-  if (scope === 'visible_cards') return 'Base: cards visiveis no painel.';
-  if (scope === 'focused_cards') return 'Base: cards em foco da conversa.';
-  return 'Base: todos os cards carregados.';
+  if (scope === 'visible_cards') return 'cards visiveis no painel';
+  if (scope === 'focused_cards') return 'cards em foco da conversa';
+  return 'todos os cards carregados';
 }
 
 export function normalizeDashboardAssistantPlan(rawPlan, { allowedCardIds = [] } = {}) {
@@ -171,10 +171,6 @@ export function normalizeDashboardAssistantPlan(rawPlan, { allowedCardIds = [] }
       ? `Encontrei ${total} edital(is) para esse recorte.`
       : 'Nao encontrei resultados com esse recorte.';
   }
-  const disclosure = scopeDisclosure(sourceScope);
-  if (!normalizeText(suggestedReply).includes(normalizeText(disclosure))) {
-    suggestedReply = `${suggestedReply}\n${disclosure}`;
-  }
   suggestedReply = clampReplyLines(suggestedReply, 3);
 
   return {
@@ -228,4 +224,3 @@ export function dashboardPlanToLegacySearchPayload(plan) {
     },
   };
 }
-

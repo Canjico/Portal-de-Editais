@@ -129,6 +129,7 @@ let lastFiltered = [];
 let kpiFilter = 'all';
 let assistantPanelContext = null;
 let assistantSemanticMemory = createDashboardMemoryState();
+let serverPageMeta = {};
 let bootstrapInitPromise = null;
 let uiEventsBound = false;
 const loadEditaisSingleFlight = createSingleFlight(() => loadEditais());
@@ -1099,7 +1100,53 @@ function cssEscape(value) {
 // =========================
 // DATA LOAD
 // =========================
-async function loadEditais() {
+function buildEditaisRequestPath({
+  summary = true,
+  page = 1,
+  limit = PAGE_SIZE,
+  view = 'card',
+  includeAttachments = false,
+} = {}) {
+  const params = new URLSearchParams();
+  params.set('modo', view);
+  params.set('include_relevance', 'true');
+  params.set('relevance_mode', 'fast');
+
+  if (summary) {
+    params.set('summary', '1');
+    params.set('page', String(Math.trunc(Number(page))));
+    params.set('limit', String(Math.trunc(Number(limit))));
+    params.set('sort_by', normalizeSortValue(sortField || sortSelect?.value || 'prazo'));
+    params.set('sort_order', sortDirection || 'asc');
+  }
+
+  if (includeAttachments) {
+    params.set('include_attachments', 'true');
+  }
+
+  return `/editais?${params.toString()}`;
+}
+
+function normalizeServerPageMeta(data) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return {};
+  const stats = data.stats && typeof data.stats === 'object' ? data.stats : {};
+  return {
+    page: Number(data.page || 1),
+    limit: Number(data.limit || PAGE_SIZE),
+    total: Number(data.total || 0),
+    total_pages: Number(data.total_pages || 1),
+    has_next: Boolean(data.has_next),
+    has_prev: Boolean(data.has_prev),
+    stats: {
+      total: Number(stats.total ?? data.total ?? 0),
+      open_total: Number(stats.open_total ?? data.open_total ?? 0),
+      closed_total: Number(stats.closed_total ?? data.closed_total ?? 0),
+      recommended_total: Number(stats.recommended_total ?? stats.recomendados_total ?? 0),
+    },
+  };
+}
+
+async function loadEditais(options = {}) {
   if (!container) return;
 
   container.innerHTML = `
@@ -1115,7 +1162,21 @@ async function loadEditais() {
   `;
 
   try {
-    const { res, data } = await apiFetchJson('/editais?modo=card&include_relevance=true&relevance_mode=fast', { method: 'GET' });
+    const requestOptions = {
+      summary: options.summary !== false,
+      page: options.page || 1,
+      limit: options.limit || PAGE_SIZE,
+      view: options.view || 'card',
+      includeAttachments: Boolean(options.includeAttachments),
+    };
+    let { res, data } = await apiFetchJson(buildEditaisRequestPath(requestOptions), { method: 'GET' });
+
+    if (res.ok && requestOptions.summary && (!data || typeof data !== 'object' || !Array.isArray(data.items))) {
+      ({ res, data } = await apiFetchJson(
+        buildEditaisRequestPath({ summary: false, view: 'full', includeAttachments: true }),
+        { method: 'GET' }
+      ));
+    }
 
     if (!res.ok) {
       if (isPasswordChangeRequiredResponse(res, data) || isPasswordChangeRequiredPayload(data)) {
@@ -1144,9 +1205,11 @@ async function loadEditais() {
 
     const rawList =
       Array.isArray(data) ? data :
+      (Array.isArray(data?.items) ? data.items :
       (Array.isArray(data?.editais) ? data.editais :
-      (Array.isArray(data?.data) ? data.data : []));
+      (Array.isArray(data?.data) ? data.data : [])));
 
+    serverPageMeta = Array.isArray(data) ? {} : normalizeServerPageMeta(data);
     editaisOriginais = rawList.map(normalizeEdital).filter(Boolean);
   } catch (e) {
     console.error('Erro ao carregar editais:', e);
@@ -1176,7 +1239,7 @@ async function loadFavoritos() {
   // Se o endpoint ainda não existir no backend, a UI segue normalmente.
   favoritosSet = new Set();
   try {
-    const { res, data } = await apiFetchJson('/cliente/favoritos', { method: 'GET' });
+    const { res, data } = await apiFetchJson('/cliente/favoritos?ids_only=1', { method: 'GET' });
     if (res.ok) {
       const ids = Array.isArray(data) ? data : (Array.isArray(data?.ids) ? data.ids : []);
       favoritosSet = new Set((ids || []).map(v => String(v)));
@@ -1233,16 +1296,23 @@ async function toggleFavorito(editalId) {
   if (!edital) return { ok: false };
 
   const estavaSalvo = !!edital.is_favorite;
+  const proximoEstado = !estavaSalvo;
 
-  await salvarOuRemoverFavorito(editalId, !estavaSalvo);
-
-  edital.is_favorite = !estavaSalvo;
-  if (edital.is_favorite) favoritosSet.add(idStr);
+  edital.is_favorite = proximoEstado;
+  if (proximoEstado) favoritosSet.add(idStr);
   else favoritosSet.delete(idStr);
-
   syncSavedBadge();
 
-  return { ok: true, is_favorite: edital.is_favorite, edital };
+  try {
+    await salvarOuRemoverFavorito(editalId, proximoEstado);
+    return { ok: true, is_favorite: edital.is_favorite, edital };
+  } catch (error) {
+    edital.is_favorite = estavaSalvo;
+    if (estavaSalvo) favoritosSet.add(idStr);
+    else favoritosSet.delete(idStr);
+    syncSavedBadge();
+    throw error;
+  }
 }
 
 function updateSaveButtonUI(btn, isSaved) {
@@ -1262,7 +1332,35 @@ function updateSaveButtonUI(btn, isSaved) {
 
 
 function normalizeEdital(api) {
-  const data = typeof api?.json_data === 'string' ? safeJsonParse(api.json_data, {}) : (api?.json_data || {});
+  const hasSummaryShape = Boolean(
+    api &&
+    typeof api === 'object' &&
+    !api?.json_data &&
+    (
+      api?.titulo ||
+      api?.instituicao ||
+      api?.estado ||
+      api?.area ||
+      api?.data_fechamento ||
+      api?.data_final_submissao
+    )
+  );
+  const summaryData = hasSummaryShape ? {
+    titulo: api?.titulo,
+    descricao: api?.descricao,
+    objetivo: api?.descricao,
+    publico_alvo: api?.publico_alvo,
+    instituicao: api?.instituicao,
+    estado: api?.estado,
+    area: api?.area,
+    instrumento: api?.instrumento,
+    tipo: api?.tipo,
+    valor_total: api?.valor_total,
+    data_final_submissao: api?.data_final_submissao || api?.data_fechamento,
+    data_fechamento: api?.data_fechamento || api?.data_final_submissao,
+  } : {};
+  const jsonData = typeof api?.json_data === 'string' ? safeJsonParse(api.json_data, {}) : (api?.json_data || {});
+  const data = { ...summaryData, ...jsonData };
   const arquivos = typeof api?.arquivos_json === 'string' ? safeJsonParse(api.arquivos_json, []) : (api?.arquivos_json || []);
   const rawArea = data.area || (Array.isArray(data.tags) && data.tags.length ? data.tags[0] : 'Geral');
   const titulo = data.titulo || api?.titulo || 'Sem título';
@@ -2402,7 +2500,7 @@ function applyFiltersAndRender({ resetPage } = { resetPage: false }) {
     resultsMeta.textContent = `Mostrando ${a}-${b} de ${total} ${label}`;
   }
 
-  updateHeroStats(statsBase);
+  updateHeroStats(editaisOriginais, { globalStats: serverPageMeta.stats });
   syncKpiButtons();
   renderActiveFilters();
   renderResultsStateHint(total);
@@ -2493,23 +2591,45 @@ function compareIsoDate(a, b) {
   return da < db ? -1 : da > db ? 1 : 0;
 }
 
-function updateHeroStats(filtered) {
-  if (statTotal) statTotal.textContent = String(filtered.length);
+function normalizeHeroStatsFromMeta(globalStats, fallbackStats) {
+  const meta = globalStats && typeof globalStats === 'object' ? globalStats : {};
+  const total = Number(meta.total);
+  const openTotal = Number(meta.open_total ?? meta.abertos_total);
+  const closedTotal = Number(meta.closed_total ?? meta.fechados_total);
+  const recommendedTotal = Number(meta.recommended_total ?? meta.recomendados_total);
 
+  return {
+    total: Number.isFinite(total) && total >= 0 ? Math.round(total) : fallbackStats.total,
+    abertos: Number.isFinite(openTotal) && openTotal >= 0 ? Math.round(openTotal) : fallbackStats.abertos,
+    fechados: Number.isFinite(closedTotal) && closedTotal >= 0 ? Math.round(closedTotal) : fallbackStats.fechados,
+    recomendados: Number.isFinite(recommendedTotal) && recommendedTotal >= 0 ? Math.round(recommendedTotal) : fallbackStats.recomendados,
+  };
+}
+
+function updateHeroStats(filtered, { globalStats = null } = {}) {
   let abertos = 0;
   let fechados = 0;
   let recomendados = 0;
 
-  for (const e of filtered) {
+  const safeFiltered = Array.isArray(filtered) ? filtered : [];
+  for (const e of safeFiltered) {
     const closed = isClosedEdital(e);
     if (!closed && (e?.is_highlighted || e?.relevance_level === 'perfect')) recomendados++;
     if (closed) fechados++;
     else abertos++;
   }
 
-  if (statAbertos) statAbertos.textContent = String(abertos);
-  if (statFechados) statFechados.textContent = String(fechados);
-  if (statRecomendados) statRecomendados.textContent = String(recomendados);
+  const stats = normalizeHeroStatsFromMeta(globalStats, {
+    total: safeFiltered.length,
+    abertos,
+    fechados,
+    recomendados,
+  });
+
+  if (statTotal) statTotal.textContent = String(stats.total);
+  if (statAbertos) statAbertos.textContent = String(stats.abertos);
+  if (statFechados) statFechados.textContent = String(stats.fechados);
+  if (statRecomendados) statRecomendados.textContent = String(stats.recomendados);
 }
 
 
@@ -2834,7 +2954,10 @@ const doLogout = async () => {
         const id = saveBtn.getAttribute('data-id');
         if (!id) return;
 
-        // otimista: desabilita rapidinho pra evitar double click
+        const editalAntes = editaisOriginais.find(e => String(e.id) === String(id));
+        const estadoOtimista = editalAntes ? !editalAntes.is_favorite : !saveBtn.classList.contains('is-saved');
+        updateSaveButtonUI(saveBtn, estadoOtimista);
+
         const prevDisabled = saveBtn.disabled;
         saveBtn.disabled = true;
 
@@ -2849,6 +2972,7 @@ const doLogout = async () => {
             }
           }
         } catch (err) {
+          updateSaveButtonUI(saveBtn, Boolean(editalAntes?.is_favorite));
           showToast(err?.message || 'Não foi possível atualizar este edital nos salvos.', 'error');
         } finally {
           saveBtn.disabled = prevDisabled;
@@ -3364,6 +3488,8 @@ async function openModal(edital) {
   if (modalSaveBtn) {
     modalSaveBtn.addEventListener('click', async () => {
       const prev = modalSaveBtn.disabled;
+      const estadoOtimista = !Boolean(edital.is_favorite);
+      modalSaveBtn.innerHTML = `<i class="${estadoOtimista ? 'fas' : 'far'} fa-star"></i> ${estadoOtimista ? 'Salvo' : 'Salvar'}`;
       modalSaveBtn.disabled = true;
       try {
         const r = await toggleFavorito(edital.id);
@@ -3381,6 +3507,7 @@ async function openModal(edital) {
           }
         }
       } catch (err) {
+        modalSaveBtn.innerHTML = `<i class="${edital.is_favorite ? 'fas' : 'far'} fa-star"></i> ${edital.is_favorite ? 'Salvo' : 'Salvar'}`;
         showToast(err?.message || 'Não foi possível atualizar os salvos.', 'error');
       } finally {
         modalSaveBtn.disabled = prev;
@@ -3518,7 +3645,7 @@ function stripHtmlPreserveBreaks(htmlStr) {
 
 function sanitizeAssistantReplyText(text) {
   return String(text || '')
-    .replace(/^\s*Base:\s*todos os cards carregados\.?\s*$/gim, '')
+    .replace(/^\s*Base:\s*(?:todos os cards carregados|cards vis[ií]veis no painel|cards em foco da conversa)\.?\s*$/gim, '')
     .replace(/(?:\r?\n){3,}/g, '\n\n')
     .trim();
 }
