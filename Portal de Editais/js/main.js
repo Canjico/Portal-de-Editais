@@ -74,7 +74,7 @@ import {
 import { runDashboardBootstrapFlow } from './bootstrap-flows.js?v=20260416.1';
 import { readAuthHandoff } from './auth-handoff.js?v=20260422.1';
 
-console.info('[Athos][main.js] versão chat documental RAG 20260426.4 carregada');
+console.info('[Athos][main.js] versão chat orquestrado 20260503.1 carregada');
 
 const APP_BASE_URL = new URL('../', import.meta.url);
 const SHARE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{20,255}$/;
@@ -1150,8 +1150,8 @@ function buildEditaisRequestPath({
     const safePage = Math.max(1, Math.trunc(Number(page) || 1));
     const safeLimit = Math.max(1, Math.trunc(Number(limit) || PAGE_SIZE));
     params.set('summary', '1');
-    params.set('page', String(Math.trunc(Number(page))));
-    params.set('limit', String(Math.trunc(Number(limit))));
+    params.set('page', String(safePage));
+    params.set('limit', String(safeLimit));
     params.set('sort_by', normalizeSortValue(sortField || sortSelect?.value || 'prazo'));
     params.set('sort_order', sortDirection || 'asc');
 
@@ -1207,17 +1207,27 @@ function normalizeServerPageMeta(data) {
 async function loadEditais(options = {}) {
   if (!container) return;
 
-  container.innerHTML = `
-    <div class="loading-container">
-      <div class="spinner"></div>
-      <p>Carregando editais...</p>
-      <div class="cards-skeleton" aria-hidden="true">
-        <div class="card-skeleton"></div>
-        <div class="card-skeleton"></div>
-        <div class="card-skeleton"></div>
+  const hasRenderedCards = Boolean(container.querySelector('.edital-card'));
+  if (!hasRenderedCards) {
+    container.innerHTML = `
+      <div class="loading-container">
+        <div class="spinner"></div>
+        <p>Carregando editais...</p>
+        <div class="cards-skeleton" aria-hidden="true">
+          <div class="card-skeleton"></div>
+          <div class="card-skeleton"></div>
+          <div class="card-skeleton"></div>
+        </div>
       </div>
-    </div>
-  `;
+    `;
+  } else {
+    container.setAttribute('aria-busy', 'true');
+    container.classList.add('is-soft-loading');
+    if (resultsStateHint) {
+      resultsStateHint.textContent = 'Atualizando resultados...';
+      resultsStateHint.hidden = false;
+    }
+  }
 
   try {
     const requestOptions = {
@@ -1273,14 +1283,21 @@ async function loadEditais(options = {}) {
     lastEditaisRequestKey = buildEditaisRequestPath(requestOptions);
   } catch (e) {
     console.error('Erro ao carregar editais:', e);
-    container.innerHTML = `
-      <section class="results-empty-state is-error">
-        <div class="empty-icon"><i class="fas fa-exclamation-triangle" aria-hidden="true"></i></div>
-        <h3>Não foi possível carregar os editais</h3>
-        <p>${escapeHtml(e?.message || String(e))}</p>
-        <button onclick="location.reload()" class="btn btn-primary">Tentar novamente</button>
-      </section>
-    `;
+    if (hasRenderedCards) {
+      showToast('Não consegui atualizar os editais agora. Mantive os resultados anteriores na tela.', 'error');
+    } else {
+      container.innerHTML = `
+        <section class="results-empty-state is-error">
+          <div class="empty-icon"><i class="fas fa-exclamation-triangle" aria-hidden="true"></i></div>
+          <h3>Não foi possível carregar os editais</h3>
+          <p>${escapeHtml(e?.message || String(e))}</p>
+          <button onclick="location.reload()" class="btn btn-primary">Tentar novamente</button>
+        </section>
+      `;
+    }
+  } finally {
+    container.removeAttribute('aria-busy');
+    container.classList.remove('is-soft-loading');
   }
 }
 
@@ -2337,9 +2354,16 @@ function normalizeDashboardPlanFromBackend(rawData) {
   const rawPlan = rawData?.assistant_plan && typeof rawData.assistant_plan === 'object'
     ? rawData.assistant_plan
     : (rawData?.plan && typeof rawData.plan === 'object' ? rawData.plan : rawData);
-  const allowedIds = Array.isArray(editaisOriginais)
+  const localIds = Array.isArray(editaisOriginais)
     ? editaisOriginais.map((card) => String(card?.id || '').trim()).filter(Boolean)
     : [];
+  const backendOptionIds = Array.isArray(rawData?.options)
+    ? rawData.options.map((item) => String(item?.id || item?.edital_id || '').trim()).filter(Boolean)
+    : [];
+  const backendPlanIds = Array.isArray(rawPlan?.matched_card_ids)
+    ? rawPlan.matched_card_ids.map((id) => String(id || '').trim()).filter(Boolean)
+    : [];
+  const allowedIds = Array.from(new Set([...localIds, ...backendOptionIds, ...backendPlanIds]));
   return normalizeDashboardAssistantPlan(rawPlan, { allowedCardIds: allowedIds });
 }
 
@@ -4336,6 +4360,11 @@ function normalizeAssistantIntent(value) {
   return token;
 }
 
+function isPolicyRefusalReply(text) {
+  const normalized = normalizeAssistantQuery(text);
+  return normalized.includes('nao posso falar essas coisas') || normalized.includes('não posso falar essas coisas');
+}
+
 function hasSpecificChatKeywords(keywords) {
   if (!Array.isArray(keywords) || !keywords.length) return false;
   return keywords.some((token) => !CHAT_GENERIC_QUERY_KEYWORDS.has(String(token || '').trim()));
@@ -6187,8 +6216,9 @@ async function handleChatSend(options = {}) {
       const displayPlan = applyAccumulatedFiltersToDashboardPlan(plan, accumulatedDashboardFilters);
 
       const finalReply = sanitizeAssistantReplyText(
+        normalizeConciseBotText(data?.reply || displayPlan?.suggested_reply || '') ||
         buildDashboardShortReply(displayPlan, dashboardRequestQuestion) ||
-        normalizeConciseBotText(displayPlan?.suggested_reply || data?.reply || 'Não consegui responder com os dados do painel.')
+        'Não consegui responder com os dados do painel.'
       );
       stopLegacyAssistantLoading(loadingController);
       setMessageText(typingMsg, finalReply);
@@ -6299,7 +6329,7 @@ async function handleChatSend(options = {}) {
       : '/chat/stream';
     const streamOutcome = await tryChatStreamRequest({
       endpoint: streamEndpoint,
-      requestBody: { message: question, question, state: chatState },
+      requestBody: { message: question, question, state: chatState, dashboard_context: buildDashboardIntelligenceContext() },
       typingMsg,
     });
 
@@ -6342,7 +6372,7 @@ async function handleChatSend(options = {}) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       // manda "message" (backend) e "question" (compat)
-      body: JSON.stringify({ message: question, question, state: chatState }),
+      body: JSON.stringify({ message: question, question, state: chatState, dashboard_context: buildDashboardIntelligenceContext() }),
     });
 
     if (!res.ok) {

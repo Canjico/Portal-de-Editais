@@ -7,8 +7,8 @@ const indexSource = await readFile(new URL('../../index.html', import.meta.url),
 
 test('dashboard list endpoint uses paginated summary mode on initial load', () => {
   assert.match(mainSource, /params\.set\('summary', '1'\)/);
-  assert.match(mainSource, /params\.set\('page', String\(Math\.trunc\(Number\(page\)\)\)\)/);
-  assert.match(mainSource, /params\.set\('limit', String\(Math\.trunc\(Number\(limit\)\)\)\)/);
+  assert.match(mainSource, /params\.set\('page', String\(safePage\)\)/);
+  assert.match(mainSource, /params\.set\('limit', String\(safeLimit\)\)/);
 });
 
 test('normalizeEdital supports lightweight summary payload without full json_data', () => {
@@ -44,9 +44,9 @@ test('server paged hero uses global stats metadata from backend', () => {
 });
 
 test('chat refinement build is cache busted and logged', () => {
-  assert.match(indexSource, /src="\.\/js\/main\.js\?v=20260426\.4"/);
-  assert.match(indexSource, /href="\.\/CSS\/style\.css\?v=20260426\.1"/);
-  assert.match(mainSource, /console\.info\('\[Athos\]\[main\.js\] versão chat documental RAG 20260426\.4 carregada'\)/);
+  assert.match(indexSource, /src="\.\/js\/main\.js\?v=20260503\.1"/);
+  assert.match(indexSource, /href="\.\/CSS\/style\.css\?v=20260503\.1"/);
+  assert.match(mainSource, /console\.info\('\[Athos\]\[main\.js\] versão chat orquestrado 20260503\.1 carregada'\)/);
 });
 
 test('dashboard refinements use accumulated filters and dashboard intelligence endpoint', () => {
