@@ -1,4 +1,4 @@
-/* =========================================================
+﻿/* =========================================================
    Athos / Atimus — Editais (UX/UI novo + filtros + paginação)
    ========================================================= */
 
@@ -74,7 +74,7 @@ import {
 import { runDashboardBootstrapFlow } from './bootstrap-flows.js?v=20260416.1';
 import { readAuthHandoff } from './auth-handoff.js?v=20260422.1';
 
-console.info('[Athos][main.js] versão chat orquestrado 20260503.1 carregada');
+console.info('[Athos][main.js] versão chat documental RAG 20260426.4 carregada');
 
 const APP_BASE_URL = new URL('../', import.meta.url);
 const SHARE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{20,255}$/;
@@ -130,9 +130,6 @@ let kpiFilter = 'all';
 let assistantPanelContext = null;
 let assistantSemanticMemory = createDashboardMemoryState();
 let serverPageMeta = {};
-let serverPaginationActive = false;
-let searchDebounceTimer = null;
-let lastEditaisRequestKey = '';
 let bootstrapInitPromise = null;
 let uiEventsBound = false;
 const loadEditaisSingleFlight = createSingleFlight(() => loadEditais());
@@ -768,7 +765,7 @@ function clearAllFilters({ keepSearch = false, keepFavorites = false, rerender =
   syncSavedToggleUI();
   setSearchVisualState();
   updateFilterActionsState();
-  if (rerender) renderOrReloadEditais({ resetPage: true });
+  if (rerender) applyFiltersAndRender({ resetPage: true });
 }
 
 function syncKpiButtons() {
@@ -808,7 +805,7 @@ function renderActiveFilters() {
     assistantLabels.forEach((label) => {
       chips.push(makeFilterChip(label, () => {
         clearAssistantPanelContext();
-        renderOrReloadEditais({ resetPage: true });
+        applyFiltersAndRender({ resetPage: true });
       }, 'chip-assistant'));
     });
   }
@@ -822,7 +819,7 @@ function renderActiveFilters() {
         applied[key] = (applied[key] || []).filter(v => v !== value);
         const checkbox = document.querySelector(`.filter-options[data-filter-type=\"${key}\"] input[value=\"${cssEscape(value)}\"]`);
         if (checkbox) checkbox.checked = false;
-        renderOrReloadEditais({ resetPage: true });
+        applyFiltersAndRender({ resetPage: true });
       }));
     });
   });
@@ -831,7 +828,7 @@ function renderActiveFilters() {
     const searchValue = String(searchInput.value || '').trim();
     chips.push(makeFilterChip(`Busca: ${searchValue}`, () => {
       searchInput.value = '';
-      renderOrReloadEditais({ resetPage: true });
+      applyFiltersAndRender({ resetPage: true });
     }));
   }
 
@@ -839,7 +836,7 @@ function renderActiveFilters() {
     chips.push(makeFilterChip('Somente salvos', () => {
       onlyFavoritos = false;
       syncSavedToggleUI();
-      renderOrReloadEditais({ resetPage: true });
+      applyFiltersAndRender({ resetPage: true });
     }, 'chip-favorites'));
   }
 
@@ -850,7 +847,7 @@ function renderActiveFilters() {
     chips.push(makeFilterChip(kpiLabel, () => {
       kpiFilter = 'all';
       syncKpiButtons();
-      renderOrReloadEditais({ resetPage: true });
+      applyFiltersAndRender({ resetPage: true });
     }));
   }
 
@@ -1103,37 +1100,6 @@ function cssEscape(value) {
 // =========================
 // DATA LOAD
 // =========================
-function appendCsvParam(params, key, values) {
-  const list = Array.isArray(values) ? values : [];
-  const clean = list.map((item) => String(item || '').trim()).filter(Boolean);
-  if (clean.length) params.set(key, clean.join(','));
-}
-
-function getAssistantDashboardFiltersForServer() {
-  const context = assistantPanelContext || null;
-  const filters = context?.filters && typeof context.filters === 'object' ? context.filters : {};
-  const out = {
-    ids: [],
-    estado: [],
-    instituicao: [],
-    area: [],
-    status: [],
-    deadline_range: '',
-    keywords: [],
-  };
-
-  if (context?.resultIdsSet instanceof Set && context.resultIdsSet.size) {
-    out.ids = Array.from(context.resultIdsSet).map((id) => String(id || '').trim()).filter(Boolean);
-  }
-  if (Array.isArray(filters.estado)) out.estado = filters.estado;
-  if (Array.isArray(filters.instituicoes)) out.instituicao = filters.instituicoes;
-  if (Array.isArray(filters.categories)) out.area = filters.categories;
-  if (Array.isArray(filters.status)) out.status = filters.status;
-  if (filters.deadline_range) out.deadline_range = String(filters.deadline_range || '').trim();
-  if (Array.isArray(filters.keywords)) out.keywords = filters.keywords;
-  return out;
-}
-
 function buildEditaisRequestPath({
   summary = true,
   page = 1,
@@ -1147,32 +1113,11 @@ function buildEditaisRequestPath({
   params.set('relevance_mode', 'fast');
 
   if (summary) {
-    const safePage = Math.max(1, Math.trunc(Number(page) || 1));
-    const safeLimit = Math.max(1, Math.trunc(Number(limit) || PAGE_SIZE));
     params.set('summary', '1');
-    params.set('page', String(safePage));
-    params.set('limit', String(safeLimit));
+    params.set('page', String(Math.trunc(Number(page))));
+    params.set('limit', String(Math.trunc(Number(limit))));
     params.set('sort_by', normalizeSortValue(sortField || sortSelect?.value || 'prazo'));
     params.set('sort_order', sortDirection || 'asc');
-
-    const q = String(searchInput?.value || '').trim();
-    if (q) params.set('search', q);
-    appendCsvParam(params, 'estado', applied.estado);
-    appendCsvParam(params, 'instituicao', applied.instituicao);
-    appendCsvParam(params, 'area', applied.area);
-
-    if (kpiFilter === 'abertos') params.set('status', 'aberto');
-    if (kpiFilter === 'fechados') params.set('status', 'encerrado');
-    if (onlyFavoritos) params.set('only_favoritos', '1');
-
-    const assistantFilters = getAssistantDashboardFiltersForServer();
-    appendCsvParam(params, 'ids', assistantFilters.ids);
-    appendCsvParam(params, 'estado', [...(applied.estado || []), ...(assistantFilters.estado || [])]);
-    appendCsvParam(params, 'instituicao', [...(applied.instituicao || []), ...(assistantFilters.instituicao || [])]);
-    appendCsvParam(params, 'area', [...(applied.area || []), ...(assistantFilters.area || [])]);
-    if (assistantFilters.status?.length) appendCsvParam(params, 'status', assistantFilters.status);
-    if (assistantFilters.deadline_range) params.set('deadline_range', assistantFilters.deadline_range);
-    if (!q && assistantFilters.keywords?.length) params.set('search', assistantFilters.keywords.join(' '));
   }
 
   if (includeAttachments) {
@@ -1198,36 +1143,23 @@ function normalizeServerPageMeta(data) {
       closed_total: Number(stats.closed_total ?? data.closed_total ?? 0),
       recommended_total: Number(stats.recommended_total ?? stats.recomendados_total ?? 0),
     },
-    facets: data.facets && typeof data.facets === 'object' ? data.facets : {},
-    server_pagination: Boolean(data.server_pagination || Array.isArray(data.items)),
-    query: data.query && typeof data.query === 'object' ? data.query : {},
   };
 }
 
 async function loadEditais(options = {}) {
   if (!container) return;
 
-  const hasRenderedCards = Boolean(container.querySelector('.edital-card'));
-  if (!hasRenderedCards) {
-    container.innerHTML = `
-      <div class="loading-container">
-        <div class="spinner"></div>
-        <p>Carregando editais...</p>
-        <div class="cards-skeleton" aria-hidden="true">
-          <div class="card-skeleton"></div>
-          <div class="card-skeleton"></div>
-          <div class="card-skeleton"></div>
-        </div>
+  container.innerHTML = `
+    <div class="loading-container">
+      <div class="spinner"></div>
+      <p>Carregando editais...</p>
+      <div class="cards-skeleton" aria-hidden="true">
+        <div class="card-skeleton"></div>
+        <div class="card-skeleton"></div>
+        <div class="card-skeleton"></div>
       </div>
-    `;
-  } else {
-    container.setAttribute('aria-busy', 'true');
-    container.classList.add('is-soft-loading');
-    if (resultsStateHint) {
-      resultsStateHint.textContent = 'Atualizando resultados...';
-      resultsStateHint.hidden = false;
-    }
-  }
+    </div>
+  `;
 
   try {
     const requestOptions = {
@@ -1278,56 +1210,18 @@ async function loadEditais(options = {}) {
       (Array.isArray(data?.data) ? data.data : [])));
 
     serverPageMeta = Array.isArray(data) ? {} : normalizeServerPageMeta(data);
-    serverPaginationActive = Boolean(serverPageMeta.server_pagination);
     editaisOriginais = rawList.map(normalizeEdital).filter(Boolean);
-    lastEditaisRequestKey = buildEditaisRequestPath(requestOptions);
   } catch (e) {
     console.error('Erro ao carregar editais:', e);
-    if (hasRenderedCards) {
-      showToast('Não consegui atualizar os editais agora. Mantive os resultados anteriores na tela.', 'error');
-    } else {
-      container.innerHTML = `
-        <section class="results-empty-state is-error">
-          <div class="empty-icon"><i class="fas fa-exclamation-triangle" aria-hidden="true"></i></div>
-          <h3>Não foi possível carregar os editais</h3>
-          <p>${escapeHtml(e?.message || String(e))}</p>
-          <button onclick="location.reload()" class="btn btn-primary">Tentar novamente</button>
-        </section>
-      `;
-    }
-  } finally {
-    container.removeAttribute('aria-busy');
-    container.classList.remove('is-soft-loading');
+    container.innerHTML = `
+      <section class="results-empty-state is-error">
+        <div class="empty-icon"><i class="fas fa-exclamation-triangle" aria-hidden="true"></i></div>
+        <h3>Não foi possível carregar os editais</h3>
+        <p>${escapeHtml(e?.message || String(e))}</p>
+        <button onclick="location.reload()" class="btn btn-primary">Tentar novamente</button>
+      </section>
+    `;
   }
-}
-
-async function reloadEditaisAndRender({ page = 1, resetPage = false } = {}) {
-  const nextPage = resetPage ? 1 : Math.max(1, Math.trunc(Number(page) || currentPage || 1));
-  currentPage = nextPage;
-  await loadEditais({ summary: true, page: currentPage, limit: PAGE_SIZE, view: 'card' });
-  applyFavoritosToLoadedEditais();
-  buildFuseIndex();
-  generateDynamicFilters();
-  applyFiltersAndRender({ resetPage: false, serverDataAlreadyLoaded: true });
-}
-
-function scheduleServerReload({ resetPage = true } = {}) {
-  if (searchDebounceTimer) window.clearTimeout(searchDebounceTimer);
-  searchDebounceTimer = window.setTimeout(() => {
-    void reloadEditaisAndRender({ page: resetPage ? 1 : currentPage, resetPage });
-  }, 220);
-}
-
-function renderOrReloadEditais({ resetPage = false, debounce = false } = {}) {
-  if (serverPaginationActive) {
-    if (debounce) {
-      scheduleServerReload({ resetPage });
-      return;
-    }
-    void reloadEditaisAndRender({ page: resetPage ? 1 : currentPage, resetPage });
-    return;
-  }
-  applyFiltersAndRender({ resetPage });
 }
 
 // =========================
@@ -1697,23 +1591,12 @@ function generateDynamicFilters() {
     if (!box) return;
 
     const counts = new Map();
-    const facetItems = Array.isArray(serverPageMeta?.facets?.[type]) ? serverPageMeta.facets[type] : [];
-    if (facetItems.length) {
-      facetItems.forEach((item) => {
-        const rawValue = type === 'estado'
-          ? normalizeEstadoValue(item?.value)
-          : String(item?.value || '').trim();
-        if (!rawValue) return;
-        counts.set(rawValue, Number(item?.count || 0));
-      });
-    } else {
-      for (const e of editaisOriginais) {
-        const raw = type === 'estado'
-          ? normalizeEstadoValue(e?.[key])
-          : (e?.[key] ?? '').toString().trim();
-        if (!raw) continue;
-        counts.set(raw, (counts.get(raw) || 0) + 1);
-      }
+    for (const e of editaisOriginais) {
+      const raw = type === 'estado'
+        ? normalizeEstadoValue(e?.[key])
+        : (e?.[key] ?? '').toString().trim();
+      if (!raw) continue;
+      counts.set(raw, (counts.get(raw) || 0) + 1);
     }
 
     const values = Array.from(counts.keys())
@@ -1778,19 +1661,10 @@ function generateCategoryFilters() {
   if (!box) return;
 
   const counts = new Map();
-  const facetItems = Array.isArray(serverPageMeta?.facets?.area) ? serverPageMeta.facets.area : [];
-  if (facetItems.length) {
-    facetItems.forEach((item) => {
-      const cat = toCanonicalCategory(item?.value);
-      if (!cat) return;
-      counts.set(cat, Number(item?.count || 0));
-    });
-  } else {
-    for (const e of editaisOriginais) {
-      const cat = toCanonicalCategory(e?.area);
-      if (!cat) continue;
-      counts.set(cat, (counts.get(cat) || 0) + 1);
-    }
+  for (const e of editaisOriginais) {
+    const cat = toCanonicalCategory(e?.area);
+    if (!cat) continue;
+    counts.set(cat, (counts.get(cat) || 0) + 1);
   }
 
   const orderedCategories = CATEGORY_OPTIONS.slice().sort((a, b) => {
@@ -2336,17 +2210,6 @@ function buildDashboardIntelligenceContext() {
       card_ids: focusIds,
       opened_card_id: openedCardId || '',
     },
-    search: String(searchInput?.value || '').trim(),
-    server_pagination: Boolean(serverPaginationActive),
-    meta: {
-      server_pagination: Boolean(serverPaginationActive),
-      page: Number(serverPageMeta?.page || currentPage || 1),
-      limit: Number(serverPageMeta?.limit || PAGE_SIZE),
-      total: Number(serverPageMeta?.total || normalizedAll.length || 0),
-      total_pages: Number(serverPageMeta?.total_pages || 1),
-      stats: serverPageMeta?.stats || {},
-      query: serverPageMeta?.query || {},
-    },
   };
 }
 
@@ -2354,16 +2217,9 @@ function normalizeDashboardPlanFromBackend(rawData) {
   const rawPlan = rawData?.assistant_plan && typeof rawData.assistant_plan === 'object'
     ? rawData.assistant_plan
     : (rawData?.plan && typeof rawData.plan === 'object' ? rawData.plan : rawData);
-  const localIds = Array.isArray(editaisOriginais)
+  const allowedIds = Array.isArray(editaisOriginais)
     ? editaisOriginais.map((card) => String(card?.id || '').trim()).filter(Boolean)
     : [];
-  const backendOptionIds = Array.isArray(rawData?.options)
-    ? rawData.options.map((item) => String(item?.id || item?.edital_id || '').trim()).filter(Boolean)
-    : [];
-  const backendPlanIds = Array.isArray(rawPlan?.matched_card_ids)
-    ? rawPlan.matched_card_ids.map((id) => String(id || '').trim()).filter(Boolean)
-    : [];
-  const allowedIds = Array.from(new Set([...localIds, ...backendOptionIds, ...backendPlanIds]));
   return normalizeDashboardAssistantPlan(rawPlan, { allowedCardIds: allowedIds });
 }
 
@@ -2475,7 +2331,7 @@ function applyAssistantPayloadToDashboard(rawPayload, { fallbackQuery = '' } = {
 
   if (searchInput) searchInput.value = '';
   setSearchVisualState();
-  renderOrReloadEditais({ resetPage: true });
+  applyFiltersAndRender({ resetPage: true });
   return true;
 }
 
@@ -2541,7 +2397,7 @@ function applyAssistantContextFilters(items) {
 // APLICAÇÃO DE FILTROS
 // =========================
 
-function applyFiltersAndRender({ resetPage, serverDataAlreadyLoaded = false } = { resetPage: false }) {
+function applyFiltersAndRender({ resetPage } = { resetPage: false }) {
   if (resetPage) currentPage = 1;
 
   const termo = (searchInput?.value || '').trim();
@@ -2550,36 +2406,7 @@ function applyFiltersAndRender({ resetPage, serverDataAlreadyLoaded = false } = 
   const textQueryLower = textQuery.toLowerCase();
   setSearchVisualState();
 
-  const isServerPaged = Boolean(serverPaginationActive && serverPageMeta?.server_pagination);
-
-  if (isServerPaged) {
-    const pageItems = Array.isArray(editaisOriginais) ? [...editaisOriginais] : [];
-    lastFiltered = pageItems;
-
-    const total = Number(serverPageMeta.total || pageItems.length || 0);
-    const limit = Number(serverPageMeta.limit || PAGE_SIZE);
-    const totalPages = Math.max(1, Number(serverPageMeta.total_pages || Math.ceil(total / Math.max(1, limit)) || 1));
-    currentPage = Math.max(1, Math.min(Number(serverPageMeta.page || currentPage || 1), totalPages));
-
-    if (resultsMeta) {
-      const startIdx = total === 0 ? 0 : ((currentPage - 1) * limit) + 1;
-      const endIdx = total === 0 ? 0 : Math.min(startIdx + pageItems.length - 1, total);
-      const label = onlyFavoritos ? 'salvos' : 'editais';
-      resultsMeta.textContent = `Mostrando ${startIdx}-${endIdx} de ${total} ${label}`;
-    }
-
-    updateHeroStats(pageItems, { globalStats: serverPageMeta.stats });
-    syncKpiButtons();
-    renderActiveFilters();
-    renderResultsStateHint(total);
-    renderEditais(container, pageItems, {
-      emptyState: buildEmptyState({ total, termo }),
-    });
-    renderPagination(totalPages);
-    return;
-  }
-
-  // Fallback legado: filtra no cliente quando a API antiga devolver lista completa.
+  // 1) Base por relevância (Fuse) quando existir busca
   let base = [...editaisOriginais];
 
   if (textQuery && fuseInstance) {
@@ -2604,19 +2431,26 @@ function applyFiltersAndRender({ resetPage, serverDataAlreadyLoaded = false } = 
     }
   }
 
+  // 2) Filtros aplicados (checkboxes)
   let filtered = base;
   if (applied.estado.length) filtered = filtered.filter(e => applied.estado.includes(e.estado));
   if (applied.instituicao.length) filtered = filtered.filter(e => applied.instituicao.includes(e.instituicao));
   if (applied.area.length) filtered = filtered.filter(e => applied.area.includes(toCanonicalCategory(e.area)));
   filtered = applyAssistantContextFilters(filtered);
+  const statsBase = [...filtered];
 
+  // 2.4) Recorte por KPI clicado
   if (kpiFilter === 'abertos') filtered = filtered.filter((edital) => !isClosedEdital(edital));
   if (kpiFilter === 'fechados') filtered = filtered.filter((edital) => isClosedEdital(edital));
   if (kpiFilter === 'recomendados') filtered = filtered.filter((edital) => !isClosedEdital(edital) && (edital?.is_highlighted || edital?.relevance_level === 'perfect'));
+
+  // 2.5) Só salvos
   if (onlyFavoritos) filtered = filtered.filter(e => !!e.is_favorite);
 
+  // 3) Ordenação
   const sort = normalizeSortValue(sortField || sortSelect?.value || 'prazo');
   const directionFactor = sortDirection === 'desc' ? -1 : 1;
+
   const collate = (a, b) => String(a || '').localeCompare(String(b || ''), 'pt-BR', { sensitivity: 'base' });
 
   if (sort === 'prazo') {
@@ -2633,16 +2467,24 @@ function applyFiltersAndRender({ resetPage, serverDataAlreadyLoaded = false } = 
     const compareRelevance = (a, b) => {
       const openDiff = (isClosedEdital(a) ? 0 : 1) - (isClosedEdital(b) ? 0 : 1);
       if (openDiff !== 0) return openDiff;
+
       const relDiff = normalizeRelevanceScore(a?.relevance_score) - normalizeRelevanceScore(b?.relevance_score);
       if (relDiff !== 0) return relDiff;
+
       const highlightDiff = (a?.is_highlighted ? 1 : 0) - (b?.is_highlighted ? 1 : 0);
       if (highlightDiff !== 0) return highlightDiff;
+
       return collate(a?.titulo, b?.titulo) * -1;
     };
     filtered = [...filtered].sort((a, b) => compareRelevance(a, b) * directionFactor);
+  } else {
+    // fallback
+    filtered = filtered;
   }
 
   lastFiltered = filtered;
+
+  // 4) Paginação + render
   const total = filtered.length;
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   if (currentPage > totalPages) currentPage = totalPages;
@@ -2681,7 +2523,7 @@ function buildEmptyState({ total, termo }) {
       action: () => {
         onlyFavoritos = false;
         syncSavedToggleUI();
-        renderOrReloadEditais({ resetPage: true });
+        applyFiltersAndRender({ resetPage: true });
       },
     };
   }
@@ -2704,7 +2546,7 @@ function buildEmptyState({ total, termo }) {
       actionLabel: 'Limpar busca',
       action: () => {
         if (searchInput) searchInput.value = '';
-        renderOrReloadEditais({ resetPage: true });
+        applyFiltersAndRender({ resetPage: true });
       },
     };
   }
@@ -2987,14 +2829,14 @@ const doLogout = async () => {
   syncKpiButtons();
   setSearchVisualState();
 
-  // busca global: no modo paginado consulta a API; no fallback antigo filtra localmente.
+  // busca global (aplica instantâneo)
   if (searchInput) {
     searchInput.addEventListener('input', () => {
       if (assistantPanelContext && String(searchInput.value || '').trim()) {
         clearAssistantPanelContext();
       }
       setSearchVisualState();
-      renderOrReloadEditais({ resetPage: true, debounce: true });
+      applyFiltersAndRender({ resetPage: true });
     });
   }
 
@@ -3002,7 +2844,7 @@ const doLogout = async () => {
   if (sortSelect) {
     sortSelect.addEventListener('change', () => {
       setSortField(sortSelect.value, { resetDirection: true });
-      renderOrReloadEditais({ resetPage: true });
+      applyFiltersAndRender({ resetPage: true });
     });
   }
 
@@ -3017,14 +2859,14 @@ const doLogout = async () => {
       } else {
         setSortField(nextSort, { resetDirection: true });
       }
-      renderOrReloadEditais({ resetPage: true });
+      applyFiltersAndRender({ resetPage: true });
     });
   }
 
   if (sortDirectionBtn) {
     sortDirectionBtn.addEventListener('click', () => {
       toggleSortDirection();
-      renderOrReloadEditais({ resetPage: true });
+      applyFiltersAndRender({ resetPage: true });
     });
   }
 
@@ -3034,7 +2876,7 @@ const doLogout = async () => {
       const next = String(btn.getAttribute('data-kpi-filter') || 'all');
       kpiFilter = next;
       syncKpiButtons();
-      renderOrReloadEditais({ resetPage: true });
+      applyFiltersAndRender({ resetPage: true });
     });
   });
 
@@ -3043,7 +2885,7 @@ const doLogout = async () => {
     savedToggleBtn.addEventListener('click', () => {
       onlyFavoritos = !onlyFavoritos;
       syncSavedToggleUI();
-      renderOrReloadEditais({ resetPage: true });
+      applyFiltersAndRender({ resetPage: true });
     });
   }
 
@@ -3057,7 +2899,7 @@ const doLogout = async () => {
       };
       updateFilterActionsState();
       closeFiltersMobile();
-      renderOrReloadEditais({ resetPage: true });
+      applyFiltersAndRender({ resetPage: true });
     });
   }
 
@@ -3096,7 +2938,7 @@ const doLogout = async () => {
       const p = Number(btn.getAttribute('data-page'));
       if (!Number.isFinite(p) || p === currentPage) return;
       currentPage = p;
-      renderOrReloadEditais({ resetPage: false });
+      applyFiltersAndRender({ resetPage: false });
       window.scrollTo({ top: 0, behavior: 'smooth' });
     });
   }
@@ -3126,7 +2968,7 @@ const doLogout = async () => {
             showToast(r.is_favorite ? 'Edital salvo na sua lista.' : 'Edital removido dos salvos.', 'success', 1800);
             // Se estiver vendo só salvos e removeu, some do grid
             if (onlyFavoritos && !r.is_favorite) {
-              renderOrReloadEditais({ resetPage: true });
+              applyFiltersAndRender({ resetPage: true });
             }
           }
         } catch (err) {
@@ -3204,7 +3046,7 @@ const doLogout = async () => {
           const normalized = normalizeAssistantQuery(q);
           const fallbackKeywords = extractChatKeywords(normalized).join(' ');
           if (searchInput) searchInput.value = fallbackKeywords;
-          renderOrReloadEditais({ resetPage: true });
+          applyFiltersAndRender({ resetPage: true });
         }
         window.scrollTo({ top: 0, behavior: 'smooth' });
         setChatOpen(false);
@@ -3661,7 +3503,7 @@ async function openModal(edital) {
           showToast(r.is_favorite ? 'Edital salvo com sucesso.' : 'Edital removido dos salvos.', 'success', 1800);
 
           if (onlyFavoritos && !r.is_favorite) {
-            renderOrReloadEditais({ resetPage: true });
+            applyFiltersAndRender({ resetPage: true });
           }
         }
       } catch (err) {
@@ -4358,11 +4200,6 @@ function normalizeAssistantIntent(value) {
   if (!token) return 'unknown';
   if (token === 'search_edital') return 'edital_search';
   return token;
-}
-
-function isPolicyRefusalReply(text) {
-  const normalized = normalizeAssistantQuery(text);
-  return normalized.includes('nao posso falar essas coisas') || normalized.includes('não posso falar essas coisas');
 }
 
 function hasSpecificChatKeywords(keywords) {
@@ -6002,7 +5839,7 @@ function clearDashboardRefinementsFromChat() {
   });
   clearAssistantPanelContext();
   removeRefinementPanels();
-  renderOrReloadEditais({ resetPage: true });
+  applyFiltersAndRender({ resetPage: true });
 
   const notice = 'Refinamentos limpos. Você pode buscar novamente ou aplicar outro filtro.';
   addMessage(notice, 'bot');
@@ -6216,9 +6053,8 @@ async function handleChatSend(options = {}) {
       const displayPlan = applyAccumulatedFiltersToDashboardPlan(plan, accumulatedDashboardFilters);
 
       const finalReply = sanitizeAssistantReplyText(
-        normalizeConciseBotText(data?.reply || displayPlan?.suggested_reply || '') ||
         buildDashboardShortReply(displayPlan, dashboardRequestQuestion) ||
-        'Não consegui responder com os dados do painel.'
+        normalizeConciseBotText(displayPlan?.suggested_reply || data?.reply || 'Não consegui responder com os dados do painel.')
       );
       stopLegacyAssistantLoading(loadingController);
       setMessageText(typingMsg, finalReply);
@@ -6329,7 +6165,7 @@ async function handleChatSend(options = {}) {
       : '/chat/stream';
     const streamOutcome = await tryChatStreamRequest({
       endpoint: streamEndpoint,
-      requestBody: { message: question, question, state: chatState, dashboard_context: buildDashboardIntelligenceContext() },
+      requestBody: { message: question, question, state: chatState },
       typingMsg,
     });
 
@@ -6372,7 +6208,7 @@ async function handleChatSend(options = {}) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       // manda "message" (backend) e "question" (compat)
-      body: JSON.stringify({ message: question, question, state: chatState, dashboard_context: buildDashboardIntelligenceContext() }),
+      body: JSON.stringify({ message: question, question, state: chatState }),
     });
 
     if (!res.ok) {
