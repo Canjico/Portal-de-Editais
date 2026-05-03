@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Athos - Perfil</title>
+  <script>
+    (function () {
+      try {
+        const key = 'athos_theme_preference';
+        const valid = { light: true, dark: true, system: true };
+        let pref = String(localStorage.getItem(key) || 'light').toLowerCase().trim();
+        if (!valid[pref]) pref = 'light';
+        const effective = pref === 'system'
+          ? (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+          : pref;
+        document.documentElement.setAttribute('data-theme-preference', pref);
+        document.documentElement.setAttribute('data-theme', effective);
+      } catch (_) {}
+    })();
+  </script>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" />
+  <link rel="stylesheet" href="./CSS/style.css?v=20260322.1" />
+</head>
+
+<body class="app-loading">
+  <div class="app">
+
+    <aside class="app-sidebar" id="appSidebar">
+      <div class="sidebar-top">
+        <img src="./assets/img/icons/Athos.png" alt="Logo" class="sidebar-logo" />
+        <button class="icon-btn sidebar-toggle" id="sidebarToggle" title="Recolher menu" type="button">
+          <i class="fas fa-bars"></i>
+        </button>
+      </div>
+
+      <nav class="sidebar-nav" aria-label="Menu">
+        <a class="nav-item" href="./">
+          <i class="fas fa-th-large"></i>
+          <span class="nav-text">Dashboard</span>
+        </a>
+        <a class="nav-item active" href="./perfil.html" aria-current="page">
+          <i class="fas fa-user"></i>
+          <span class="nav-text">Perfil</span>
+        </a>
+        <a class="nav-item" href="./central_ajuda.html">
+          <i class="fas fa-circle-question"></i>
+          <span class="nav-text">Central de Ajuda</span>
+        </a>
+      </nav>
+
+      <div class="sidebar-user">
+        <div class="avatar" id="sidebarAvatar"></div>
+        <div class="user-meta">
+          <div class="user-name" id="sidebarUserName"></div>
+          <div class="user-email" id="sidebarUserEmail"></div>
+        </div>
+      </div>
+    </aside>
+
+    <div class="app-main">
+      <header class="topbar topbar--compact">
+        <div class="topbar-mobile-brand" aria-label="Menu mobile">
+          <button class="icon-btn mobile-only mobile-sidebar-btn" id="mobileSidebarBtn" type="button" title="Menu" aria-label="Abrir menu">
+            <i class="fas fa-bars"></i>
+          </button>
+        </div>
+
+        <div class="topbar-actions">
+          <button class="icon-btn" type="button" aria-label="Notificações">
+            <i class="far fa-bell"></i>
+            <span class="badge" id="notifBadge" hidden>0</span>
+          </button>
+
+          <button class="icon-btn" id="logoutIconBtn" type="button" title="Sair da conta" aria-label="Sair">
+            <i class="fas fa-arrow-right-from-bracket"></i>
+          </button>
+        </div>
+      </header>
+
+      <main class="content">
+        <div class="profile-grid">
+
+          <aside class="profile-left">
+            <div class="profile-card">
+              <div class="profile-avatar" id="profileAvatar"></div>
+              <div class="profile-name" id="profileName"></div>
+              <div class="profile-email" id="profileEmail"></div>
+              <div class="profile-email" id="profileRole"></div>
+
+              <div class="profile-nav" role="tablist" aria-label="Seções do perfil">
+                <button class="profile-nav-item is-active" data-target="pane-inicio" role="tab" type="button" aria-selected="true" aria-controls="pane-inicio">Conta</button>
+                <button class="profile-nav-item" data-target="pane-dados" role="tab" type="button" aria-selected="false" aria-controls="pane-dados">Dados pessoais</button>
+                <button class="profile-nav-item" data-target="pane-empresa" role="tab" type="button" aria-selected="false" aria-controls="pane-empresa">Empresa</button>
+                <button class="profile-nav-item" data-target="pane-preferencias" role="tab" type="button" aria-selected="false" aria-controls="pane-preferencias">Preferências</button>
+                <button class="profile-nav-item" data-target="pane-seguranca" role="tab" type="button" aria-selected="false" aria-controls="pane-seguranca">Segurança</button>
+                <button class="profile-nav-item" data-target="pane-privacidade" role="tab" type="button" aria-selected="false" aria-controls="pane-privacidade">Privacidade</button>
+              </div>
+            </div>
+          </aside>
+
+          <section class="profile-right">
+
+            <div class="panel" id="pane-inicio" role="tabpanel">
+              <div class="panel-head">
+                <div>
+                  <div class="panel-title">Conta e configurações</div>
+                  <p class="panel-subtitle">Acesse cada área para gerenciar dados, segurança, privacidade e preferências.</p>
+                </div>
+              </div>
+              <div class="section-entry-grid section-entry-grid--overview">
+                <button class="section-entry-btn section-entry-btn--overview" type="button" data-go-to-pane="pane-dados">
+                  <strong>Dados pessoais</strong>
+                  <small>Nome, e-mail, telefone, cargo e estado principal.</small>
+                </button>
+                <button class="section-entry-btn section-entry-btn--overview" type="button" data-go-to-pane="pane-empresa">
+                  <strong>Dados da empresa</strong>
+                  <small>CNPJ, setor, área de atuação e interesses.</small>
+                </button>
+                <button class="section-entry-btn section-entry-btn--overview" type="button" data-go-to-pane="pane-seguranca">
+                  <strong>Segurança</strong>
+                  <small>Troca de senha com verificação por e-mail e sessão ativa.</small>
+                </button>
+                <button class="section-entry-btn section-entry-btn--overview" type="button" data-go-to-pane="pane-privacidade">
+                  <strong>Privacidade</strong>
+                  <small>Cookies, consentimentos e exclusão de conta.</small>
+                </button>
+                <button class="section-entry-btn section-entry-btn--overview" type="button" data-go-to-pane="pane-preferencias">
+                  <strong>Preferências</strong>
+                  <small>Tema, alertas e preferências de comunicação.</small>
+                </button>
+              </div>
+            </div>
+
+            <div class="panel" id="pane-dados" role="tabpanel" hidden>
+              <div class="panel-head">
+                <div>
+                  <div class="panel-title">Dados pessoais</div>
+                  <p class="panel-subtitle">Informações básicas da sua conta para identificação e contato.</p>
+                </div>
+              </div>
+
+              <div class="form-grid">
+                <div class="field">
+                  <label for="nomeCompleto">Nome completo</label>
+                  <input id="nomeCompleto" type="text" autocomplete="name" required />
+                </div>
+                <div class="field">
+                  <label for="email">E-mail</label>
+                  <input id="email" type="email" autocomplete="email" required />
+                </div>
+                <div class="field">
+                  <label for="telefone">Telefone</label>
+                  <input id="telefone" type="tel" autocomplete="tel" />
+                </div>
+                <div class="field">
+                  <label for="cargo">Cargo</label>
+                  <input id="cargo" type="text" autocomplete="organization-title" />
+                </div>
+                <div class="field">
+                  <label for="estadoUf">Estado principal (UF)</label>
+                  <select id="estadoUf" required>
+                    <option value="" selected disabled>Selecione o estado</option>
+                    <option value="AC">AC - Acre</option>
+                    <option value="AL">AL - Alagoas</option>
+                    <option value="AP">AP - Amapá</option>
+                    <option value="AM">AM - Amazonas</option>
+                    <option value="BA">BA - Bahia</option>
+                    <option value="CE">CE - Ceará</option>
+                    <option value="DF">DF - Distrito Federal</option>
+                    <option value="ES">ES - Espírito Santo</option>
+                    <option value="GO">GO - Goiás</option>
+                    <option value="MA">MA - Maranhão</option>
+                    <option value="MT">MT - Mato Grosso</option>
+                    <option value="MS">MS - Mato Grosso do Sul</option>
+                    <option value="MG">MG - Minas Gerais</option>
+                    <option value="PA">PA - Pará</option>
+                    <option value="PB">PB - Paraíba</option>
+                    <option value="PR">PR - Paraná</option>
+                    <option value="PE">PE - Pernambuco</option>
+                    <option value="PI">PI - Piauí</option>
+                    <option value="RJ">RJ - Rio de Janeiro</option>
+                    <option value="RN">RN - Rio Grande do Norte</option>
+                    <option value="RS">RS - Rio Grande do Sul</option>
+                    <option value="RO">RO - Rondônia</option>
+                    <option value="RR">RR - Roraima</option>
+                    <option value="SC">SC - Santa Catarina</option>
+                    <option value="SP">SP - São Paulo</option>
+                    <option value="SE">SE - Sergipe</option>
+                    <option value="TO">TO - Tocantins</option>
+                  </select>
+                  <small class="field-help">Obrigatório para recomendações personalizadas de editais.</small>
+                </div>
+              </div>
+
+              <button class="btn btn-primary" id="saveDadosBtn" type="button">Salvar alterações</button>
+            </div>
+
+            <div class="panel" id="pane-empresa" role="tabpanel" hidden>
+              <div class="panel-head">
+                <div>
+                  <div class="panel-title">Informações da empresa</div>
+                  <p class="panel-subtitle">Detalhes organizacionais para recomendações de editais mais precisas.</p>
+                </div>
+              </div>
+
+              <div class="form-grid">
+                <div class="field">
+                  <label for="nomeEmpresa">Nome da empresa</label>
+                  <input id="nomeEmpresa" type="text" autocomplete="organization" />
+                </div>
+                <div class="field">
+                  <label for="cnpj">CNPJ</label>
+                  <input id="cnpj" type="text" inputmode="numeric" />
+                </div>
+                <div class="field">
+                  <label for="setorEmpresa">Setor da empresa</label>
+                  <select id="setorEmpresa">
+                    <option value="" selected disabled>Selecione</option>
+                    <option>Tecnologia da Informação</option>
+                    <option>Indústria</option>
+                    <option>Saúde</option>
+                    <option>Educação</option>
+                    <option>Agronegócio</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="setorAtuacao">Área de atuação</label>
+                  <select id="setorAtuacao">
+                    <option value="" selected disabled>Selecione</option>
+                    <option>Software</option>
+                    <option>Hardware</option>
+                    <option>Serviços</option>
+                    <option>Pesquisa</option>
+                    <option>Operações</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="field field-block">
+                <label>Áreas de interesse</label>
+                <small class="field-help">Use as tags para indicar os temas prioritários da sua organização.</small>
+                <div class="chips" id="areasInteresse">
+                  <button class="chip chip-add" id="addAreaBtn" type="button">Adicionar área +</button>
+                </div>
+              </div>
+
+              <button class="btn btn-primary" id="saveEmpresaBtn" type="button">Salvar alterações</button>
+
+              <div class="security-stack company-context-board" id="companyContextBoard">
+                <section class="security-card">
+                  <div class="security-card__head">
+                    <h3>Contexto da empresa vinculada</h3>
+                    <span class="security-badge" id="companySummaryStatus">--</span>
+                  </div>
+                  <div class="company-summary-grid">
+                    <article class="company-summary-card">
+                      <span>Empresa</span>
+                      <strong id="companySummaryName">Não vinculada</strong>
+                    </article>
+                    <article class="company-summary-card">
+                      <span>CNPJ</span>
+                      <strong id="companySummaryCnpj">-</strong>
+                    </article>
+                    <article class="company-summary-card">
+                      <span>Assentos totais</span>
+                      <strong id="companySummaryLimit">0</strong>
+                    </article>
+                    <article class="company-summary-card">
+                      <span>Usuários vinculados</span>
+                      <strong id="companySummaryUsers">0</strong>
+                    </article>
+                    <article class="company-summary-card">
+                      <span>Assentos ocupados</span>
+                      <strong id="companySummaryUsed">0</strong>
+                    </article>
+                    <article class="company-summary-card">
+                      <span>Assentos reservados</span>
+                      <strong id="companySummaryReserved">0</strong>
+                    </article>
+                    <article class="company-summary-card">
+                      <span>Assentos disponíveis</span>
+                      <strong id="companySummaryAvailable">0</strong>
+                    </article>
+                    <article class="company-summary-card">
+                      <span>Seu perfil na empresa</span>
+                      <strong id="companyViewerRole">-</strong>
+                    </article>
+                    <article class="company-summary-card">
+                      <span>Conta principal (owner)</span>
+                      <strong id="companySummaryOwner">-</strong>
+                    </article>
+                  </div>
+                </section>
+
+                <section class="security-card">
+                  <div class="security-card__head">
+                    <h3>Funcionários/usuários da empresa</h3>
+                  </div>
+                  <ul class="security-session-list" id="companyUsersList">
+                    <li>
+                      <div>
+                        <strong>Carregando usuários...</strong>
+                        <small>Aguarde alguns segundos.</small>
+                      </div>
+                    </li>
+                  </ul>
+                </section>
+
+                <section class="security-card" id="companySubaccountSessionsCard" hidden>
+                  <div class="security-card__head">
+                    <h3>Sessões das subcontas</h3>
+                    <button class="btn btn-tertiary" id="companySessionsRefreshBtn" type="button">Atualizar</button>
+                  </div>
+                  <ul class="security-session-list" id="companySubaccountSessionsList">
+                    <li>
+                      <div>
+                        <strong>Sem dados carregados.</strong>
+                        <small>Somente a conta principal pode gerenciar sessões de subcontas.</small>
+                      </div>
+                    </li>
+                  </ul>
+                  <p class="security-password-status" id="companySubaccountSessionsFeedback" aria-live="polite"></p>
+                </section>
+
+                <section class="security-card">
+                  <div class="security-card__head">
+                    <h3>Tickets da empresa</h3>
+                  </div>
+                  <ul class="security-session-list" id="companyTicketsList">
+                    <li>
+                      <div>
+                        <strong>Carregando tickets...</strong>
+                        <small>Aguarde alguns segundos.</small>
+                      </div>
+                    </li>
+                  </ul>
+                  <div class="form-grid company-ticket-form">
+                    <div class="field">
+                      <label for="companyTicketTitle">Novo ticket</label>
+                      <input id="companyTicketTitle" type="text" maxlength="255" placeholder="Título do ticket" />
+                    </div>
+                    <div class="field">
+                      <label for="companyTicketPriority">Prioridade</label>
+                      <select id="companyTicketPriority">
+                        <option value="baixa">Baixa</option>
+                        <option value="media" selected>Média</option>
+                        <option value="alta">Alta</option>
+                        <option value="critica">Crítica</option>
+                      </select>
+                    </div>
+                    <div class="field field-block">
+                      <label for="companyTicketDescription">Descrição</label>
+                      <input id="companyTicketDescription" type="text" maxlength="4000" placeholder="Descrição curta do ticket" />
+                    </div>
+                  </div>
+                  <button class="btn btn-secondary" id="companyTicketSubmit" type="button">Criar ticket</button>
+                  <p class="security-password-status" id="companyTicketFeedback" aria-live="polite"></p>
+                </section>
+              </div>
+            </div>
+
+            <div class="panel" id="pane-preferencias" role="tabpanel" hidden>
+              <div class="panel-head">
+                <div>
+                  <div class="panel-title">Preferências de notificação</div>
+                  <p class="panel-subtitle">Escolha como e quando deseja receber alertas da plataforma.</p>
+                </div>
+              </div>
+
+              <div class="checks checks--toggles">
+                <label class="check">
+                  <input type="checkbox" id="prefEditais" />
+                  <span>
+                    <strong>Receber editais relevantes</strong>
+                    <small>Notificações quando novos editais combinarem com seu perfil.</small>
+                  </span>
+                </label>
+
+                <label class="check">
+                  <input type="checkbox" id="prefPrazo" />
+                  <span>
+                    <strong>Alertas de prazo</strong>
+                    <small>Lembretes de encerramento de inscrições nos editais monitorados.</small>
+                  </span>
+                </label>
+
+                <label class="check">
+                  <input type="checkbox" id="prefRelatorio" />
+                  <span>
+                    <strong>Relatórios semanais</strong>
+                    <small>Resumo por e-mail com destaques e novas oportunidades.</small>
+                  </span>
+                </label>
+
+                <label class="check">
+                  <input type="checkbox" id="prefSistema" />
+                  <span>
+                    <strong>Atualizações do sistema</strong>
+                    <small>Comunicados sobre funcionalidades, melhorias e manutenções.</small>
+                  </span>
+                </label>
+              </div>
+
+              <div class="field field-block">
+                <label for="prefTheme">Tema da interface</label>
+                <select id="prefTheme">
+                  <option value="light">Claro</option>
+                  <option value="system">Automático (seguir sistema)</option>
+                  <option value="dark">Escuro</option>
+                </select>
+                <small class="field-help">A alteração é aplicada imediatamente e salva ao confirmar as preferências.</small>
+              </div>
+
+              <button class="btn btn-primary" id="savePrefsBtn" type="button">Salvar preferências</button>
+
+            </div>
+
+            <div class="panel" id="pane-seguranca" role="tabpanel" hidden>
+              <div class="panel-head">
+                <div>
+                  <div class="panel-title">Segurança da conta</div>
+                  <p class="panel-subtitle">Controles para reforçar acesso, autenticação e sessões ativas.</p>
+                </div>
+              </div>
+
+              <div class="security-stack">
+                <p class="panel-subtitle security-access-note">
+                  Esta área tem ações sensíveis. Selecione uma opção para abrir os controles.
+                </p>
+                <div class="section-entry-grid" data-entry-group="security">
+                  <button class="section-entry-btn" type="button" data-section-target="security-password-section">
+                    <strong>Alterar senha</strong>
+                    <small>Requer confirmação adicional por e-mail.</small>
+                  </button>
+                  <button class="section-entry-btn" type="button" data-section-target="security-sessions-section">
+                    <strong>Sessões ativas</strong>
+                    <small>Visualizar sessão atual e encerrar outras sessões.</small>
+                  </button>
+                  <button class="section-entry-btn" type="button" data-section-target="security-2fa-section">
+                    <strong>2FA (preparação)</strong>
+                    <small>Configure reforço de autenticação para novos acessos.</small>
+                  </button>
+                </div>
+
+                <section class="security-card profile-sensitive-section" id="security-password-section" data-section-group="security" hidden>
+                  <div class="security-card__head">
+                    <h3>Alterar senha com verificação por e-mail</h3>
+                    <span class="security-badge">Recomendado</span>
+                  </div>
+                  <p class="muted">
+                    Para proteger sua conta, a troca de senha não acontece imediatamente no perfil.
+                    Enviaremos um link de verificação para seu e-mail e somente após essa validação
+                    você poderá cadastrar a nova senha.
+                  </p>
+                  <ul class="security-step-list">
+                    <li>1. Clique em <strong>Enviar verificação por e-mail</strong>.</li>
+                    <li>2. Abra o e-mail recebido e acesse o link de redefinição.</li>
+                    <li>3. Defina a nova senha com segurança.</li>
+                    <li>4. Se não receber o e-mail em alguns minutos, verifique spam/lixeira e solicite um novo envio.</li>
+                  </ul>
+                  <button class="btn btn-secondary" id="securityStartPasswordChangeBtn" type="button">Enviar verificação por e-mail</button>
+                  <p class="security-password-status" id="securityPasswordStatus" aria-live="polite"></p>
+                </section>
+
+                <section class="security-card profile-sensitive-section" id="security-sessions-section" data-section-group="security" hidden>
+                  <div class="security-card__head">
+                    <h3>Sessões ativas</h3>
+                    <button class="btn btn-tertiary" id="securityRefreshSessionsBtn" type="button">Atualizar</button>
+                  </div>
+                  <ul class="security-session-list" id="securitySessionList">
+                    <li>
+                      <div>
+                        <strong>Carregando sessões...</strong>
+                        <small>Aguarde alguns segundos.</small>
+                      </div>
+                      <span class="session-chip">...</span>
+                    </li>
+                  </ul>
+                  <button class="btn btn-secondary" id="securityLogoutOthersBtn" type="button">Sair de outras sessões</button>
+                </section>
+
+                <section class="security-card profile-sensitive-section" id="security-2fa-section" data-section-group="security" hidden>
+                  <div class="security-card__head">
+                    <h3>Autenticação em dois fatores (2FA)</h3>
+                    <span class="security-badge security-badge--muted">Preparação</span>
+                  </div>
+                  <p class="muted">Ative uma camada extra de segurança para logins em novos dispositivos.</p>
+                  <div class="security-toggle-row">
+                    <label class="check security-toggle">
+                      <input type="checkbox" id="security2faEnable" />
+                      <span>
+                        <strong>Preparar conta para 2FA</strong>
+                        <small>Quando o endpoint estiver disponível, a configuração será concluída sem perder este estado.</small>
+                      </span>
+                    </label>
+                  </div>
+                </section>
+
+                <section class="security-card security-card--tips">
+                  <div class="security-card__head">
+                    <h3>Boas práticas</h3>
+                  </div>
+                  <ul>
+                    <li>Use senha forte com pelo menos 12 caracteres.</li>
+                    <li>Evite reutilizar senha em outros sistemas.</li>
+                    <li>Revise periodicamente dispositivos conectados.</li>
+                  </ul>
+                </section>
+              </div>
+            </div>
+
+            <div class="panel" id="pane-privacidade" role="tabpanel" hidden>
+              <div class="panel-head">
+                <div>
+                  <div class="panel-title">Privacidade e conta</div>
+                  <p class="panel-subtitle">Acesse controles de consentimento e dados pessoais com confirmação adicional.</p>
+                </div>
+              </div>
+
+              <div class="security-stack">
+                <p class="panel-subtitle security-access-note">
+                  Selecione a área de privacidade para abrir as configurações sensíveis.
+                </p>
+                <div class="section-entry-grid" data-entry-group="privacy">
+                  <button class="section-entry-btn" type="button" data-section-target="privacy-cookies-section">
+                    <strong>Cookies e consentimentos</strong>
+                    <small>Defina quais categorias opcionais podem ser usadas na plataforma.</small>
+                  </button>
+                  <button class="section-entry-btn" type="button" data-section-target="privacy-account-section">
+                    <strong>Excluir conta</strong>
+                    <small>Ação irreversível com encerramento imediato da sessão.</small>
+                  </button>
+                </div>
+
+                <section class="security-card profile-sensitive-section" id="privacy-cookies-section" data-section-group="privacy" hidden>
+                  <div class="cookie-prefs-card" id="cookiePrefsCard">
+                    <div class="cookie-prefs-card__head">
+                      <strong>Preferências de cookies</strong>
+                      <small>Defina quais categorias opcionais podem ser usadas na plataforma.</small>
+                    </div>
+
+                    <div class="cookie-consent-row cookie-consent-row--locked">
+                      <div>
+                        <strong>Essenciais (obrigatórios)</strong>
+                        <span>Login, segurança e funcionamento básico da conta.</span>
+                      </div>
+                      <label class="cookie-switch">
+                        <input type="checkbox" id="profileCookieNecessary" checked disabled />
+                        <span></span>
+                      </label>
+                    </div>
+
+                    <div class="cookie-consent-row">
+                      <div>
+                        <strong>Analíticos</strong>
+                        <span>Medição de uso para melhorar desempenho e experiência.</span>
+                      </div>
+                      <label class="cookie-switch">
+                        <input type="checkbox" id="profileCookieAnalytics" />
+                        <span></span>
+                      </label>
+                    </div>
+
+                    <div class="cookie-consent-row">
+                      <div>
+                        <strong>Personalização</strong>
+                        <span>Recursos opcionais personalizados, como o assistente de IA.</span>
+                      </div>
+                      <label class="cookie-switch">
+                        <input type="checkbox" id="profileCookiePersonalization" />
+                        <span></span>
+                      </label>
+                    </div>
+
+                    <div class="cookie-consent-row">
+                      <div>
+                        <strong>Marketing</strong>
+                        <span>Comunicações promocionais e segmentação de campanhas.</span>
+                      </div>
+                      <label class="cookie-switch">
+                        <input type="checkbox" id="profileCookieMarketing" />
+                        <span></span>
+                      </label>
+                    </div>
+
+                    <div class="cookie-prefs-actions">
+                      <button class="btn btn-secondary" id="profileCookieRejectBtn" type="button">Recusar opcionais</button>
+                      <button class="btn btn-primary" id="profileCookieSaveBtn" type="button">Salvar preferências de cookies</button>
+                    </div>
+                    <p class="cookie-prefs-status" id="profileCookieStatus" aria-live="polite"></p>
+                  </div>
+                </section>
+
+                <section class="security-card security-card--danger profile-sensitive-section" id="privacy-account-section" data-section-group="privacy" hidden>
+                  <div class="security-card__head">
+                    <h3>Excluir conta</h3>
+                    <span class="security-badge security-badge--danger">Irreversível</span>
+                  </div>
+                  <p class="muted">Ao excluir sua conta, seus dados e favoritos vinculados serão removidos e a sessão será encerrada.</p>
+                  <button class="btn btn-danger" id="privacyDeleteAccountBtn" type="button">Excluir conta</button>
+                </section>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <footer class="app-footer">
+          <span>&copy; 2026 - desenvolvido pela Atimus</span>
+          <span class="app-footer-sep" aria-hidden="true">&bull;</span>
+          <a href="./termos-de-uso.html">Termos de Uso</a>
+          <span class="app-footer-sep" aria-hidden="true">&bull;</span>
+          <a href="./politica-de-privacidade.html">Política de Privacidade</a>
+        </footer>
+      </main>
+    </div>
+  </div>
+
+  <div class="mobile-sidebar-backdrop" id="mobileSidebarBackdrop" aria-hidden="true"></div>
+
+  <div class="account-delete-overlay" id="accountDeleteOverlay" hidden>
+    <div class="account-delete-dialog" role="dialog" aria-modal="true" aria-labelledby="accountDeleteTitle">
+      <h3 id="accountDeleteTitle">Confirmar exclusão de conta</h3>
+      <p>Essa ação é irreversível. Sua conta será removida e você perderá o acesso imediatamente.</p>
+      <div class="account-delete-actions">
+        <button class="btn btn-secondary" id="accountDeleteCancelBtn" type="button">Cancelar</button>
+        <button class="btn btn-danger" id="accountDeleteConfirmBtn" type="button">Excluir conta</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="./js/theme-init.js?v=20260317.2"></script>
+  <script src="./js/consent.js"></script>
+  <script src="./js/presence.js?v=20260309.1"></script>
+  <script type="module" src="./js/perfil.js?v=20260326.4"></script>
+</body>
+</html>
