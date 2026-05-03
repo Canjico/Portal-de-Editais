@@ -1,4 +1,4 @@
-﻿/* =========================================================
+/* =========================================================
    Athos / Atimus — Editais (UX/UI novo + filtros + paginação)
    ========================================================= */
 
@@ -74,7 +74,7 @@ import {
 import { runDashboardBootstrapFlow } from './bootstrap-flows.js?v=20260416.1';
 import { readAuthHandoff } from './auth-handoff.js?v=20260422.1';
 
-console.info('[Athos][main.js] versão chat documental RAG 20260426.4 carregada');
+console.info('[Athos][main.js] versão Athos Agent refinado 20260503.2 carregada');
 
 const APP_BASE_URL = new URL('../', import.meta.url);
 const SHARE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{20,255}$/;
@@ -2343,7 +2343,11 @@ function applyAssistantContextFilters(items) {
   const filters = context.filters || {};
   const idSet = context.resultIdsSet instanceof Set ? context.resultIdsSet : new Set();
 
-  if (idSet.size > 0) {
+  const expectedTotal = Number(context.total || context.search_payload?.total || context.searchPayload?.total || 0) || 0;
+  const hasFilterCriteria = hasDashboardFilterValue(filters);
+  const hasCompleteIdScope = idSet.size > 0 && (!expectedTotal || idSet.size >= expectedTotal);
+  const shouldUseIdScope = hasCompleteIdScope || (idSet.size > 0 && !hasFilterCriteria);
+  if (shouldUseIdScope) {
     scoped = scoped.filter((edital) => idSet.has(String(edital?.id)));
     return scoped;
   }
@@ -5308,7 +5312,7 @@ function normalizeBackendChatOptions(rawOptions) {
 }
 
 const MAX_CHAT_UI_OPTIONS = 10;
-const MAX_CHAT_UI_RESULT_IDS = 80;
+const MAX_CHAT_UI_RESULT_IDS = 700;
 
 function limitAssistantSearchPayloadForUi(rawPayload) {
   const normalized = normalizeAssistantSearchPayload(rawPayload);
@@ -5474,13 +5478,26 @@ function buildDashboardOptionsFromUiMetadata(rawUi) {
   const savedOpenIds = ui.options
     .filter((option) => option.action === 'open_edital' && option.id != null)
     .map((option) => String(option.id));
+  const savedOpenOptionsById = new Map(
+    ui.options
+      .filter((option) => option.action === 'open_edital' && option.id != null)
+      .map((option) => [String(option.id), option])
+  );
   const idsForCards = savedOpenIds.length ? savedOpenIds : ui.result_ids.slice(0, 5);
   const options = [];
 
   idsForCards.forEach((id) => {
-    const card = byId.get(String(id));
-    if (!card) return;
-    appendChatOptionOnce(options, buildChatOptionFromEdital(card));
+    const idKey = String(id);
+    const card = byId.get(idKey);
+    if (card) {
+      appendChatOptionOnce(options, buildChatOptionFromEdital(card));
+      return;
+    }
+
+    const savedOption = savedOpenOptionsById.get(idKey);
+    if (savedOption) {
+      appendChatOptionOnce(options, savedOption);
+    }
   });
 
   ui.options
@@ -5980,9 +5997,7 @@ async function handleChatSend(options = {}) {
   }
 
   const contextualEditalId = getActiveEditalContext()?.editalId ?? null;
-  const routeEndpoint = (dashboardListingQuestion || dashboardRefinementQuestion)
-    ? '/chat/dashboard-intelligence'
-    : (contextualEditalId ? `/chat/edital/${encodeURIComponent(contextualEditalId)}/stream` : '/chat/stream');
+  const routeEndpoint = '/chat/agent/stream';
   console.info('[CHAT][route]', {
     question,
     backendRoutedFreeText,
@@ -5992,6 +6007,106 @@ async function handleChatSend(options = {}) {
     activeEditalId: contextualEditalId,
     endpoint: routeEndpoint,
   });
+
+  const useAthosAgent = true;
+  if (useAthosAgent) {
+    setChatBusy(true);
+    const typingMsg = addMessage('pensando...', 'bot', null, { isTyping: true });
+    const canApplyDashboardSearch = !contextualEditalId;
+
+    try {
+      const dashboardContext = buildDashboardIntelligenceContext();
+      const streamOutcome = await tryChatStreamRequest({
+        endpoint: '/chat/agent/stream',
+        requestBody: {
+          message: question,
+          question,
+          state: chatState,
+          dashboard_context: dashboardContext,
+          edital_id: contextualEditalId,
+        },
+        typingMsg,
+      });
+
+      if (streamOutcome.ok) {
+        const donePayload = streamOutcome?.donePayload && typeof streamOutcome.donePayload === 'object'
+          ? streamOutcome.donePayload
+          : {};
+        const hasBackendState = Boolean(donePayload?.state && typeof donePayload.state === 'object');
+
+        if (Object.prototype.hasOwnProperty.call(donePayload || {}, 'state')) {
+          if (hasBackendState) {
+            chatState = ensureChatSessionState(donePayload.state);
+            persistChatState(chatState);
+            updateChatHeader();
+          } else {
+            clearActiveEditalContext({ clearAssistantContext: true });
+          }
+        } else {
+          chatState = appendConversationTurn(chatState, 'assistant', streamOutcome.text || '');
+          persistChatState(chatState);
+        }
+
+        const backendOptions = Array.isArray(donePayload?.options) ? donePayload.options : [];
+        const backendStructuredPayload = normalizeAssistantSearchPayload(
+          donePayload?.search_payload ||
+          donePayload?.intent_payload ||
+          donePayload?.searchPayload ||
+          null
+        );
+        const assistantPlan = donePayload?.assistant_plan && typeof donePayload.assistant_plan === 'object'
+          ? donePayload.assistant_plan
+          : null;
+
+        if (backendStructuredPayload) {
+          rememberAssistantResultSetFromPayload(backendStructuredPayload, {
+            question,
+            intent: donePayload?.intent || backendStructuredPayload?.intent || '',
+            dashboardFilters: normalizeDashboardFilterState(backendStructuredPayload?.filters || {}),
+          });
+        }
+
+        if (canApplyDashboardSearch && assistantPlan?.ui_action?.auto_apply && backendStructuredPayload) {
+          applyAssistantPayloadToDashboard(backendStructuredPayload, { fallbackQuery: question });
+        }
+
+        if (canApplyDashboardSearch && donePayload?.should_search) {
+          attachEditaisOptions(
+            typingMsg,
+            question,
+            backendOptions.length ? backendOptions : null,
+            backendStructuredPayload
+          );
+        }
+        return;
+      }
+
+      if (streamOutcome.aborted) return;
+
+      const localOutcome = buildLocalAssistantOutcome(question);
+      const fallbackText = localOutcome?.reply || 'O chat está indisponível no momento. Tenta de novo em alguns instantes.';
+      setMessageText(typingMsg, fallbackText);
+      chatState = appendConversationTurn(chatState, 'assistant', fallbackText);
+      persistChatState(chatState);
+      if (canApplyDashboardSearch && localOutcome?.shouldSearch) {
+        attachEditaisOptions(typingMsg, question);
+      }
+    } catch (err) {
+      console.error('[CHAT][agent] erro no Athos Agent', err);
+      const localOutcome = buildLocalAssistantOutcome(question);
+      const fallbackText = localOutcome?.reply || 'Deu ruim aqui do meu lado. Tenta de novo em alguns segundos.';
+      setMessageText(typingMsg, fallbackText);
+      chatState = appendConversationTurn(chatState, 'assistant', fallbackText);
+      persistChatState(chatState);
+      if (canApplyDashboardSearch && localOutcome?.shouldSearch) {
+        attachEditaisOptions(typingMsg, question);
+      }
+    } finally {
+      setChatBusy(false);
+      scrollToBottom();
+    }
+    return;
+  }
 
   if (dashboardListingQuestion || dashboardRefinementQuestion) {
     const dashboardBaseQuestion = dashboardRefinementQuestion
