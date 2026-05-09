@@ -2,7 +2,7 @@
    Athos / Atimus — Editais (UX/UI novo + filtros + paginação)
    ========================================================= */
 
-import { renderEditais } from './render.js?v=20260318.3';
+import { renderEditais } from './render.js?v=20260509.8';
 import {
   parseAnyDateToTime,
   buildSearchQueryContext,
@@ -74,7 +74,7 @@ import {
 import { runDashboardBootstrapFlow } from './bootstrap-flows.js?v=20260416.1';
 import { readAuthHandoff } from './auth-handoff.js?v=20260422.1';
 
-console.info('[Athos][main.js] versão Athos Agent refinado 20260503.2 carregada');
+console.info('[Athos][main.js] versão Athos cards rápidos + filtros estáveis 20260509.8 carregada');
 
 const APP_BASE_URL = new URL('../', import.meta.url);
 const SHARE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{20,255}$/;
@@ -124,7 +124,9 @@ let editaisOriginais = [];
 let fuseInstance = null;
 
 const PAGE_SIZE = 12;
-const FAST_CARDS_CACHE_KEY = 'athos:editais:first-page:v20260509.1';
+const ALL_EDITAIS_BACKGROUND_LIMIT = 2000;
+const ALL_EDITAIS_BACKGROUND_DELAY_MS = 350;
+const FAST_CARDS_CACHE_KEY = 'athos:editais:first-page:v20260509.8';
 const FAST_CARDS_CACHE_TTL_MS = 10 * 60 * 1000;
 const RELEVANCE_REFRESH_DELAY_MS = 350;
 let currentPage = 1;
@@ -137,6 +139,10 @@ let bootstrapInitPromise = null;
 let uiEventsBound = false;
 let relevanceRefreshTimerId = null;
 let relevanceRefreshInProgress = false;
+let allEditaisHydrationTimerId = null;
+let allEditaisHydrationInProgress = false;
+let allEditaisHydrationSignature = '';
+let allEditaisFullyLoaded = false;
 const loadEditaisSingleFlight = createSingleFlight(() => loadEditais());
 const loadFavoritosSingleFlight = createSingleFlight(() => loadFavoritos());
 
@@ -1039,31 +1045,51 @@ function setupFilterGroupsAccordion() {
     if (!body.id) body.id = `filter-group-body-${idx + 1}`;
     btn.setAttribute('aria-controls', body.id);
 
-    setFilterGroupExpanded(group, false, { animate: false });
+    const wasInitialized = group.dataset.accordionInitialized === 'true';
+    const wasExpanded = wasInitialized
+      ? btn.getAttribute('aria-expanded') === 'true' && !group.classList.contains('is-collapsed')
+      : false;
 
-    btn.addEventListener('click', () => {
-      const isExpanded = btn.getAttribute('aria-expanded') === 'true';
-      setFilterGroupExpanded(group, !isExpanded, { animate: true });
-    });
+    setFilterGroupExpanded(group, wasExpanded, { animate: false });
 
-    btn.addEventListener('keydown', (event) => {
-      if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
-      event.preventDefault();
-      const step = event.key === 'ArrowDown' ? 1 : -1;
-      const nextIndex = (idx + step + groups.length) % groups.length;
-      const nextBtn = groups[nextIndex]?.querySelector('[data-filter-toggle]');
-      nextBtn?.focus();
-    });
-  });
+    if (btn.dataset.filterToggleBound !== 'true') {
+      btn.dataset.filterToggleBound = 'true';
+      btn.addEventListener('click', (event) => {
+        event.preventDefault();
+        const hostGroup = event.currentTarget.closest('.filter-group');
+        const hostBtn = hostGroup?.querySelector?.('[data-filter-toggle]');
+        if (!hostGroup || !hostBtn) return;
+        const isExpanded = hostBtn.getAttribute('aria-expanded') === 'true' && !hostGroup.classList.contains('is-collapsed');
+        setFilterGroupExpanded(hostGroup, !isExpanded, { animate: true });
+      });
 
-  filtersPanel.addEventListener('change', (event) => {
-    if (event.target?.matches?.('.filter-options input[type=\"checkbox\"]')) {
-      updateFilterActionsState();
+      btn.addEventListener('keydown', (event) => {
+        if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+        event.preventDefault();
+        const liveGroups = Array.from(filtersPanel.querySelectorAll('.filter-group'));
+        const currentIndex = liveGroups.indexOf(group);
+        const step = event.key === 'ArrowDown' ? 1 : -1;
+        const nextIndex = (currentIndex + step + liveGroups.length) % liveGroups.length;
+        const nextBtn = liveGroups[nextIndex]?.querySelector('[data-filter-toggle]');
+        nextBtn?.focus();
+      });
     }
+
+    group.dataset.accordionInitialized = 'true';
   });
+
+  if (filtersPanel.dataset.filterChangeBound !== 'true') {
+    filtersPanel.dataset.filterChangeBound = 'true';
+    filtersPanel.addEventListener('change', (event) => {
+      if (event.target?.matches?.('.filter-options input[type="checkbox"]')) {
+        updateFilterActionsState();
+      }
+    });
+  }
 
   updateFilterActionsState();
 }
+
 
 function renderChatQuickPrompts() {
   if (!chatQuickPrompts) return;
@@ -1177,6 +1203,48 @@ function setResultsHintMessage(message) {
   resultsStateHint.textContent = text;
 }
 
+function hasCompleteHeroStats(meta = serverPageMeta?.stats) {
+  const stats = meta && typeof meta === 'object' ? meta : {};
+  return Number.isFinite(Number(stats.total)) &&
+    Number.isFinite(Number(stats.open_total ?? stats.abertos_total)) &&
+    Number.isFinite(Number(stats.closed_total ?? stats.fechados_total));
+}
+
+function setHeroStatsLoading(isLoading) {
+  const values = [statTotal, statAbertos, statFechados, statRecomendados].filter(Boolean);
+  values.forEach((el) => {
+    el.classList.toggle('is-loading', Boolean(isLoading));
+    el.setAttribute('aria-busy', isLoading ? 'true' : 'false');
+    if (isLoading) el.textContent = '…';
+  });
+}
+
+function isFullEditaisLoadPending() {
+  const expectedTotal = Number(serverPageMeta?.total || serverPageMeta?.stats?.total || 0);
+  return Boolean(expectedTotal && Array.isArray(editaisOriginais) && editaisOriginais.length > 0 && editaisOriginais.length < expectedTotal);
+}
+
+function appendFilterLoadingHint(box, message = 'Carregando opções completas...') {
+  if (!box || box.querySelector('.filter-loading-row')) return;
+  const row = document.createElement('div');
+  row.className = 'filter-loading-row';
+  row.setAttribute('role', 'status');
+  row.innerHTML = '<span class="mini-spinner" aria-hidden="true"></span><span></span>';
+  row.querySelector('span:last-child').textContent = message;
+  box.prepend(row);
+}
+
+function setFiltersLoadingState(isLoading) {
+  if (filtersPanel) filtersPanel.classList.toggle('is-loading-options', Boolean(isLoading));
+  document.querySelectorAll('.filter-options').forEach((box) => {
+    box.querySelectorAll('.filter-loading-row').forEach((row) => row.remove());
+    if (isLoading) appendFilterLoadingHint(box);
+  });
+  if (filtersAppliedState && !hasAppliedFilters() && !assistantPanelContext && kpiFilter === 'all') {
+    filtersAppliedState.textContent = isLoading ? 'Carregando opções completas...' : 'Nenhum filtro aplicado';
+  }
+}
+
 function hydrateDashboardAfterEditaisLoad({ resetPage = true } = {}) {
   applyFavoritosToLoadedEditais();
   if (hasPersonalizedRelevance(editaisOriginais)) {
@@ -1229,6 +1297,125 @@ function mergeRelevancePayloadIntoLoadedEditais(relevanceItems = []) {
   return changed;
 }
 
+
+function getFastCardsRequestSignature(requestOptions = {}) {
+  return JSON.stringify({
+    view: String(requestOptions.view || 'card'),
+    sort: normalizeSortValue(sortField || sortSelect?.value || 'prazo'),
+    direction: sortDirection || 'asc',
+  });
+}
+
+function mergeSummaryPayloadIntoLoadedEditais(rawList = [], { replace = false } = {}) {
+  const incoming = (Array.isArray(rawList) ? rawList : [])
+    .map(normalizeEdital)
+    .filter(Boolean);
+  if (!incoming.length) return false;
+
+  const currentById = new Map((Array.isArray(editaisOriginais) ? editaisOriginais : [])
+    .map((item) => [String(item?.id), item])
+    .filter(([id]) => id && id !== 'undefined'));
+
+  const mergedById = replace ? new Map() : new Map(currentById);
+  for (const next of incoming) {
+    const id = String(next?.id);
+    if (!id || id === 'undefined') continue;
+    const prev = currentById.get(id);
+    mergedById.set(id, {
+      ...(prev || {}),
+      ...next,
+      is_favorite: prev?.is_favorite ?? next.is_favorite,
+      relevance_score: prev?.relevance_score || next.relevance_score,
+      relevance_level: prev?.relevance_level && prev.relevance_level !== 'not_recommended' ? prev.relevance_level : next.relevance_level,
+      is_highlighted: prev?.is_highlighted || next.is_highlighted,
+      recommendation_label: prev?.recommendation_label || next.recommendation_label,
+      relevance_reasons: prev?.relevance_reasons?.length ? prev.relevance_reasons : next.relevance_reasons,
+      relevance_warnings: prev?.relevance_warnings?.length ? prev.relevance_warnings : next.relevance_warnings,
+      missing_profile_fields: prev?.missing_profile_fields?.length ? prev.missing_profile_fields : next.missing_profile_fields,
+      matched_criteria: Object.keys(prev?.matched_criteria || {}).length ? prev.matched_criteria : next.matched_criteria,
+      blockers: prev?.blockers?.length ? prev.blockers : next.blockers,
+    });
+  }
+
+  const before = Array.isArray(editaisOriginais) ? editaisOriginais.length : 0;
+  editaisOriginais = Array.from(mergedById.values());
+  return replace || editaisOriginais.length !== before || incoming.length > 0;
+}
+
+function scheduleAllEditaisHydration(requestOptions = {}) {
+  if (!requestOptions.summary || requestOptions.includeRelevance || Number(requestOptions.page || 1) !== 1) return;
+  const expectedTotal = Number(serverPageMeta?.total || 0);
+  if (!expectedTotal || expectedTotal <= editaisOriginais.length) return;
+
+  const signature = getFastCardsRequestSignature(requestOptions);
+  if (allEditaisHydrationInProgress && allEditaisHydrationSignature === signature) return;
+  if (allEditaisHydrationTimerId) clearTimeout(allEditaisHydrationTimerId);
+
+  allEditaisHydrationSignature = signature;
+  allEditaisHydrationTimerId = setTimeout(() => {
+    allEditaisHydrationTimerId = null;
+    hydrateAllEditaisInBackground(requestOptions, signature);
+  }, ALL_EDITAIS_BACKGROUND_DELAY_MS);
+}
+
+async function hydrateAllEditaisInBackground(requestOptions = {}, signature = '') {
+  if (allEditaisHydrationInProgress) return;
+  allEditaisHydrationInProgress = true;
+  allEditaisFullyLoaded = false;
+  setFiltersLoadingState(true);
+  setResultsHintMessage('Primeiros editais carregados. Trazendo o restante em segundo plano...');
+
+  try {
+    const expectedTotal = Number(serverPageMeta?.total || 0);
+    const backgroundLimit = Math.max(PAGE_SIZE, Math.min(ALL_EDITAIS_BACKGROUND_LIMIT, expectedTotal || ALL_EDITAIS_BACKGROUND_LIMIT));
+    const firstRequest = {
+      ...requestOptions,
+      page: 1,
+      limit: backgroundLimit,
+      summary: true,
+      includeRelevance: false,
+      includeAttachments: false,
+      view: 'card',
+    };
+
+    const { res, data } = await apiFetchJson(buildEditaisRequestPath(firstRequest), { method: 'GET' });
+    if (!res.ok) return;
+
+    const { rawList, meta } = unpackEditaisResponsePayload(data);
+    if (Object.keys(meta || {}).length) serverPageMeta = { ...serverPageMeta, ...meta };
+    let allRaw = Array.isArray(rawList) ? [...rawList] : [];
+    const totalPages = Number(meta?.total_pages || 1);
+
+    for (let pageNumber = 2; pageNumber <= totalPages; pageNumber += 1) {
+      const { res: pageRes, data: pageData } = await apiFetchJson(buildEditaisRequestPath({ ...firstRequest, page: pageNumber }), { method: 'GET' });
+      if (!pageRes.ok) break;
+      const { rawList: pageItems } = unpackEditaisResponsePayload(pageData);
+      if (!pageItems.length) break;
+      allRaw = allRaw.concat(pageItems);
+    }
+
+    if (signature && signature !== getFastCardsRequestSignature(requestOptions)) return;
+    if (mergeSummaryPayloadIntoLoadedEditais(allRaw, { replace: false })) {
+      const latestTotal = Number(serverPageMeta?.total || meta?.total || 0);
+      allEditaisFullyLoaded = !latestTotal || editaisOriginais.length >= latestTotal;
+      if (hasCompleteHeroStats(serverPageMeta?.stats) || allEditaisFullyLoaded) {
+        setHeroStatsLoading(false);
+      }
+      buildFuseIndex();
+      generateDynamicFilters();
+      setupFilterGroupsAccordion();
+      applyFavoritosToLoadedEditais();
+      applyFiltersAndRender({ resetPage: false });
+      setResultsHintMessage('Todos os editais foram carregados. A aderência continua sendo calculada em segundo plano.');
+    }
+  } catch (error) {
+    console.warn('Falha ao carregar todos os editais em background:', error);
+  } finally {
+    allEditaisHydrationInProgress = false;
+    setFiltersLoadingState(isFullEditaisLoadPending());
+  }
+}
+
 function scheduleRelevanceRefresh(requestOptions = {}) {
   if (relevanceRefreshTimerId) {
     clearTimeout(relevanceRefreshTimerId);
@@ -1238,6 +1425,11 @@ function scheduleRelevanceRefresh(requestOptions = {}) {
   relevanceRefreshTimerId = setTimeout(async () => {
     relevanceRefreshTimerId = null;
     relevanceRefreshInProgress = true;
+    if (statRecomendados) {
+      statRecomendados.classList.add('is-loading');
+      statRecomendados.setAttribute('aria-busy', 'true');
+      statRecomendados.textContent = '…';
+    }
     setResultsHintMessage('Editais carregados. Calculando as melhores opções para o seu perfil...');
 
     try {
@@ -1312,11 +1504,14 @@ async function loadEditais(options = {}) {
       editaisOriginais = rawList.map(normalizeEdital).filter(Boolean);
       hydrateDashboardAfterEditaisLoad({ resetPage: true });
       setResultsHintMessage('Mostrando editais salvos em cache. Atualizando em segundo plano...');
+      scheduleAllEditaisHydration(requestOptions);
       renderedFromCache = true;
     }
   }
 
   if (!renderedFromCache) {
+    setHeroStatsLoading(true);
+    setFiltersLoadingState(true);
     container.innerHTML = `
       <div class="loading-container">
         <div class="spinner"></div>
@@ -1361,9 +1556,16 @@ async function loadEditais(options = {}) {
     const { rawList, meta } = unpackEditaisResponsePayload(data);
     serverPageMeta = meta;
     editaisOriginais = rawList.map(normalizeEdital).filter(Boolean);
+    const expectedTotal = Number(meta?.total || meta?.stats?.total || 0);
+    allEditaisFullyLoaded = !expectedTotal || editaisOriginais.length >= expectedTotal;
     writeFastCardsCache(requestOptions, data);
 
+    if (hasCompleteHeroStats(meta?.stats) || allEditaisFullyLoaded) {
+      setHeroStatsLoading(false);
+    }
+
     if (!requestOptions.includeRelevance) {
+      scheduleAllEditaisHydration(requestOptions);
       scheduleRelevanceRefresh(requestOptions);
     }
   } catch (e) {
@@ -1630,31 +1832,118 @@ function safeJsonParse(str, fallback) {
   try { return JSON.parse(str); } catch { return fallback; }
 }
 
+const OPTIMIZED_ICON_BY_KEY = Object.freeze({
+  'awesome foundation': 'Awesome_Foundation.webp',
+  'ambev': 'ambev.webp',
+  'anp': 'anp.webp',
+  'banco do nordeste': 'banco do nordeste.webp',
+  'basf': 'basf.webp',
+  'bndes': 'bndes.webp',
+  'brde': 'brde.webp',
+  'brics wba': 'brics wba.webp',
+  'capes': 'capes.webp',
+  'cnpq': 'cnpq.webp',
+  'coca cola': 'coca-cola.webp',
+  'confap': 'confap.webp',
+  'correios': 'correios.webp',
+  'cresol': 'cresol.webp',
+  'facepe': 'facepe.webp',
+  'fapeal': 'fapeal.webp',
+  'fapeam': 'fapeam.webp',
+  'fapeap': 'fapeap.webp',
+  'fapeg': 'fapeg.webp',
+  'fapema': 'fapema.webp',
+  'fapemig': 'fapemig.webp',
+  'fapepi': 'fapepi.webp',
+  'fapergs': 'fapergs.webp',
+  'faperj': 'faperj.webp',
+  'fapern': 'fapern.webp',
+  'fapero': 'fapero.webp',
+  'fapes': 'fapes.webp',
+  'fapesb': 'fapesb.webp',
+  'fapesc': 'fapesc.webp',
+  'fapesp': 'fapesp.webp',
+  'fapesq': 'fapesq.webp',
+  'fapitec': 'fapitec.webp',
+  'fapt': 'fapt.webp',
+  'finep': 'finep.webp',
+  'funcap': 'funcap.webp',
+  'fundacao araucaria': 'fundacao-araucaria.webp',
+  'fundect': 'fundect.webp',
+  'iaf': 'iaf.webp',
+  'inovale': 'inovale.webp',
+  'mining hub': 'mining hub.webp',
+  'petrobras': 'petrobras.webp',
+  'portal industria': 'portal-industria.webp',
+  'prosas': 'prosas.webp',
+  'santander': 'santander.webp',
+  'serpro': 'serpro.webp',
+  'tetrapak': 'tetrapak.webp',
+  'vale': 'vale.webp',
+});
+
+function normalizeIconLookupKey(value) {
+  return String(value || '')
+    .split(/[?#]/)[0]
+    .split('/')
+    .pop()
+    .replace(/\.(?:png|jpe?g|gif|webp|svg|avif)$/ig, '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[_-]+/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+function resolveOptimizedIconUrl(value, baseUrl = APP_BASE_URL) {
+  const raw = String(value || '').trim().replace(/\\/g, '/');
+  if (!raw || /^(?:data:|blob:)/i.test(raw)) return null;
+
+  let candidate = raw;
+  try {
+    if (/^https?:\/\//i.test(raw) || raw.startsWith('//')) {
+      const absolute = raw.startsWith('//') ? `${window.location.protocol}${raw}` : raw;
+      const parsed = new URL(absolute);
+      candidate = decodeURIComponent(parsed.pathname.split('/').pop() || '');
+    }
+  } catch (_) {}
+
+  const key = normalizeIconLookupKey(candidate);
+  const fileName = OPTIMIZED_ICON_BY_KEY[key];
+  return fileName ? new URL(`icons-optimized/${fileName}`, baseUrl).href : null;
+}
+
 function resolveIconPath(value) {
   if (value === null || value === undefined) return null;
 
   const raw = String(value).trim().replace(/\\/g, '/');
   if (!raw) return null;
 
+  const optimizedUrl = resolveOptimizedIconUrl(raw, APP_BASE_URL);
+  if (optimizedUrl) return optimizedUrl;
+
   if (/^(?:https?:|data:|blob:)/i.test(raw)) return raw;
   if (raw.startsWith('//')) return `${window.location.protocol}${raw}`;
 
   const normalized = raw
     .replace(/^\.?\//, '')
-    .replace(/^\/+/, '');
+    .replace(/^\/+/,'');
 
   const isProjectIconPath =
+    normalized.toLowerCase().startsWith('icons-optimized/') ||
     normalized.toLowerCase().startsWith('icons/') ||
     normalized.toLowerCase().startsWith('assets/img/icons/');
 
   const isBareImageFilename = /^[^/]+\.(?:png|jpe?g|gif|webp|svg|avif)$/i.test(normalized);
 
   if (isProjectIconPath) {
-    return new URL(normalized, APP_BASE_URL).href;
+    return new URL(normalized.replace(/^icons\//i, 'icons-optimized/').replace(/\.(?:png|jpe?g|gif|svg|avif)$/i, '.webp'), APP_BASE_URL).href;
   }
 
   if (isBareImageFilename) {
-    return new URL(`icons/${normalized}`, APP_BASE_URL).href;
+    return new URL(`icons-optimized/${normalized.replace(/\.(?:png|jpe?g|gif|svg|avif)$/i, '.webp')}`, APP_BASE_URL).href;
   }
 
   return raw;
@@ -1813,6 +2102,7 @@ function generateDynamicFilters() {
   wireFilterSearch(filterSearchEstado, document.querySelector('.filter-options[data-filter-type="estado"]'));
   wireFilterSearch(filterSearchInstituicao, document.querySelector('.filter-options[data-filter-type="instituicao"]'));
   wireFilterSearch(filterSearchArea, document.querySelector('.filter-options[data-filter-type="area"]'));
+  setFiltersLoadingState(isFullEditaisLoadPending() || allEditaisHydrationInProgress);
 }
 
 function generateCategoryFilters() {
@@ -1866,7 +2156,11 @@ function generateCategoryFilters() {
 
 function wireFilterSearch(inputEl, optionsEl) {
   if (!inputEl || !optionsEl) return;
+  inputEl.__athosFilterOptionsEl = optionsEl;
+  if (inputEl.dataset.filterSearchBound === 'true') return;
+  inputEl.dataset.filterSearchBound = 'true';
   inputEl.addEventListener('input', () => {
+    const optionsEl = inputEl.__athosFilterOptionsEl;
     const q = normalizeCategoryKey(inputEl.value);
     let visible = 0;
     optionsEl.querySelectorAll('label').forEach(label => {
@@ -2788,11 +3082,35 @@ function updateHeroStats(filtered, { globalStats = null } = {}) {
     fechados,
     recomendados,
   });
+  const completeGlobalStats = hasCompleteHeroStats(globalStats);
+  const waitForCompleteCounters = isFullEditaisLoadPending() && !completeGlobalStats;
 
-  if (statTotal) statTotal.textContent = String(stats.total);
-  if (statAbertos) statAbertos.textContent = String(stats.abertos);
-  if (statFechados) statFechados.textContent = String(stats.fechados);
-  if (statRecomendados) statRecomendados.textContent = String(stats.recomendados);
+  if (statTotal) {
+    statTotal.classList.toggle('is-loading', false);
+    statTotal.setAttribute('aria-busy', 'false');
+    statTotal.textContent = String(stats.total);
+  }
+
+  [statAbertos, statFechados].forEach((el) => {
+    if (!el) return;
+    el.classList.toggle('is-loading', waitForCompleteCounters);
+    el.setAttribute('aria-busy', waitForCompleteCounters ? 'true' : 'false');
+  });
+
+  if (waitForCompleteCounters) {
+    if (statAbertos) statAbertos.textContent = '…';
+    if (statFechados) statFechados.textContent = '…';
+  } else {
+    if (statAbertos) statAbertos.textContent = String(stats.abertos);
+    if (statFechados) statFechados.textContent = String(stats.fechados);
+  }
+
+  if (statRecomendados) {
+    const calculatingRecommendations = relevanceRefreshInProgress && !hasPersonalizedRelevance(editaisOriginais);
+    statRecomendados.classList.toggle('is-loading', calculatingRecommendations);
+    statRecomendados.setAttribute('aria-busy', calculatingRecommendations ? 'true' : 'false');
+    statRecomendados.textContent = calculatingRecommendations ? '…' : String(stats.recomendados);
+  }
 }
 
 

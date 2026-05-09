@@ -6333,3 +6333,53 @@ body.chat-open .e-contact-buttons__chat-button-container {
   background: var(--chat-chip-bg-hover);
   border-color: var(--chat-chip-border-hover);
 }
+
+
+/* Fast cards / stable filters patch 2026-05-09 */
+.hero-stat .value.is-loading {
+  opacity: .72;
+  animation: athosCounterPulse 1s ease-in-out infinite;
+}
+
+@keyframes athosCounterPulse {
+  0%, 100% { opacity: .52; }
+  50% { opacity: 1; }
+}
+
+.filter-loading-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  border-radius: 10px;
+  background: rgba(47, 143, 131, 0.08);
+  color: var(--deep-forest);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.mini-spinner {
+  width: 13px;
+  height: 13px;
+  border: 2px solid rgba(47, 143, 131, 0.22);
+  border-top-color: var(--athos-teal);
+  border-radius: 999px;
+  animation: athosMiniSpin .8s linear infinite;
+  flex: 0 0 auto;
+}
+
+@keyframes athosMiniSpin {
+  to { transform: rotate(360deg); }
+}
+
+.filters-panel.is-loading-options .filter-group-title::after {
+  content: '';
+  width: 6px;
+  height: 6px;
+  margin-left: auto;
+  border-radius: 999px;
+  background: var(--athos-teal);
+  box-shadow: 0 0 0 4px rgba(47, 143, 131, .12);
+}

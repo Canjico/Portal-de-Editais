@@ -125,22 +125,22 @@
           <div class="hero-stats" id="heroStats" role="group" aria-label="KPIs de monitoramento">
             <button class="hero-stat is-active" id="statChipTotal" type="button" data-kpi-filter="all" aria-pressed="true">
               <span class="label">Total monitorados</span>
-              <span class="value" id="statTotal">0</span>
+              <span class="value is-loading" id="statTotal" aria-busy="true">…</span>
               <span class="hint">Sem recorte</span>
             </button>
             <button class="hero-stat" id="statChipAbertos" type="button" data-kpi-filter="abertos" aria-pressed="false">
               <span class="label">Abertos</span>
-              <span class="value" id="statAbertos">0</span>
+              <span class="value is-loading" id="statAbertos" aria-busy="true">…</span>
               <span class="hint">Inscrições ativas</span>
             </button>
             <button class="hero-stat" id="statChipFechados" type="button" data-kpi-filter="fechados" aria-pressed="false">
               <span class="label">Encerrados</span>
-              <span class="value" id="statFechados">0</span>
+              <span class="value is-loading" id="statFechados" aria-busy="true">…</span>
               <span class="hint">Prazo finalizado</span>
             </button>
             <button class="hero-stat" id="statChipRecomendados" type="button" data-kpi-filter="recomendados" aria-pressed="false">
               <span class="label">100% aderentes</span>
-              <span class="value" id="statRecomendados">0</span>
+              <span class="value is-loading" id="statRecomendados" aria-busy="true">…</span>
               <span class="hint">Aderência perfeita</span>
             </button>
           </div>
@@ -295,7 +295,7 @@
 
   <script src="./js/theme-init.js?v=20260317.2"></script>
   <script src="./js/consent.js?v=20260310.1"></script>
-  <script src="./js/presence.js?v=20260309.1"></script>
-  <script type="module" src="./js/main.js?v=20260426.4"></script>
+  <script src="./js/presence.js?v=20260509.8"></script>
+  <script type="module" src="./js/main.js?v=20260509.8"></script>
 </body>
 </html>

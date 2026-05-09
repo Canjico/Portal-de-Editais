@@ -1,4 +1,86 @@
-﻿export function renderEditais(container, editais, options = {}) {
+﻿const OPTIMIZED_ICON_BY_KEY = Object.freeze({
+  'awesome foundation': 'Awesome_Foundation.webp',
+  'ambev': 'ambev.webp',
+  'anp': 'anp.webp',
+  'banco do nordeste': 'banco do nordeste.webp',
+  'basf': 'basf.webp',
+  'bndes': 'bndes.webp',
+  'brde': 'brde.webp',
+  'brics wba': 'brics wba.webp',
+  'capes': 'capes.webp',
+  'cnpq': 'cnpq.webp',
+  'coca cola': 'coca-cola.webp',
+  'confap': 'confap.webp',
+  'correios': 'correios.webp',
+  'cresol': 'cresol.webp',
+  'facepe': 'facepe.webp',
+  'fapeal': 'fapeal.webp',
+  'fapeam': 'fapeam.webp',
+  'fapeap': 'fapeap.webp',
+  'fapeg': 'fapeg.webp',
+  'fapema': 'fapema.webp',
+  'fapemig': 'fapemig.webp',
+  'fapepi': 'fapepi.webp',
+  'fapergs': 'fapergs.webp',
+  'faperj': 'faperj.webp',
+  'fapern': 'fapern.webp',
+  'fapero': 'fapero.webp',
+  'fapes': 'fapes.webp',
+  'fapesb': 'fapesb.webp',
+  'fapesc': 'fapesc.webp',
+  'fapesp': 'fapesp.webp',
+  'fapesq': 'fapesq.webp',
+  'fapitec': 'fapitec.webp',
+  'fapt': 'fapt.webp',
+  'finep': 'finep.webp',
+  'funcap': 'funcap.webp',
+  'fundacao araucaria': 'fundacao-araucaria.webp',
+  'fundect': 'fundect.webp',
+  'iaf': 'iaf.webp',
+  'inovale': 'inovale.webp',
+  'mining hub': 'mining hub.webp',
+  'petrobras': 'petrobras.webp',
+  'portal industria': 'portal-industria.webp',
+  'prosas': 'prosas.webp',
+  'santander': 'santander.webp',
+  'serpro': 'serpro.webp',
+  'tetrapak': 'tetrapak.webp',
+  'vale': 'vale.webp',
+});
+
+function normalizeIconLookupKey(value) {
+  return String(value || '')
+    .split(/[?#]/)[0]
+    .split('/')
+    .pop()
+    .replace(/\.(?:png|jpe?g|gif|webp|svg|avif)$/ig, '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[_-]+/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+function resolveOptimizedLogoSrc(value) {
+  const raw = String(value || '').trim().replace(/\\/g, '/');
+  if (!raw || /^(?:data:|blob:)/i.test(raw)) return '';
+
+  let candidate = raw;
+  try {
+    if (/^https?:\/\//i.test(raw) || raw.startsWith('//')) {
+      const absolute = raw.startsWith('//') ? `${window.location.protocol}${raw}` : raw;
+      const parsed = new URL(absolute);
+      candidate = decodeURIComponent(parsed.pathname.split('/').pop() || '');
+    }
+  } catch (_) {}
+
+  const fileName = OPTIMIZED_ICON_BY_KEY[normalizeIconLookupKey(candidate)];
+  return fileName ? new URL(`icons-optimized/${fileName}`, document.baseURI).href : '';
+}
+
+export function renderEditais(container, editais, options = {}) {
   container.innerHTML = '';
 
   if (!editais || editais.length === 0) {
@@ -190,21 +272,26 @@ function resolveLogoSrc(value) {
   const raw = String(value).trim().replace(/\\/g, '/');
   if (!raw) return '';
 
+  const optimized = resolveOptimizedLogoSrc(raw);
+  if (optimized) return optimized;
+
   if (/^(?:https?:|data:|blob:)/i.test(raw)) return raw;
   if (raw.startsWith('//')) return `${window.location.protocol}${raw}`;
 
   const normalized = raw
     .replace(/^\.?\//, '')
-    .replace(/^\/+/, '');
+    .replace(/^\/+/,'');
 
   const isProjectIconPath =
+    normalized.toLowerCase().startsWith('icons-optimized/') ||
     normalized.toLowerCase().startsWith('icons/') ||
     normalized.toLowerCase().startsWith('assets/img/icons/');
-
   const isBareImageFilename = /^[^/]+\.(?:png|jpe?g|gif|webp|svg|avif)$/i.test(normalized);
 
-  if (isProjectIconPath) return new URL(normalized, document.baseURI).href;
-  if (isBareImageFilename) return new URL(`icons/${normalized}`, document.baseURI).href;
+  if (isProjectIconPath) {
+    return new URL(normalized.replace(/^icons\//i, 'icons-optimized/').replace(/\.(?:png|jpe?g|gif|svg|avif)$/i, '.webp'), document.baseURI).href;
+  }
+  if (isBareImageFilename) return new URL(`icons-optimized/${normalized.replace(/\.(?:png|jpe?g|gif|svg|avif)$/i, '.webp')}`, document.baseURI).href;
 
   return raw;
 }
