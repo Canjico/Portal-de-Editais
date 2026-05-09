@@ -44,9 +44,9 @@ test('server paged hero uses global stats metadata from backend', () => {
 });
 
 test('chat refinement build is cache busted and logged', () => {
-  assert.match(indexSource, /src="\.\/js\/main\.js\?v=20260503\.2"/);
-  assert.match(indexSource, /href="\.\/CSS\/style\.css\?v=20260503\.2"/);
-  assert.match(mainSource, /console\.info\('\[Athos\]\[main\.js\] versão Athos Agent refinado 20260503\.2 carregada'\)/);
+  assert.match(indexSource, /src="\.\/js\/main\.js\?v=20260426\.4"/);
+  assert.match(indexSource, /href="\.\/CSS\/style\.css\?v=20260426\.1"/);
+  assert.match(mainSource, /console\.info\('\[Athos\]\[main\.js\] versão chat documental RAG 20260426\.4 carregada'\)/);
 });
 
 test('dashboard refinements use accumulated filters and dashboard intelligence endpoint', () => {

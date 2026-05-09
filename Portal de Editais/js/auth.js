@@ -1,4 +1,4 @@
-/* =========================================================
+﻿/* =========================================================
    Athos / Atimus — Auth + Fetch (shared)
    - Centraliza API_BASE, token opcional, login redirect e fetch robusto
    ========================================================= */
@@ -8,10 +8,6 @@ const CLIENTE_TOKEN_KEY = 'cliente_token';
 const AUTH_DEBUG_TAG = '[DEBUG_AUTH][Portal]';
 const AUTH_DEBUG_STORAGE_KEY = 'athos_auth_debug';
 let authRedirectInProgress = false;
-
-function isLegacyTokenFallbackEnabled() {
-  return false;
-}
 
 export const IS_LOCAL =
   window.location.hostname.includes('localhost') ||
@@ -57,7 +53,11 @@ function isAuthDebugEnabled() {
 // TOKEN OPCIONAL
 // =========================
 export function getStoredToken() {
-  return null;
+  try {
+    return localStorage.getItem(CLIENTE_TOKEN_KEY) || sessionStorage.getItem(CLIENTE_TOKEN_KEY);
+  } catch (_) {
+    return null;
+  }
 }
 
 export function extractAuthToken(data) {
@@ -104,15 +104,38 @@ export function extractAuthToken(data) {
   return '';
 }
 
-export function persistClienteToken(_tokenValue, { remember = true } = {}) {
-  try { localStorage.removeItem(CLIENTE_TOKEN_KEY); } catch (_) {}
-  try { sessionStorage.removeItem(CLIENTE_TOKEN_KEY); } catch (_) {}
-  debugAuth('cookie_only_token_storage_skipped', { remember: false });
-  return true;
+export function persistClienteToken(tokenValue, { remember = true } = {}) {
+  const token = String(tokenValue || '').trim();
+  if (!token) return false;
+
+  let saved = false;
+  try {
+    sessionStorage.setItem(CLIENTE_TOKEN_KEY, token);
+    saved = true;
+  } catch (_) {}
+
+  try {
+    if (remember) {
+      localStorage.setItem(CLIENTE_TOKEN_KEY, token);
+    } else {
+      localStorage.removeItem(CLIENTE_TOKEN_KEY);
+    }
+    saved = true;
+  } catch (_) {}
+
+  debugAuth('token_persisted', { saved, remember });
+  return saved;
 }
 
 export function authHeaders(extra = {}) {
-  return { ...extra };
+  const t = getStoredToken();
+  const base = { ...extra };
+  if (!t) return base;
+
+  // Manda nos dois formatos porque o backend pode aceitar um ou outro.
+  base.Authorization = `Bearer ${t}`;
+  base['X-Cliente-Token'] = t;
+  return base;
 }
 
 export function bootstrapAuthFromUrl() {
@@ -122,10 +145,8 @@ export function bootstrapAuthFromUrl() {
     const t = params.get('token');
     if (!t) return;
 
-    if (isLegacyTokenFallbackEnabled()) {
-      persistClienteToken(t, { remember: true });
-    }
-    debugAuth('bootstrap_token_from_url_stripped', { hasToken: true, legacyFallback: isLegacyTokenFallbackEnabled() });
+    persistClienteToken(t, { remember: true });
+    debugAuth('bootstrap_token_from_url', { hasToken: true });
 
     params.delete('token');
     const newQuery = params.toString();
@@ -234,14 +255,19 @@ function hasExplicitAuthHeaders(headers = {}) {
   });
 }
 
-function buildTokenHeaders(_tokenValue = '') {
-  return {};
+function buildTokenHeaders(tokenValue = '') {
+  const token = String(tokenValue || '').trim();
+  if (!token) return {};
+  return {
+    Authorization: `Bearer ${token}`,
+    'X-Cliente-Token': token,
+  };
 }
 
 /**
  * Estratégia de fetch:
- * - Autenticação 100% cookie HttpOnly.
- * - Não envia Authorization/X-Cliente-Token a partir de storage do navegador.
+ * - GET autenticado: cookie-first (sem headers customizados) para reduzir preflight.
+ * - Fallback para headers de token apenas em 401/403 ou falha de rede.
  */
 export async function apiFetch(pathOrUrl, options = {}) {
   const url = absolutize(pathOrUrl);
@@ -251,8 +277,11 @@ export async function apiFetch(pathOrUrl, options = {}) {
     ? Object.fromEntries(options.headers.entries())
     : (options.headers || {});
 
+  const storedToken = String(getStoredToken() || '').trim();
   const hasManualAuthHeader = hasExplicitAuthHeaders(baseHeaders);
-  const mergedHeaders = { ...baseHeaders };
+  const mergedHeaders = hasManualAuthHeader
+    ? { ...baseHeaders }
+    : { ...baseHeaders, ...buildTokenHeaders(storedToken) };
   let lastErr = null;
 
   const tryFetchOnce = async (requestOptions) => {
@@ -273,6 +302,33 @@ export async function apiFetch(pathOrUrl, options = {}) {
       headers: { ...baseHeaders },
       credentials: 'include',
     });
+
+    const needsTokenFallback = Boolean(
+      storedToken &&
+      cookieFirstResponse &&
+      (cookieFirstResponse.status === 401 || cookieFirstResponse.status === 403)
+    );
+
+    if (!needsTokenFallback && cookieFirstResponse) {
+      return cookieFirstResponse;
+    }
+
+    const fallbackWithToken = storedToken ? mergedHeaders : { ...baseHeaders };
+    const cookieFallbackResponse = await tryFetchOnce({
+      ...options,
+      method,
+      headers: fallbackWithToken,
+      credentials: 'include',
+    });
+    if (cookieFallbackResponse) return cookieFallbackResponse;
+
+    const noCredentialsFallbackResponse = await tryFetchOnce({
+      ...options,
+      method,
+      headers: fallbackWithToken,
+    });
+    if (noCredentialsFallbackResponse) return noCredentialsFallbackResponse;
+
     if (cookieFirstResponse) return cookieFirstResponse;
     throw lastErr || new Error('Falha ao fazer requisição.');
   }

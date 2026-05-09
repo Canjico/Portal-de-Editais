@@ -299,11 +299,16 @@
         : 'https://login.atimus.agr.br';
 
       function getStoredToken() {
-        try { return null; } catch (_) { return null; }
+        try { return localStorage.getItem('cliente_token') || sessionStorage.getItem('cliente_token'); } catch (_) { return null; }
       }
 
       function authHeaders() {
-        return {};
+        const t = getStoredToken();
+        if (!t) return {};
+        return {
+          'Authorization': `Bearer ${t}`,
+          'X-Cliente-Token': t,
+        };
       }
 
       function bootstrapAuthFromUrl() {
@@ -312,8 +317,10 @@
           const t = params.get('token');
           if (!t) return;
 
-          // Tokens de sessão não devem ser persistidos a partir da URL.
-          // Mantemos apenas a limpeza de query para compatibilidade com links legados.
+          try { localStorage.setItem('cliente_token', t); } catch (_) {
+            try { sessionStorage.setItem('cliente_token', t); } catch (_) {}
+          }
+
           params.delete('token');
           const newQuery = params.toString();
           const newUrl = window.location.pathname + (newQuery ? `?${newQuery}` : '');
