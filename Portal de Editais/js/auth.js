@@ -1,4 +1,4 @@
-﻿/* =========================================================
+/* =========================================================
    Athos / Atimus — Auth + Fetch (shared)
    - Centraliza API_BASE, token opcional, login redirect e fetch robusto
    ========================================================= */
@@ -54,7 +54,7 @@ function isAuthDebugEnabled() {
 // =========================
 export function getStoredToken() {
   try {
-    return localStorage.getItem(CLIENTE_TOKEN_KEY) || sessionStorage.getItem(CLIENTE_TOKEN_KEY);
+    return sessionStorage.getItem(CLIENTE_TOKEN_KEY);
   } catch (_) {
     return null;
   }
@@ -115,15 +115,10 @@ export function persistClienteToken(tokenValue, { remember = true } = {}) {
   } catch (_) {}
 
   try {
-    if (remember) {
-      localStorage.setItem(CLIENTE_TOKEN_KEY, token);
-    } else {
-      localStorage.removeItem(CLIENTE_TOKEN_KEY);
-    }
-    saved = true;
+    localStorage.removeItem(CLIENTE_TOKEN_KEY);
   } catch (_) {}
 
-  debugAuth('token_persisted', { saved, remember });
+  debugAuth('legacy_token_session_persisted', { saved, remember: false });
   return saved;
 }
 
