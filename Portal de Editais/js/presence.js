@@ -42,7 +42,7 @@
 
   function getStoredToken() {
     try {
-      return sessionStorage.getItem('cliente_token');
+      return null;
     } catch (_) {
       return null;
     }
@@ -87,13 +87,6 @@
 
   async function postPresence(url, payload, options = {}) {
     const headers = { 'Content-Type': 'application/json' };
-    const token = getStoredToken();
-
-    if (token) {
-      headers.Authorization = `Bearer ${token}`;
-      headers['X-Cliente-Token'] = token;
-    }
-
     const request = {
       method: 'POST',
       credentials: 'include',

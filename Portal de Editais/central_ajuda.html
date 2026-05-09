@@ -299,16 +299,11 @@
         : 'https://login.atimus.agr.br';
 
       function getStoredToken() {
-        try { return sessionStorage.getItem('cliente_token'); } catch (_) { return null; }
+        try { return null; } catch (_) { return null; }
       }
 
       function authHeaders() {
-        const t = getStoredToken();
-        if (!t) return {};
-        return {
-          'Authorization': `Bearer ${t}`,
-          'X-Cliente-Token': t,
-        };
+        return {};
       }
 
       function bootstrapAuthFromUrl() {
