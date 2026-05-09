@@ -124,6 +124,9 @@ let editaisOriginais = [];
 let fuseInstance = null;
 
 const PAGE_SIZE = 12;
+const FAST_CARDS_CACHE_KEY = 'athos:editais:first-page:v20260509.1';
+const FAST_CARDS_CACHE_TTL_MS = 10 * 60 * 1000;
+const RELEVANCE_REFRESH_DELAY_MS = 350;
 let currentPage = 1;
 let lastFiltered = [];
 let kpiFilter = 'all';
@@ -132,6 +135,8 @@ let assistantSemanticMemory = createDashboardMemoryState();
 let serverPageMeta = {};
 let bootstrapInitPromise = null;
 let uiEventsBound = false;
+let relevanceRefreshTimerId = null;
+let relevanceRefreshInProgress = false;
 const loadEditaisSingleFlight = createSingleFlight(() => loadEditais());
 const loadFavoritosSingleFlight = createSingleFlight(() => loadFavoritos());
 
@@ -451,15 +456,7 @@ async function init() {
     loadEditais: loadEditaisSingleFlight,
     loadFavoritos: loadFavoritosSingleFlight,
     onEditaisReady: async () => {
-      applyFavoritosToLoadedEditais();
-      if (hasPersonalizedRelevance(editaisOriginais)) {
-        setSortField('relevancia', { resetDirection: true });
-      }
-      buildFuseIndex();
-      generateDynamicFilters();
-      setupFilterGroupsAccordion();
-      flushPendingDashboardOptionsRestores();
-      applyFiltersAndRender({ resetPage: true });
+      hydrateDashboardAfterEditaisLoad({ resetPage: true });
     },
     onDeepLinkReady: openDeepLinkedEditalFromUrl,
     onFavoritosReady: ({ editaisReady }) => {
@@ -906,7 +903,9 @@ function renderResultsStateHint(total) {
   const hasProfileRecommendations = perfectCount > 0;
 
   let text = '';
-  if (total === 0 && onlyFavoritos && favoritosSet.size === 0) {
+  if (relevanceRefreshInProgress && total > 0 && !hasSearch && !hasFilters && !onlyFavoritos && kpiFilter === 'all') {
+    text = 'Editais carregados. Calculando as melhores opções para o seu perfil...';
+  } else if (total === 0 && onlyFavoritos && favoritosSet.size === 0) {
     text = 'Você ainda não salvou editais. Clique na estrela para montar sua lista.';
   } else if (total === 0 && onlyFavoritos) {
     text = 'Nenhum edital salvo corresponde aos filtros atuais.';
@@ -1106,10 +1105,11 @@ function buildEditaisRequestPath({
   limit = PAGE_SIZE,
   view = 'card',
   includeAttachments = false,
+  includeRelevance = false,
 } = {}) {
   const params = new URLSearchParams();
   params.set('modo', view);
-  params.set('include_relevance', 'true');
+  params.set('include_relevance', includeRelevance ? 'true' : 'false');
   params.set('relevance_mode', 'fast');
 
   if (summary) {
@@ -1125,6 +1125,150 @@ function buildEditaisRequestPath({
   }
 
   return `/editais?${params.toString()}`;
+}
+
+function readFastCardsCache(requestOptions = {}) {
+  try {
+    const raw = sessionStorage.getItem(FAST_CARDS_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    const savedAt = Number(parsed?.saved_at || 0);
+    if (!Number.isFinite(savedAt) || Date.now() - savedAt > FAST_CARDS_CACHE_TTL_MS) {
+      sessionStorage.removeItem(FAST_CARDS_CACHE_KEY);
+      return null;
+    }
+    const signature = JSON.stringify({
+      page: Number(requestOptions.page || 1),
+      limit: Number(requestOptions.limit || PAGE_SIZE),
+      view: String(requestOptions.view || 'card'),
+    });
+    if (parsed?.signature !== signature) return null;
+    return parsed?.payload && typeof parsed.payload === 'object' ? parsed.payload : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function writeFastCardsCache(requestOptions = {}, payload) {
+  try {
+    if (!payload) return;
+    const signature = JSON.stringify({
+      page: Number(requestOptions.page || 1),
+      limit: Number(requestOptions.limit || PAGE_SIZE),
+      view: String(requestOptions.view || 'card'),
+    });
+    sessionStorage.setItem(FAST_CARDS_CACHE_KEY, JSON.stringify({
+      saved_at: Date.now(),
+      signature,
+      payload,
+    }));
+  } catch (_) {}
+}
+
+function setResultsHintMessage(message) {
+  if (!resultsStateHint) return;
+  const text = String(message || '').trim();
+  if (!text) {
+    resultsStateHint.hidden = true;
+    resultsStateHint.textContent = '';
+    return;
+  }
+  resultsStateHint.hidden = false;
+  resultsStateHint.textContent = text;
+}
+
+function hydrateDashboardAfterEditaisLoad({ resetPage = true } = {}) {
+  applyFavoritosToLoadedEditais();
+  if (hasPersonalizedRelevance(editaisOriginais)) {
+    setSortField('relevancia', { resetDirection: true });
+  }
+  buildFuseIndex();
+  generateDynamicFilters();
+  setupFilterGroupsAccordion();
+  flushPendingDashboardOptionsRestores();
+  applyFiltersAndRender({ resetPage });
+}
+
+function unpackEditaisResponsePayload(data) {
+  const rawList =
+    Array.isArray(data) ? data :
+    (Array.isArray(data?.items) ? data.items :
+    (Array.isArray(data?.editais) ? data.editais :
+    (Array.isArray(data?.data) ? data.data : [])));
+  return {
+    rawList,
+    meta: Array.isArray(data) ? {} : normalizeServerPageMeta(data),
+  };
+}
+
+function mergeRelevancePayloadIntoLoadedEditais(relevanceItems = []) {
+  if (!Array.isArray(relevanceItems) || !relevanceItems.length || !Array.isArray(editaisOriginais)) return false;
+  const byId = new Map(relevanceItems.map((item) => [String(item?.id), item]).filter(([id]) => id && id !== 'undefined'));
+  let changed = false;
+
+  editaisOriginais = editaisOriginais.map((edital) => {
+    const incoming = byId.get(String(edital?.id));
+    if (!incoming) return edital;
+    const normalized = normalizeEdital(incoming);
+    if (!normalized) return edital;
+    changed = true;
+    return {
+      ...edital,
+      relevance_score: normalized.relevance_score,
+      relevance_level: normalized.relevance_level,
+      is_highlighted: normalized.is_highlighted,
+      recommendation_label: normalized.recommendation_label,
+      relevance_reasons: normalized.relevance_reasons,
+      relevance_warnings: normalized.relevance_warnings,
+      missing_profile_fields: normalized.missing_profile_fields,
+      matched_criteria: normalized.matched_criteria,
+      blockers: normalized.blockers,
+    };
+  });
+
+  return changed;
+}
+
+function scheduleRelevanceRefresh(requestOptions = {}) {
+  if (relevanceRefreshTimerId) {
+    clearTimeout(relevanceRefreshTimerId);
+    relevanceRefreshTimerId = null;
+  }
+
+  relevanceRefreshTimerId = setTimeout(async () => {
+    relevanceRefreshTimerId = null;
+    relevanceRefreshInProgress = true;
+    setResultsHintMessage('Editais carregados. Calculando as melhores opções para o seu perfil...');
+
+    try {
+      const relevanceRequest = {
+        ...requestOptions,
+        includeRelevance: true,
+        includeAttachments: false,
+        view: 'card',
+      };
+      const { res, data } = await apiFetchJson(buildEditaisRequestPath(relevanceRequest), { method: 'GET' });
+      if (!res.ok) return;
+      const { rawList, meta } = unpackEditaisResponsePayload(data);
+      if (!rawList.length) return;
+      if (Object.keys(meta || {}).length) serverPageMeta = meta;
+      const changed = mergeRelevancePayloadIntoLoadedEditais(rawList);
+      if (changed) {
+        if (hasPersonalizedRelevance(editaisOriginais)) {
+          setSortField('relevancia', { resetDirection: true });
+        }
+        buildFuseIndex();
+        generateDynamicFilters();
+        setupFilterGroupsAccordion();
+        applyFiltersAndRender({ resetPage: true });
+      }
+    } catch (error) {
+      console.warn('Falha ao atualizar relevância em background:', error);
+    } finally {
+      relevanceRefreshInProgress = false;
+      renderResultsStateHint(Array.isArray(lastFiltered) ? lastFiltered.length : 0);
+    }
+  }, RELEVANCE_REFRESH_DELAY_MS);
 }
 
 function normalizeServerPageMeta(data) {
@@ -1149,34 +1293,45 @@ function normalizeServerPageMeta(data) {
 async function loadEditais(options = {}) {
   if (!container) return;
 
-  container.innerHTML = `
-    <div class="loading-container">
-      <div class="spinner"></div>
-      <p>Carregando editais...</p>
-      <div class="cards-skeleton" aria-hidden="true">
-        <div class="card-skeleton"></div>
-        <div class="card-skeleton"></div>
-        <div class="card-skeleton"></div>
+  const requestOptions = {
+    summary: options.summary !== false,
+    page: options.page || 1,
+    limit: options.limit || PAGE_SIZE,
+    view: options.view || 'card',
+    includeAttachments: Boolean(options.includeAttachments),
+    includeRelevance: Boolean(options.includeRelevance),
+  };
+
+  const cachedPayload = readFastCardsCache(requestOptions);
+  let renderedFromCache = false;
+
+  if (cachedPayload) {
+    const { rawList, meta } = unpackEditaisResponsePayload(cachedPayload);
+    if (rawList.length) {
+      serverPageMeta = meta;
+      editaisOriginais = rawList.map(normalizeEdital).filter(Boolean);
+      hydrateDashboardAfterEditaisLoad({ resetPage: true });
+      setResultsHintMessage('Mostrando editais salvos em cache. Atualizando em segundo plano...');
+      renderedFromCache = true;
+    }
+  }
+
+  if (!renderedFromCache) {
+    container.innerHTML = `
+      <div class="loading-container">
+        <div class="spinner"></div>
+        <p>Carregando editais...</p>
+        <div class="cards-skeleton" aria-hidden="true">
+          <div class="card-skeleton"></div>
+          <div class="card-skeleton"></div>
+          <div class="card-skeleton"></div>
+        </div>
       </div>
-    </div>
-  `;
+    `;
+  }
 
   try {
-    const requestOptions = {
-      summary: options.summary !== false,
-      page: options.page || 1,
-      limit: options.limit || PAGE_SIZE,
-      view: options.view || 'card',
-      includeAttachments: Boolean(options.includeAttachments),
-    };
-    let { res, data } = await apiFetchJson(buildEditaisRequestPath(requestOptions), { method: 'GET' });
-
-    if (res.ok && requestOptions.summary && (!data || typeof data !== 'object' || !Array.isArray(data.items))) {
-      ({ res, data } = await apiFetchJson(
-        buildEditaisRequestPath({ summary: false, view: 'full', includeAttachments: true }),
-        { method: 'GET' }
-      ));
-    }
+    const { res, data } = await apiFetchJson(buildEditaisRequestPath(requestOptions), { method: 'GET' });
 
     if (!res.ok) {
       if (isPasswordChangeRequiredResponse(res, data) || isPasswordChangeRequiredPayload(data)) {
@@ -1203,16 +1358,20 @@ async function loadEditais(options = {}) {
       throw new Error(`Erro na API (${res.status})`);
     }
 
-    const rawList =
-      Array.isArray(data) ? data :
-      (Array.isArray(data?.items) ? data.items :
-      (Array.isArray(data?.editais) ? data.editais :
-      (Array.isArray(data?.data) ? data.data : [])));
-
-    serverPageMeta = Array.isArray(data) ? {} : normalizeServerPageMeta(data);
+    const { rawList, meta } = unpackEditaisResponsePayload(data);
+    serverPageMeta = meta;
     editaisOriginais = rawList.map(normalizeEdital).filter(Boolean);
+    writeFastCardsCache(requestOptions, data);
+
+    if (!requestOptions.includeRelevance) {
+      scheduleRelevanceRefresh(requestOptions);
+    }
   } catch (e) {
     console.error('Erro ao carregar editais:', e);
+    if (renderedFromCache && editaisOriginais.length) {
+      setResultsHintMessage('Não foi possível atualizar agora. Mantive os editais carregados do cache.');
+      return;
+    }
     container.innerHTML = `
       <section class="results-empty-state is-error">
         <div class="empty-icon"><i class="fas fa-exclamation-triangle" aria-hidden="true"></i></div>

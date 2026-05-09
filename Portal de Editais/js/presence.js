@@ -7,11 +7,11 @@
 (function bootstrapPresenceTracker() {
   const API_BASE = 'https://atimus-api-acb4gfgagefcevb5.brazilsouth-01.azurewebsites.net';
 
-  const HEARTBEAT_INTERVAL_MS = 30000;
-  const ACTIVE_GRACE_MS = 60000;
+  const HEARTBEAT_INTERVAL_MS = 10 * 60 * 1000;
+  const ACTIVE_GRACE_MS = 10 * 60 * 1000;
   const FAILED_RETRY_COOLDOWN_MS = 300000;
-  const START_AFTER_APP_READY_DELAY_MS = 1200;
-  const START_FALLBACK_DELAY_MS = 6000;
+  const START_AFTER_APP_READY_DELAY_MS = 15000;
+  const START_FALLBACK_DELAY_MS = 30000;
 
   const HEARTBEAT_ENDPOINTS = [
     '/cliente/presenca/heartbeat',
