@@ -1,5 +1,0 @@
-# Athos: redireciona logos antigos para WebP otimizado
-<IfModule mod_rewrite.c>
-  RewriteEngine On
-  RewriteRule ^icons/(.+)\.(png|jpg|jpeg|gif|svg|avif)$ icons-optimized/$1.webp [L,R=302,NC]
-</IfModule>
