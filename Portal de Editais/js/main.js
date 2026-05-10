@@ -2,7 +2,7 @@
    Athos / Atimus — Editais (UX/UI novo + filtros + paginação)
    ========================================================= */
 
-import { renderEditais } from './render.js?v=20260509.6';
+import { renderEditais } from './render.js?v=20260509.7';
 import {
   parseAnyDateToTime,
   buildSearchQueryContext,
@@ -74,7 +74,7 @@ import {
 import { runDashboardBootstrapFlow } from './bootstrap-flows.js?v=20260416.1';
 import { readAuthHandoff } from './auth-handoff.js?v=20260422.1';
 
-console.info('[Athos][main.js] versão Athos cards rápidos + hidratação total 20260509.6 carregada');
+console.info('[Athos][main.js] versão Athos cards rápidos + hidratação total 20260509.2 carregada');
 
 const APP_BASE_URL = new URL('../', import.meta.url);
 const SHARE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{20,255}$/;
@@ -125,8 +125,8 @@ let fuseInstance = null;
 
 const PAGE_SIZE = 12;
 const ALL_EDITAIS_BACKGROUND_LIMIT = 2000;
-const ALL_EDITAIS_BACKGROUND_DELAY_MS = 80;
-const FAST_CARDS_CACHE_KEY = 'athos:editais:first-page:v20260509.6';
+const ALL_EDITAIS_BACKGROUND_DELAY_MS = 650;
+const FAST_CARDS_CACHE_KEY = 'athos:editais:first-page:v20260509.7';
 const FAST_CARDS_CACHE_TTL_MS = 10 * 60 * 1000;
 const RELEVANCE_REFRESH_DELAY_MS = 350;
 let currentPage = 1;
@@ -1044,28 +1044,51 @@ function setupFilterGroupsAccordion() {
     if (!body.id) body.id = `filter-group-body-${idx + 1}`;
     btn.setAttribute('aria-controls', body.id);
 
-    setFilterGroupExpanded(group, false, { animate: false });
-
-    btn.addEventListener('click', () => {
+    // Mantém o estado atual quando os filtros são regenerados em background.
+    // Antes, cada hidratação chamava esta função de novo, recolhia os grupos e
+    // adicionava outro listener no mesmo botão. Resultado: um clique abria e o
+    // listener duplicado fechava logo em seguida, dando a sensação de precisar
+    // clicar duas vezes. Aqui a vinculação vira idempotente.
+    if (!group.dataset.accordionInitialized) {
+      setFilterGroupExpanded(group, false, { animate: false });
+      group.dataset.accordionInitialized = 'true';
+    } else {
       const isExpanded = btn.getAttribute('aria-expanded') === 'true';
-      setFilterGroupExpanded(group, !isExpanded, { animate: true });
-    });
+      group.classList.toggle('is-collapsed', !isExpanded);
+      body.hidden = !isExpanded;
+      body.setAttribute('aria-hidden', isExpanded ? 'false' : 'true');
+      body.toggleAttribute('inert', !isExpanded);
+    }
 
-    btn.addEventListener('keydown', (event) => {
-      if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
-      event.preventDefault();
-      const step = event.key === 'ArrowDown' ? 1 : -1;
-      const nextIndex = (idx + step + groups.length) % groups.length;
-      const nextBtn = groups[nextIndex]?.querySelector('[data-filter-toggle]');
-      nextBtn?.focus();
-    });
-  });
+    if (!btn.dataset.accordionClickBound) {
+      btn.dataset.accordionClickBound = 'true';
+      btn.addEventListener('click', () => {
+        const isExpanded = btn.getAttribute('aria-expanded') === 'true';
+        setFilterGroupExpanded(group, !isExpanded, { animate: true });
+      });
+    }
 
-  filtersPanel.addEventListener('change', (event) => {
-    if (event.target?.matches?.('.filter-options input[type=\"checkbox\"]')) {
-      updateFilterActionsState();
+    if (!btn.dataset.accordionKeyboardBound) {
+      btn.dataset.accordionKeyboardBound = 'true';
+      btn.addEventListener('keydown', (event) => {
+        if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+        event.preventDefault();
+        const step = event.key === 'ArrowDown' ? 1 : -1;
+        const nextIndex = (idx + step + groups.length) % groups.length;
+        const nextBtn = groups[nextIndex]?.querySelector('[data-filter-toggle]');
+        nextBtn?.focus();
+      });
     }
   });
+
+  if (!filtersPanel.dataset.filterChangeBound) {
+    filtersPanel.dataset.filterChangeBound = 'true';
+    filtersPanel.addEventListener('change', (event) => {
+      if (event.target?.matches?.('.filter-options input[type=\"checkbox\"]')) {
+        updateFilterActionsState();
+      }
+    });
+  }
 
   updateFilterActionsState();
 }
@@ -1319,27 +1342,18 @@ async function hydrateAllEditaisInBackground(requestOptions = {}, signature = ''
     const { rawList, meta } = unpackEditaisResponsePayload(data);
     if (Object.keys(meta || {}).length) serverPageMeta = { ...serverPageMeta, ...meta };
     let allRaw = Array.isArray(rawList) ? [...rawList] : [];
-    const totalFromMeta = Number(meta?.total || serverPageMeta?.total || allRaw.length || 0);
-    const loadedIds = new Set(allRaw.map((item) => String(item?.id)).filter(Boolean));
-    const totalPages = Math.max(1, Number(meta?.total_pages || 1));
+    const totalPages = Number(meta?.total_pages || 1);
 
-    // Se o total couber numa página grande, evita várias viagens API->Banco->Frontend.
-    // Se ainda houver paginação, completa de forma sequencial e segura.
     for (let pageNumber = 2; pageNumber <= totalPages; pageNumber += 1) {
       const { res: pageRes, data: pageData } = await apiFetchJson(buildEditaisRequestPath({ ...firstRequest, page: pageNumber }), { method: 'GET' });
       if (!pageRes.ok) break;
       const { rawList: pageItems } = unpackEditaisResponsePayload(pageData);
       if (!pageItems.length) break;
-      for (const item of pageItems) {
-        const id = String(item?.id || '');
-        if (id && loadedIds.has(id)) continue;
-        if (id) loadedIds.add(id);
-        allRaw.push(item);
-      }
-      if (totalFromMeta && allRaw.length >= totalFromMeta) break;
+      allRaw = allRaw.concat(pageItems);
     }
 
-    if (signature && signature !== getFastCardsRequestSignature(requestOptions)) return;
+    // Mesmo se o usuário mexer em ordenação/filtros enquanto a hidratação roda,
+    // os editais baixados continuam válidos. O estado atual é respeitado no render.
     if (mergeSummaryPayloadIntoLoadedEditais(allRaw, { replace: false })) {
       buildFuseIndex();
       generateDynamicFilters();
@@ -1352,7 +1366,6 @@ async function hydrateAllEditaisInBackground(requestOptions = {}, signature = ''
     console.warn('Falha ao carregar todos os editais em background:', error);
   } finally {
     allEditaisHydrationInProgress = false;
-    renderResultsStateHint(Array.isArray(lastFiltered) ? lastFiltered.length : 0);
   }
 }
 
@@ -1401,6 +1414,14 @@ function scheduleRelevanceRefresh(requestOptions = {}) {
 function normalizeServerPageMeta(data) {
   if (!data || typeof data !== 'object' || Array.isArray(data)) return {};
   const stats = data.stats && typeof data.stats === 'object' ? data.stats : {};
+  const optionalNumber = (...values) => {
+    for (const value of values) {
+      if (value === null || value === undefined || value === '') continue;
+      const n = Number(value);
+      if (Number.isFinite(n) && n >= 0) return n;
+    }
+    return undefined;
+  };
   return {
     page: Number(data.page || 1),
     limit: Number(data.limit || PAGE_SIZE),
@@ -1409,10 +1430,10 @@ function normalizeServerPageMeta(data) {
     has_next: Boolean(data.has_next),
     has_prev: Boolean(data.has_prev),
     stats: {
-      total: Number(stats.total ?? data.total ?? 0),
-      open_total: Number(stats.open_total ?? data.open_total ?? 0),
-      closed_total: Number(stats.closed_total ?? data.closed_total ?? 0),
-      recommended_total: Number(stats.recommended_total ?? stats.recomendados_total ?? 0),
+      total: optionalNumber(stats.total, data.total),
+      open_total: optionalNumber(stats.open_total, stats.abertos_total, data.open_total, data.abertos_total),
+      closed_total: optionalNumber(stats.closed_total, stats.fechados_total, data.closed_total, data.fechados_total),
+      recommended_total: optionalNumber(stats.recommended_total, stats.recomendados_total, data.recommended_total, data.recomendados_total),
     },
   };
 }
@@ -1490,7 +1511,6 @@ async function loadEditais(options = {}) {
     serverPageMeta = meta;
     editaisOriginais = rawList.map(normalizeEdital).filter(Boolean);
     writeFastCardsCache(requestOptions, data);
-    hydrateDashboardAfterEditaisLoad({ resetPage: true });
 
     if (!requestOptions.includeRelevance) {
       scheduleAllEditaisHydration(requestOptions);
@@ -1647,8 +1667,6 @@ function normalizeEdital(api) {
     valor_total: api?.valor_total,
     data_final_submissao: api?.data_final_submissao || api?.data_fechamento,
     data_fechamento: api?.data_fechamento || api?.data_final_submissao,
-    icone_instituicao: api?.icone_instituicao || api?.icone || api?.logo || api?.logo_url,
-    icone: api?.icone || api?.icone_instituicao || api?.logo || api?.logo_url,
   } : {};
   const jsonData = typeof api?.json_data === 'string' ? safeJsonParse(api.json_data, {}) : (api?.json_data || {});
   const data = { ...summaryData, ...jsonData };
@@ -1668,7 +1686,7 @@ function normalizeEdital(api) {
     slug: generateSlug(titulo),
     descricao: data.objetivo || data.descricao || 'Sem descrição',
     publico_alvo: data.publico_alvo || '',
-    icone: resolveIconPath(data.icone_instituicao || data.icone || api?.icone_instituicao || api?.icone || api?.logo || api?.logo_url || data.instituicao || api?.instituicao),
+    icone: resolveIconPath(data.icone_instituicao),
     instituicao: data.instituicao || '',
     estado: normalizeEstadoValue(data.estado || 'BR') || 'BR',
     area: String(rawArea || 'Geral'),
@@ -1869,10 +1887,7 @@ function resolveIconPath(value) {
   const isBareImageFilename = /^[^/]+\.(?:png|jpe?g|gif|webp|svg|avif)$/i.test(normalized);
 
   if (isProjectIconPath) {
-    const iconFile = normalized.split('/').pop() || '';
-    const optimizedUrl = resolveOptimizedIconUrl(iconFile, APP_BASE_URL);
-    if (optimizedUrl) return optimizedUrl;
-    return new URL(`icons-optimized/${iconFile.replace(/\.(?:png|jpe?g|gif|svg|avif)$/i, '.webp')}`, APP_BASE_URL).href;
+    return new URL(normalized.replace(/^icons\//i, 'icons-optimized/').replace(/\.(?:png|jpe?g|gif|svg|avif)$/i, '.webp'), APP_BASE_URL).href;
   }
 
   if (isBareImageFilename) {
@@ -1971,6 +1986,7 @@ function generateDynamicFilters() {
     const box = document.querySelector(`.filter-options[data-filter-type="${type}"]`);
     if (!box) return;
 
+    const selectedBeforeRender = new Set([...(applied[type] || []), ...readSelected(type)]);
     const counts = new Map();
     for (const e of editaisOriginais) {
       const raw = type === 'estado'
@@ -2004,6 +2020,7 @@ function generateDynamicFilters() {
       const input = document.createElement('input');
       input.type = 'checkbox';
       input.value = val;
+      input.checked = selectedBeforeRender.has(val);
 
       const text = document.createElement('span');
       text.textContent = displayVal;
@@ -2041,6 +2058,7 @@ function generateCategoryFilters() {
   const box = document.querySelector('.filter-options[data-filter-type="area"]');
   if (!box) return;
 
+  const selectedBeforeRender = new Set([...(applied.area || []), ...readSelected('area')]);
   const counts = new Map();
   for (const e of editaisOriginais) {
     const cat = toCanonicalCategory(e?.area);
@@ -2065,6 +2083,7 @@ function generateCategoryFilters() {
     const input = document.createElement('input');
     input.type = 'checkbox';
     input.value = category.value;
+    input.checked = selectedBeforeRender.has(category.value);
 
     const text = document.createElement('span');
     text.textContent = category.label;
@@ -2088,6 +2107,8 @@ function generateCategoryFilters() {
 
 function wireFilterSearch(inputEl, optionsEl) {
   if (!inputEl || !optionsEl) return;
+  if (inputEl.dataset.filterSearchBound === 'true') return;
+  inputEl.dataset.filterSearchBound = 'true';
   inputEl.addEventListener('input', () => {
     const q = normalizeCategoryKey(inputEl.value);
     let visible = 0;
