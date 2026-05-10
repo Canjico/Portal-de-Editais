@@ -2,7 +2,7 @@
    Athos / Atimus — Editais (UX/UI novo + filtros + paginação)
    ========================================================= */
 
-import { renderEditais } from './render.js?v=20260510.3';
+import { renderEditais } from './render.js?v=20260510.4';
 import {
   parseAnyDateToTime,
   buildSearchQueryContext,
@@ -74,7 +74,7 @@ import {
 import { runDashboardBootstrapFlow } from './bootstrap-flows.js?v=20260416.1';
 import { readAuthHandoff } from './auth-handoff.js?v=20260422.1';
 
-console.info('[Athos][main.js] versão Athos interesses + notificações 20260510.3 carregada');
+console.info('[Athos][main.js] versão Athos interesses + lista de interesses 20260510.4 carregada');
 
 const APP_BASE_URL = new URL('../', import.meta.url);
 const SHARE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{20,255}$/;
@@ -123,12 +123,13 @@ function extractShareTokenFromLink(link) {
 let editaisOriginais = [];
 let fuseInstance = null;
 let interessesSet = new Set();
+let onlyInteresses = false;
 let clientNotifications = [];
 
 const PAGE_SIZE = 12;
 const ALL_EDITAIS_BACKGROUND_LIMIT = 2000;
 const ALL_EDITAIS_BACKGROUND_DELAY_MS = 650;
-const FAST_CARDS_CACHE_KEY = 'athos:editais:first-page:v20260510.3';
+const FAST_CARDS_CACHE_KEY = 'athos:editais:first-page:v20260510.4';
 const FAST_CARDS_CACHE_TTL_MS = 10 * 60 * 1000;
 const RELEVANCE_REFRESH_DELAY_MS = 350;
 let currentPage = 1;
@@ -290,6 +291,8 @@ const logoutBtn = document.getElementById('logoutBtn');
 // Salvos
 const savedToggleBtn = document.getElementById('savedToggleBtn');
 const savedBadge = document.getElementById('savedBadge');
+const interestToggleBtn = document.getElementById('interestToggleBtn');
+const interestBadge = document.getElementById('interestBadge');
 const clientNotificationMenu = document.getElementById('clientNotificationMenu');
 const clientNotificationBtn = document.getElementById('clientNotificationBtn');
 const clientNotificationBadge = document.getElementById('clientNotificationBadge');
@@ -763,7 +766,7 @@ function setupConsentAwareOptionalFeatures() {
   });
 }
 
-function clearAllFilters({ keepSearch = false, keepFavorites = false, rerender = true } = {}) {
+function clearAllFilters({ keepSearch = false, keepFavorites = false, keepInterests = false, rerender = true } = {}) {
   document.querySelectorAll('.filter-options input[type="checkbox"]').forEach(cb => { cb.checked = false; });
   if (filterSearchEstado) filterSearchEstado.value = '';
   if (filterSearchInstituicao) filterSearchInstituicao.value = '';
@@ -777,7 +780,9 @@ function clearAllFilters({ keepSearch = false, keepFavorites = false, rerender =
   syncKpiButtons();
   if (!keepSearch && searchInput) searchInput.value = '';
   if (!keepFavorites && onlyFavoritos) onlyFavoritos = false;
+  if (!keepInterests && onlyInteresses) onlyInteresses = false;
   syncSavedToggleUI();
+  syncInterestToggleUI();
   setSearchVisualState();
   updateFilterActionsState();
   if (rerender) applyFiltersAndRender({ resetPage: true });
@@ -855,6 +860,14 @@ function renderActiveFilters() {
     }, 'chip-favorites'));
   }
 
+  if (onlyInteresses) {
+    chips.push(makeFilterChip('Somente interesses', () => {
+      onlyInteresses = false;
+      syncInterestToggleUI();
+      applyFiltersAndRender({ resetPage: true });
+    }, 'chip-favorites'));
+  }
+
   if (kpiFilter !== 'all') {
     const kpiLabel = kpiFilter === 'abertos'
       ? 'KPI: Abertos'
@@ -921,12 +934,16 @@ function renderResultsStateHint(total) {
   const hasProfileRecommendations = perfectCount > 0;
 
   let text = '';
-  if (relevanceRefreshInProgress && total > 0 && !hasSearch && !hasFilters && !onlyFavoritos && kpiFilter === 'all') {
+  if (relevanceRefreshInProgress && total > 0 && !hasSearch && !hasFilters && !onlyFavoritos && !onlyInteresses && kpiFilter === 'all') {
     text = 'Editais carregados. Calculando as melhores opções para o seu perfil...';
   } else if (total === 0 && onlyFavoritos && favoritosSet.size === 0) {
     text = 'Você ainda não salvou editais. Clique na estrela para montar sua lista.';
   } else if (total === 0 && onlyFavoritos) {
     text = 'Nenhum edital salvo corresponde aos filtros atuais.';
+  } else if (total === 0 && onlyInteresses && interessesSet.size === 0) {
+    text = 'Você ainda não enviou interesse em nenhum edital. Clique em “Tenho interesse” para montar sua lista.';
+  } else if (total === 0 && onlyInteresses) {
+    text = 'Nenhum edital com interesse enviado corresponde aos filtros atuais.';
   } else if (total === 0 && hasSearch && hasFilters) {
     text = 'Busca sem correspondência para os filtros ativos.';
   } else if (total === 0 && hasSearch) {
@@ -939,6 +956,7 @@ function renderResultsStateHint(total) {
     !hasSearch &&
     !hasFilters &&
     !onlyFavoritos &&
+    !onlyInteresses &&
     kpiFilter === 'all'
   ) {
     text = `Com base no seu perfil, ${perfectCount} ${perfectCount === 1 ? 'edital 100% aderente está' : 'editais 100% aderentes estão'} em destaque.`;
@@ -949,6 +967,7 @@ function renderResultsStateHint(total) {
     !hasSearch &&
     !hasFilters &&
     !onlyFavoritos &&
+    !onlyInteresses &&
     kpiFilter === 'all'
   ) {
     text = highCount > 0
@@ -1220,6 +1239,7 @@ function setResultsHintMessage(message) {
 
 function hydrateDashboardAfterEditaisLoad({ resetPage = true } = {}) {
   applyFavoritosToLoadedEditais();
+  applyInteressesToLoadedEditais();
   if (hasPersonalizedRelevance(editaisOriginais)) {
     setSortField('relevancia', { resetDirection: true });
   }
@@ -1298,6 +1318,7 @@ function mergeSummaryPayloadIntoLoadedEditais(rawList = [], { replace = false } 
       ...(prev || {}),
       ...next,
       is_favorite: prev?.is_favorite ?? next.is_favorite,
+      has_interest: prev?.has_interest ?? next.has_interest,
       relevance_score: prev?.relevance_score || next.relevance_score,
       relevance_level: prev?.relevance_level && prev.relevance_level !== 'not_recommended' ? prev.relevance_level : next.relevance_level,
       is_highlighted: prev?.is_highlighted || next.is_highlighted,
@@ -1372,6 +1393,7 @@ async function hydrateAllEditaisInBackground(requestOptions = {}, signature = ''
       generateDynamicFilters();
       setupFilterGroupsAccordion();
       applyFavoritosToLoadedEditais();
+      applyInteressesToLoadedEditais();
       applyFiltersAndRender({ resetPage: false });
       setResultsHintMessage('Todos os editais foram carregados. A aderência continua sendo calculada em segundo plano.');
     }
@@ -1662,8 +1684,10 @@ function updateSaveButtonUI(btn, isSaved) {
 // =========================
 function applyInteressesToLoadedEditais() {
   for (const edital of editaisOriginais) {
-    edital.has_interest = interessesSet.has(String(edital.id)) || Boolean(edital.has_interest);
+    edital.has_interest = interessesSet.has(String(edital.id));
   }
+  syncInterestBadge();
+  syncInterestToggleUI();
 }
 
 async function loadInteresses() {
@@ -1680,11 +1704,40 @@ async function loadInteresses() {
   applyInteressesToLoadedEditais();
 }
 
+function syncInterestBadge() {
+  if (!interestBadge) return;
+  const n = interessesSet.size;
+  if (n > 0) {
+    interestBadge.hidden = false;
+    interestBadge.textContent = String(n);
+  } else {
+    interestBadge.hidden = true;
+    interestBadge.textContent = '0';
+  }
+}
+
+function syncInterestToggleUI() {
+  if (!interestToggleBtn) return;
+  interestToggleBtn.classList.toggle('is-active', !!onlyInteresses);
+  interestToggleBtn.setAttribute('aria-pressed', onlyInteresses ? 'true' : 'false');
+  interestToggleBtn.setAttribute('title', onlyInteresses ? 'Exibindo apenas interesses' : 'Ver interesses');
+  const icon = interestToggleBtn.querySelector('i');
+  if (icon) {
+    icon.classList.toggle('fas', !!onlyInteresses);
+    icon.classList.toggle('far', !onlyInteresses);
+  }
+}
+
+function updateAllInterestButtons(editalId, isInterested) {
+  document.querySelectorAll(`.interest-btn[data-id="${cssEscape(String(editalId))}"]`).forEach((btn) => updateInterestButtonUI(btn, isInterested));
+}
+
 function updateInterestButtonUI(btn, isInterested) {
   if (!btn) return;
   btn.classList.toggle('is-interested', !!isInterested);
   btn.setAttribute('title', isInterested ? 'Interesse enviado' : 'Tenho interesse');
   btn.setAttribute('data-tooltip', isInterested ? 'Interesse enviado' : 'Tenho interesse');
+  btn.setAttribute('aria-label', isInterested ? 'Interesse enviado neste edital' : 'Tenho interesse neste edital');
   const icon = btn.querySelector('i');
   if (icon) {
     icon.classList.toggle('fas', !!isInterested);
@@ -1692,6 +1745,52 @@ function updateInterestButtonUI(btn, isInterested) {
   }
   const label = btn.querySelector('span');
   if (label) label.textContent = isInterested ? 'Interesse enviado' : 'Tenho interesse';
+}
+
+function confirmarRemocaoInteresse() {
+  return new Promise((resolve) => {
+    const existing = document.querySelector('.interest-confirm-backdrop');
+    if (existing) existing.remove();
+
+    const backdrop = document.createElement('div');
+    backdrop.className = 'interest-confirm-backdrop';
+    backdrop.setAttribute('role', 'presentation');
+    backdrop.innerHTML = `
+      <div class="interest-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="interestConfirmTitle" aria-describedby="interestConfirmText">
+        <div class="interest-confirm-dialog__icon"><i class="fas fa-handshake-slash" aria-hidden="true"></i></div>
+        <h3 id="interestConfirmTitle">Deseja remover o interesse?</h3>
+        <p id="interestConfirmText">Esse edital sairá da sua lista de interesses enviados.</p>
+        <div class="interest-confirm-dialog__actions">
+          <button type="button" class="btn btn-secondary" data-interest-confirm="no">Não</button>
+          <button type="button" class="btn btn-primary" data-interest-confirm="yes">Sim</button>
+        </div>
+      </div>
+    `;
+
+    let resolved = false;
+    const finish = (value) => {
+      if (resolved) return;
+      resolved = true;
+      document.removeEventListener('keydown', onKeyDown);
+      backdrop.remove();
+      resolve(Boolean(value));
+    };
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') finish(false);
+    };
+    backdrop.addEventListener('click', (event) => {
+      if (event.target === backdrop) finish(false);
+      const btn = event.target.closest('[data-interest-confirm]');
+      if (!btn) return;
+      finish(btn.getAttribute('data-interest-confirm') === 'yes');
+    });
+    document.addEventListener('keydown', onKeyDown);
+    document.body.appendChild(backdrop);
+    requestAnimationFrame(() => {
+      const noButton = backdrop.querySelector('[data-interest-confirm="no"]');
+      try { noButton?.focus(); } catch (_) {}
+    });
+  });
 }
 
 async function registrarInteresse(editalId) {
@@ -1707,6 +1806,18 @@ async function registrarInteresse(editalId) {
   return data || {};
 }
 
+async function removerInteresse(editalId) {
+  const idStr = String(editalId);
+  const { res, data } = await apiFetchJson(`/cliente/interesses/${encodeURIComponent(idStr)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) {
+    const msg = (data && (data.detail || data.message || data.msg)) ? (data.detail || data.message || data.msg) : 'Não foi possível remover o interesse.';
+    throw new Error(msg);
+  }
+  return data || {};
+}
+
 async function sinalizarInteresse(editalId) {
   const idStr = String(editalId);
   const edital = editaisOriginais.find((e) => String(e.id) === idStr);
@@ -1716,6 +1827,7 @@ async function sinalizarInteresse(editalId) {
 
   if (edital) edital.has_interest = true;
   interessesSet.add(idStr);
+  syncInterestBadge();
   try {
     const data = await registrarInteresse(editalId);
     await loadClientNotifications();
@@ -1723,8 +1835,52 @@ async function sinalizarInteresse(editalId) {
   } catch (error) {
     if (edital) edital.has_interest = false;
     interessesSet.delete(idStr);
+    syncInterestBadge();
     throw error;
   }
+}
+
+async function cancelarInteresse(editalId) {
+  const idStr = String(editalId);
+  const edital = editaisOriginais.find((e) => String(e.id) === idStr);
+  const tinhaInteresse = Boolean(edital?.has_interest || interessesSet.has(idStr));
+  if (!tinhaInteresse) {
+    return { ok: true, interested: false, edital };
+  }
+
+  if (edital) edital.has_interest = false;
+  interessesSet.delete(idStr);
+  syncInterestBadge();
+  try {
+    const data = await removerInteresse(editalId);
+    return { ok: true, interested: false, edital, data };
+  } catch (error) {
+    if (edital) edital.has_interest = true;
+    interessesSet.add(idStr);
+    syncInterestBadge();
+    throw error;
+  }
+}
+
+async function handleInterestButtonClick(editalId, button = null) {
+  const idStr = String(editalId);
+  const edital = editaisOriginais.find((e) => String(e.id) === idStr);
+  const isInterested = Boolean(edital?.has_interest || interessesSet.has(idStr));
+
+  if (isInterested) {
+    const shouldRemove = await confirmarRemocaoInteresse();
+    if (!shouldRemove) return { ok: true, cancelled: true, interested: true, edital };
+    updateAllInterestButtons(idStr, false);
+    const result = await cancelarInteresse(idStr);
+    updateAllInterestButtons(idStr, false);
+    if (onlyInteresses) applyFiltersAndRender({ resetPage: true });
+    return result;
+  }
+
+  if (button) updateInterestButtonUI(button, true);
+  const result = await sinalizarInteresse(idStr);
+  updateAllInterestButtons(idStr, true);
+  return result;
 }
 
 function renderClientNotifications() {
@@ -1852,7 +2008,8 @@ function normalizeEdital(api) {
       null,
     tags: data.tags || [],
     arquivos,
-    is_favorite: false,
+    is_favorite: Boolean(api?.is_favorite),
+    has_interest: Boolean(api?.has_interest),
     share_link: api?.share_link || '',
     is_open: typeof api?.is_open === 'boolean' ? api.is_open : undefined,
     fluxo_continuo: fluxoContinuo,
@@ -2749,6 +2906,7 @@ function buildDashboardIntelligenceContext() {
       status: kpiFilter === 'abertos' ? ['aberto'] : (kpiFilter === 'fechados' ? ['encerrado'] : []),
       kpi_filter: kpiFilter,
       only_favoritos: Boolean(onlyFavoritos),
+      only_interesses: Boolean(onlyInteresses),
       assistant_filter_labels: Array.isArray(assistantPanelContext?.filterLabels) ? [...assistantPanelContext.filterLabels] : [],
     },
     sort_active: {
@@ -3037,8 +3195,9 @@ function applyFiltersAndRender({ resetPage } = { resetPage: false }) {
   if (kpiFilter === 'fechados') filtered = filtered.filter((edital) => isClosedEdital(edital));
   if (kpiFilter === 'recomendados') filtered = filtered.filter((edital) => !isClosedEdital(edital) && (edital?.is_highlighted || edital?.relevance_level === 'perfect'));
 
-  // 2.5) Só salvos
+  // 2.5) Só salvos / só interesses
   if (onlyFavoritos) filtered = filtered.filter(e => !!e.is_favorite);
+  if (onlyInteresses) filtered = filtered.filter(e => !!e.has_interest);
 
   // 3) Ordenação
   const sort = normalizeSortValue(sortField || sortSelect?.value || 'prazo');
@@ -3133,6 +3292,30 @@ function buildEmptyState({ total, termo }) {
       message: 'Tente remover alguns filtros para encontrar editais favoritos.',
       actionLabel: 'Limpar filtros',
       action: () => clearAllFilters({ keepFavorites: true }),
+    };
+  }
+
+  if (onlyInteresses && interessesSet.size === 0) {
+    return {
+      icon: 'fa-handshake',
+      title: 'Sem interesses enviados ainda',
+      message: 'Você ainda não marcou nenhum card com “Tenho interesse”. Quando marcar, ele aparece aqui.',
+      actionLabel: 'Ver todos os editais',
+      action: () => {
+        onlyInteresses = false;
+        syncInterestToggleUI();
+        applyFiltersAndRender({ resetPage: true });
+      },
+    };
+  }
+
+  if (onlyInteresses) {
+    return {
+      icon: 'fa-filter',
+      title: 'Sem interesses para este recorte',
+      message: 'Tente remover alguns filtros para encontrar editais com interesse enviado.',
+      actionLabel: 'Limpar filtros',
+      action: () => clearAllFilters({ keepInterests: true }),
     };
   }
 
@@ -3478,10 +3661,22 @@ const doLogout = async () => {
     });
   });
 
-  // ver salvos (bookmark ao lado das notificações)
+  // ver salvos / interesses (atalhos ao lado das notificações)
   if (savedToggleBtn) {
     savedToggleBtn.addEventListener('click', () => {
       onlyFavoritos = !onlyFavoritos;
+      if (onlyFavoritos) onlyInteresses = false;
+      syncSavedToggleUI();
+      syncInterestToggleUI();
+      applyFiltersAndRender({ resetPage: true });
+    });
+  }
+
+  if (interestToggleBtn) {
+    interestToggleBtn.addEventListener('click', () => {
+      onlyInteresses = !onlyInteresses;
+      if (onlyInteresses) onlyFavoritos = false;
+      syncInterestToggleUI();
       syncSavedToggleUI();
       applyFiltersAndRender({ resetPage: true });
     });
@@ -3538,7 +3733,7 @@ const doLogout = async () => {
   if (clearFiltersBtn) {
     clearFiltersBtn.addEventListener('click', () => {
       closeFiltersMobile();
-      clearAllFilters({ keepSearch: true, keepFavorites: true, rerender: true });
+      clearAllFilters({ keepSearch: true, keepFavorites: true, keepInterests: true, rerender: true });
     });
   }
 
@@ -3586,17 +3781,17 @@ const doLogout = async () => {
         if (!id) return;
         const prevDisabled = interestBtn.disabled;
         interestBtn.disabled = true;
-        updateInterestButtonUI(interestBtn, true);
         try {
-          const result = await sinalizarInteresse(id);
-          updateInterestButtonUI(interestBtn, true);
-          const message = result?.already
-            ? 'Interesse já registrado para este edital.'
-            : (result?.data?.message || 'Interesse enviado ao administrador da sua conta.');
-          showToast(message, 'success', 2600);
+          const result = await handleInterestButtonClick(id, interestBtn);
+          if (!result?.cancelled) {
+            const message = result?.interested
+              ? (result?.already ? 'Interesse já registrado para este edital.' : (result?.data?.message || 'Interesse enviado ao administrador da sua conta.'))
+              : 'Interesse removido deste edital.';
+            showToast(message, 'success', 2400);
+          }
         } catch (err) {
-          updateInterestButtonUI(interestBtn, interessesSet.has(String(id)));
-          showToast(err?.message || 'Não foi possível registrar interesse neste edital.', 'error');
+          updateAllInterestButtons(id, interessesSet.has(String(id)));
+          showToast(err?.message || 'Não foi possível atualizar interesse neste edital.', 'error');
         } finally {
           interestBtn.disabled = prevDisabled;
         }
@@ -4150,16 +4345,19 @@ async function openModal(edital) {
     modalInterestBtn.addEventListener('click', async () => {
       const prev = modalInterestBtn.disabled;
       modalInterestBtn.disabled = true;
-      updateInterestButtonUI(modalInterestBtn, true);
       try {
-        const result = await sinalizarInteresse(edital.id);
-        edital.has_interest = true;
-        updateInterestButtonUI(modalInterestBtn, true);
-        document.querySelectorAll(`.interest-btn[data-id="${String(edital.id)}"]`).forEach((btn) => updateInterestButtonUI(btn, true));
-        showToast(result?.already ? 'Interesse já registrado para este edital.' : 'Interesse enviado ao administrador da sua conta.', 'success', 2600);
+        const result = await handleInterestButtonClick(edital.id, modalInterestBtn);
+        edital.has_interest = Boolean(result?.interested);
+        updateInterestButtonUI(modalInterestBtn, Boolean(result?.interested));
+        if (!result?.cancelled) {
+          const message = result?.interested
+            ? (result?.already ? 'Interesse já registrado para este edital.' : 'Interesse enviado ao administrador da sua conta.')
+            : 'Interesse removido deste edital.';
+          showToast(message, 'success', 2400);
+        }
       } catch (err) {
-        updateInterestButtonUI(modalInterestBtn, Boolean(edital.has_interest));
-        showToast(err?.message || 'Não foi possível registrar interesse.', 'error');
+        updateInterestButtonUI(modalInterestBtn, Boolean(edital.has_interest || interessesSet.has(String(edital.id))));
+        showToast(err?.message || 'Não foi possível atualizar interesse.', 'error');
       } finally {
         modalInterestBtn.disabled = prev;
       }

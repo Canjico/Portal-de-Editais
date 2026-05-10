@@ -6449,3 +6449,71 @@ body.chat-open .e-contact-buttons__chat-button-container {
 :root[data-theme='dark'] .notification-item.is-unread{background:rgba(45,212,191,.12);border-color:rgba(45,212,191,.35);}
 :root[data-theme='dark'] .notification-dropdown__head{border-color:rgba(148,163,184,.18);}
 :root[data-theme='dark'] .modal-interest-btn{background:#111827;}
+
+
+/* Meus interesses + confirmação de remoção */
+#interestToggleBtn.is-active,
+#savedToggleBtn.is-active{
+  background:rgba(47,143,131,.12);
+  color:var(--athos-teal);
+}
+.interest-confirm-backdrop{
+  position:fixed;
+  inset:0;
+  z-index:9999;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  padding:18px;
+  background:rgba(15,23,42,.42);
+  backdrop-filter:blur(4px);
+}
+.interest-confirm-dialog{
+  width:min(420px,100%);
+  border:1px solid rgba(15,23,42,.10);
+  border-radius:22px;
+  background:#fff;
+  box-shadow:0 24px 70px rgba(15,23,42,.22);
+  padding:22px;
+  text-align:left;
+}
+.interest-confirm-dialog__icon{
+  width:46px;
+  height:46px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  border-radius:16px;
+  background:rgba(47,143,131,.10);
+  color:var(--athos-teal);
+  margin-bottom:14px;
+  font-size:20px;
+}
+.interest-confirm-dialog h3{
+  margin:0 0 8px;
+  color:var(--night);
+  font-size:18px;
+  font-weight:1000;
+}
+.interest-confirm-dialog p{
+  margin:0;
+  color:var(--muted);
+  font-size:14px;
+  line-height:1.5;
+}
+.interest-confirm-dialog__actions{
+  display:flex;
+  justify-content:flex-end;
+  gap:10px;
+  margin-top:20px;
+}
+.interest-confirm-dialog__actions .btn{
+  min-height:40px;
+  padding:0 18px;
+}
+:root[data-theme="dark"] .interest-confirm-dialog{
+  background:#0f172a;
+  border-color:rgba(148,163,184,.22);
+}
+:root[data-theme="dark"] .interest-confirm-dialog h3{color:#e5e7eb;}
+:root[data-theme="dark"] .interest-confirm-dialog p{color:#94a3b8;}

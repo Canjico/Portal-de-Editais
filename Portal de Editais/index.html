@@ -25,7 +25,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" />
-  <link rel="stylesheet" href="./CSS/style.css?v=20260426.1" />
+  <link rel="stylesheet" href="./CSS/style.css?v=20260510.4" />
 </head>
 
 <body class="app-loading">
@@ -89,9 +89,14 @@
             <i class="fas fa-sliders"></i>
           </button>
 
-          <button class="icon-btn" id="savedToggleBtn" type="button" title="Ver salvos" aria-label="Ver editais salvos">
+          <button class="icon-btn" id="savedToggleBtn" type="button" title="Ver salvos" aria-label="Ver editais salvos" aria-pressed="false">
             <i class="far fa-star"></i>
             <span class="badge" id="savedBadge" hidden>0</span>
+          </button>
+
+          <button class="icon-btn" id="interestToggleBtn" type="button" title="Ver interesses" aria-label="Ver editais com interesse enviado" aria-pressed="false">
+            <i class="far fa-handshake"></i>
+            <span class="badge" id="interestBadge" hidden>0</span>
           </button>
 
           <div class="notification-menu" id="clientNotificationMenu">
@@ -307,6 +312,6 @@
   <script src="./js/theme-init.js?v=20260317.2"></script>
   <script src="./js/consent.js?v=20260310.1"></script>
   <script src="./js/presence.js?v=20260309.2"></script>
-  <script type="module" src="./js/main.js?v=20260510.3"></script>
+  <script type="module" src="./js/main.js?v=20260510.4"></script>
 </body>
 </html>
