@@ -318,10 +318,9 @@ function sanitizeHttpUrl(value) {
 function renderPublicEdital(edital) {
   if (!contentEl) return;
 
-  const prazoState = resolvePrazoState(edital);
-  const statusLabel = prazoState.statusLabel;
+  const statusLabel = edital.status || (edital.fluxoContinuo ? "Fluxo contínuo" : "Aberto");
   const statusClass = classifyStatus(statusLabel);
-  const prazoLabel = formatPrazo(edital.prazo, edital.fluxoContinuo, prazoState);
+  const prazoLabel = formatPrazo(edital.prazo, edital.fluxoContinuo);
   const valorLabel = edital.valor || "Não informado";
   const publicoAlvo = edital.publicoAlvo || "Não informado";
   const descricao = edital.descricao || "Sem descrição pública cadastrada.";
@@ -410,72 +409,52 @@ function renderRestrictedDocumentsCallout() {
   `;
 }
 
-function normalizeStatusToken(value) {
-  return sanitizePlainText(value)
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
-}
-
-function hasContinuousSignal(value) {
-  const token = normalizeStatusToken(value);
-  return Boolean(token && ((token.includes("fluxo") && token.includes("continu")) || token.includes("chamada continua")));
-}
-
-function hasClosedSignal(value) {
-  const token = normalizeStatusToken(value);
-  return Boolean(token && /(encerr|fechad|vencid|expirad)/.test(token));
-}
-
-function parsePrazoDate(value) {
-  const raw = sanitizePlainText(value);
-  if (!raw) return null;
-  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
-    const [year, month, day] = raw.split("-").map(Number);
-    const parsed = new Date(year, month - 1, day);
-    return Number.isFinite(parsed.getTime()) ? parsed : null;
-  }
-  const parsed = Date.parse(raw);
-  return Number.isFinite(parsed) ? new Date(parsed) : null;
-}
-
-function resolvePrazoState(edital) {
-  const deadline = parsePrazoDate(edital.prazo);
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const explicitClosed = hasClosedSignal(edital.status);
-
-  if (deadline) {
-    const deadlineDay = new Date(deadline.getFullYear(), deadline.getMonth(), deadline.getDate());
-    const closed = explicitClosed || deadlineDay.getTime() < today.getTime();
-    return { deadline, closed, continuous: false, statusLabel: closed ? "Encerrado" : "Aberto" };
-  }
-
-  if (explicitClosed) return { deadline: null, closed: true, continuous: false, statusLabel: "Encerrado" };
-  if (edital.fluxoContinuo || hasContinuousSignal(edital.status) || hasContinuousSignal(edital.prazo)) {
-    return { deadline: null, closed: false, continuous: true, statusLabel: "Fluxo contínuo" };
-  }
-  return { deadline: null, closed: false, continuous: false, statusLabel: edital.status || "Aberto" };
-}
-
 function classifyStatus(status) {
-  const token = normalizeStatusToken(status);
+  const token = sanitizePlainText(status).toLowerCase();
   if (token.includes("encerr")) return "status-encerrado";
   if (token.includes("fluxo")) return "status-fluxo";
   return "status-aberto";
 }
 
-function formatPrazo(value, fluxoContinuo, prazoState = null) {
-  const state = prazoState || resolvePrazoState({ prazo: value, fluxoContinuo });
-  if (state.deadline) {
-    return new Intl.DateTimeFormat("pt-BR", { dateStyle: "long" }).format(state.deadline);
-  }
-  if (state.continuous) return "Fluxo contínuo";
+function formatPrazo(value, fluxoContinuo) {
   const raw = sanitizePlainText(value);
-  if (!raw || hasClosedSignal(raw) || hasContinuousSignal(raw)) return "Não informado";
+  const parsed = parsePublicDateToTime(raw);
+  if (parsed !== null) {
+    return new Intl.DateTimeFormat("pt-BR", { dateStyle: "long" }).format(new Date(parsed));
+  }
+  if (fluxoContinuo) return "Fluxo contínuo";
+  if (!raw) return "Não informado";
+  if (/^\d{6,}$/.test(raw)) return "Não informado";
   return raw;
+}
+
+function parsePublicDateToTime(value) {
+  const raw = sanitizePlainText(value);
+  if (!raw) return null;
+
+  const epoch = raw.match(/^\d{10,13}(?:\.0+)?$/);
+  if (epoch) {
+    const n = Number(raw);
+    const ms = raw.replace(/\.0+$/, "").length <= 10 ? n * 1000 : n;
+    const min = Date.UTC(2000, 0, 1);
+    const max = Date.UTC(2100, 11, 31, 23, 59, 59);
+    if (Number.isFinite(ms) && ms >= min && ms <= max) return ms;
+  }
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    const [year, month, day] = raw.split("-").map(Number);
+    const parsed = new Date(year, month - 1, day);
+    if (Number.isFinite(parsed.getTime())) return parsed.getTime();
+  }
+
+  if (/^\d{1,2}[\/-]\d{1,2}[\/-]\d{4}$/.test(raw)) {
+    const [day, month, year] = raw.split(/[\/-]/).map(Number);
+    const parsed = new Date(year, month - 1, day);
+    if (Number.isFinite(parsed.getTime())) return parsed.getTime();
+  }
+
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function syncMetadata(edital) {

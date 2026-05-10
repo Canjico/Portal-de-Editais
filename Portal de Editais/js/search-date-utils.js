@@ -120,9 +120,12 @@ function isValidDateParts(year, month, day) {
 }
 
 export function parseAnyDateToTime(dateString) {
-  if (!dateString) return null;
+  if (dateString === null || dateString === undefined || dateString === '') return null;
   const s = String(dateString).trim();
   if (!s) return null;
+
+  const epoch = parseEpochDateToTime(s);
+  if (epoch !== null) return epoch;
 
   const isoDate = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (isoDate) {
@@ -165,6 +168,18 @@ export function parseAnyDateToTime(dateString) {
 
   const t = Date.parse(s);
   return Number.isFinite(t) ? t : null;
+}
+
+function parseEpochDateToTime(value) {
+  const s = String(value || '').trim();
+  if (!/^\d{10,13}(?:\.0+)?$/.test(s)) return null;
+  const n = Number(s);
+  if (!Number.isFinite(n)) return null;
+  const ms = s.replace(/\.0+$/, '').length <= 10 ? n * 1000 : n;
+  const min = Date.UTC(2000, 0, 1);
+  const max = Date.UTC(2100, 11, 31, 23, 59, 59);
+  if (ms < min || ms > max) return null;
+  return ms;
 }
 
 export function collectEditalDateParts(edital) {
