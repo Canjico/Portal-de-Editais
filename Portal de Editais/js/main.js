@@ -2,7 +2,7 @@
    Athos / Atimus — Editais (UX/UI novo + filtros + paginação)
    ========================================================= */
 
-import { renderEditais } from './render.js?v=20260509.8';
+import { renderEditais } from './render.js?v=20260510.1';
 import {
   parseAnyDateToTime,
   buildSearchQueryContext,
@@ -74,7 +74,7 @@ import {
 import { runDashboardBootstrapFlow } from './bootstrap-flows.js?v=20260416.1';
 import { readAuthHandoff } from './auth-handoff.js?v=20260422.1';
 
-console.info('[Athos][main.js] versão Athos cards rápidos + filtros dinâmicos 20260509.8 carregada');
+console.info('[Athos][main.js] versão Athos cards rápidos + filtros dinâmicos 20260510.1 carregada');
 
 const APP_BASE_URL = new URL('../', import.meta.url);
 const SHARE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{20,255}$/;
@@ -126,7 +126,7 @@ let fuseInstance = null;
 const PAGE_SIZE = 12;
 const ALL_EDITAIS_BACKGROUND_LIMIT = 2000;
 const ALL_EDITAIS_BACKGROUND_DELAY_MS = 650;
-const FAST_CARDS_CACHE_KEY = 'athos:editais:first-page:v20260509.8';
+const FAST_CARDS_CACHE_KEY = 'athos:editais:first-page:v20260510.1';
 const FAST_CARDS_CACHE_TTL_MS = 10 * 60 * 1000;
 const RELEVANCE_REFRESH_DELAY_MS = 350;
 let currentPage = 1;
@@ -2904,7 +2904,7 @@ function applyFiltersAndRender({ resetPage } = { resetPage: false }) {
   const collate = (a, b) => String(a || '').localeCompare(String(b || ''), 'pt-BR', { sensitivity: 'base' });
 
   if (sort === 'prazo') {
-    filtered = [...filtered].sort((a, b) => compareIsoDate(a.data_fechamento, b.data_fechamento) * directionFactor);
+    filtered = [...filtered].sort((a, b) => compareDeadlineForSort(a, b, sortDirection));
   } else if (sort === 'atualizado' || sort === 'atualizacao') {
     filtered = [...filtered].sort((a, b) => compareIsoDate(a.data_abertura, b.data_abertura) * directionFactor);
   } else if (sort === 'titulo') {
@@ -3023,18 +3023,90 @@ function buildEmptyState({ total, termo }) {
   };
 }
 
-function isClosedEdital(edital) {
-  if (edital?.fluxo_continuo === true) return false;
-  const t = parseAnyDateToTime(edital?.data_fechamento);
-  if (t !== null) {
+function normalizeDeadlineToken(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function hasContinuousDeadlineSignal(value) {
+  const token = normalizeDeadlineToken(value);
+  return Boolean(token && ((token.includes('fluxo') && token.includes('continu')) || token.includes('chamada continua')));
+}
+
+function hasClosedDeadlineSignal(value) {
+  const token = normalizeDeadlineToken(value);
+  return Boolean(token && /(encerr|fechad|vencid|expirad)/.test(token));
+}
+
+function hasOpenDeadlineSignal(value) {
+  const token = normalizeDeadlineToken(value);
+  return Boolean(token && /(abert|vigent|ativ)/.test(token));
+}
+
+function getEditalPrazoState(edital) {
+  const rawDeadline = edital?.data_fechamento ?? edital?.data_final_submissao ?? edital?.prazo_final ?? edital?.prazo ?? null;
+  const t = parseAnyDateToTime(rawDeadline);
+  const hasDeadline = t !== null;
+  const statusText = edital?.status || '';
+  const explicitClosed = edital?.is_open === false || hasClosedDeadlineSignal(statusText);
+  const explicitOpen = edital?.is_open === true || hasOpenDeadlineSignal(statusText);
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+
+  if (hasDeadline) {
     const d = new Date(t);
-    const prazo = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-    const now = new Date();
-    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-    return prazo < today;
+    const deadlineStart = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+    return {
+      hasDeadline: true,
+      deadlineTime: deadlineStart,
+      isClosed: explicitClosed || deadlineStart < today,
+      isContinuous: false,
+      explicitOpen,
+    };
   }
-  if (typeof edital?.is_open === 'boolean') return !edital.is_open;
-  return false;
+
+  const isContinuous = !explicitClosed && (
+    edital?.fluxo_continuo === true ||
+    hasContinuousDeadlineSignal(statusText) ||
+    hasContinuousDeadlineSignal(rawDeadline)
+  );
+
+  return {
+    hasDeadline: false,
+    deadlineTime: null,
+    isClosed: explicitClosed,
+    isContinuous,
+    explicitOpen,
+  };
+}
+
+function isClosedEdital(edital) {
+  return getEditalPrazoState(edital).isClosed;
+}
+
+function compareDeadlineForSort(a, b, direction = 'asc') {
+  const stateA = getEditalPrazoState(a);
+  const stateB = getEditalPrazoState(b);
+  const group = (state) => {
+    if (state.isClosed) return 3;
+    if (state.hasDeadline) return 0;
+    if (state.isContinuous) return 1;
+    return 2;
+  };
+
+  const groupDiff = group(stateA) - group(stateB);
+  if (groupDiff !== 0) return groupDiff;
+
+  if (stateA.hasDeadline && stateB.hasDeadline) {
+    const diff = stateA.deadlineTime - stateB.deadlineTime;
+    if (diff !== 0) return direction === 'desc' ? -diff : diff;
+  }
+
+  return String(a?.titulo || '').localeCompare(String(b?.titulo || ''), 'pt-BR', { sensitivity: 'base' });
 }
 
 function compareIsoDate(a, b) {
@@ -5424,17 +5496,7 @@ function parseChatDeadline(edital) {
 
 function isOpenEditalForChat(edital) {
   if (!edital) return false;
-  if (edital.fluxo_continuo === true) return true;
-
-  const deadline = parseChatDeadline(edital);
-  if (deadline !== null) {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    return deadline >= today.getTime();
-  }
-
-  if (typeof edital.is_open === 'boolean') return edital.is_open;
-  return true;
+  return !isClosedEdital(edital);
 }
 
 function isDeadlineWithinNextDays(edital, days = 7) {

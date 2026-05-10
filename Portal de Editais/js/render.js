@@ -113,8 +113,9 @@ export function renderEditais(container, editais, options = {}) {
 
     const instituicao = edital.instituicao || 'Instituição';
     const logoSrc = resolveLogoSrc(edital.icone || edital.instituicao, edital.instituicao);
-    const dataFinal = edital.data_fechamento ? formatDisplayDate(edital.data_fechamento) : 'Não informado';
-    const statusBadges = buildStatusBadges(edital);
+    const prazoState = resolvePrazoState(edital);
+    const dataFinal = formatPrazoFinalLabel(prazoState, edital.data_fechamento);
+    const statusBadges = buildStatusBadges(edital, prazoState);
     const statusHtml = statusBadges
       .map((badge) => {
         const styleAttr = badge.style ? ` style="${escapeAttr(badge.style)}"` : '';
@@ -299,13 +300,86 @@ function resolveLogoSrc(value, institutionFallback = '') {
   return raw;
 }
 
-export function buildStatusBadges(edital) {
-  const dataFechamento = edital?.data_fechamento ?? edital;
+function normalizeStatusToken(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function hasContinuousSignal(value) {
+  const token = normalizeStatusToken(value);
+  if (!token) return false;
+  return (token.includes('fluxo') && token.includes('continu')) || token.includes('chamada continua');
+}
+
+function hasClosedSignal(value) {
+  const token = normalizeStatusToken(value);
+  return Boolean(token && /(encerr|fechad|vencid|expirad)/.test(token));
+}
+
+function hasOpenSignal(value) {
+  const token = normalizeStatusToken(value);
+  return Boolean(token && /(abert|vigent|ativ)/.test(token));
+}
+
+function resolvePrazoState(edital) {
+  const rawDeadline = edital?.data_fechamento ?? edital?.data_final_submissao ?? edital?.prazo_final ?? edital?.prazo ?? null;
+  const t = parseAnyDateToTime(rawDeadline);
+  const hasDeadline = t !== null;
+  const deadlineStart = hasDeadline ? toStartOfDayTime(t) : null;
+  const today = toStartOfDayTime(Date.now());
+  const statusText = edital?.status || '';
+  const explicitClosed = edital?.is_open === false || hasClosedSignal(statusText);
+  const explicitOpen = edital?.is_open === true || hasOpenSignal(statusText);
+  const continuous = !hasDeadline && (
+    edital?.fluxo_continuo === true ||
+    hasContinuousSignal(statusText) ||
+    hasContinuousSignal(rawDeadline)
+  );
+
+  if (hasDeadline) {
+    const diffDays = Math.floor((deadlineStart - today) / 86400000);
+    return {
+      rawDeadline,
+      hasDeadline: true,
+      deadlineTime: t,
+      deadlineStart,
+      diffDays,
+      isClosed: explicitClosed || diffDays < 0,
+      isContinuous: false,
+      explicitOpen,
+    };
+  }
+
+  return {
+    rawDeadline,
+    hasDeadline: false,
+    deadlineTime: null,
+    deadlineStart: null,
+    diffDays: null,
+    isClosed: explicitClosed,
+    isContinuous: !explicitClosed && continuous,
+    explicitOpen,
+  };
+}
+
+function formatPrazoFinalLabel(state, fallbackValue = '') {
+  const resolved = state || resolvePrazoState(fallbackValue);
+  if (resolved.hasDeadline) return formatDisplayDate(resolved.deadlineTime);
+  if (resolved.isContinuous) return 'Fluxo contínuo';
+  const raw = String(resolved.rawDeadline || fallbackValue || '').trim();
+  if (hasContinuousSignal(raw)) return 'Fluxo contínuo';
+  if (raw && !hasClosedSignal(raw) && !hasOpenSignal(raw)) return raw;
+  return 'Não informado';
+}
+
+export function buildStatusBadges(edital, prazoState = null) {
   const highlighted = Boolean(edital?.is_highlighted);
-  const explicitOpen = typeof edital?.is_open === 'boolean' ? edital.is_open : null;
-  const fluxoContinuo = edital?.fluxo_continuo === true;
   const COUNTDOWN_WINDOW_DAYS = 30;
-  const t = parseAnyDateToTime(dataFechamento);
+  const state = prazoState || resolvePrazoState(edital);
   const badges = [];
 
   if (highlighted) {
@@ -316,29 +390,19 @@ export function buildStatusBadges(edital) {
     badges.push({ label: 'Pode interessar', className: 'status-chip status-chip--recommendation-muted' });
   }
 
-  if (explicitOpen === false) {
+  if (state.isClosed) {
     return [{ label: 'Encerrado', className: 'status-chip status-chip--closed' }];
   }
 
-  if (fluxoContinuo) {
+  if (state.isContinuous) {
     badges.push({ label: 'Fluxo contínuo', className: 'status-chip status-chip--open' });
     return badges;
   }
 
-  if (t === null) {
-    badges.push({ label: 'Aberto', className: 'status-chip status-chip--open' });
-    return badges;
-  }
-
-  const target = toStartOfDayTime(t);
-  const today = toStartOfDayTime(Date.now());
-  const diffDays = Math.floor((target - today) / 86400000);
-
-  if (diffDays < 0) {
-    return [{ label: 'Encerrado', className: 'status-chip status-chip--closed' }];
-  }
-
   badges.push({ label: 'Aberto', className: 'status-chip status-chip--open' });
+  if (!state.hasDeadline) return badges;
+
+  const diffDays = state.diffDays;
   if (diffDays > COUNTDOWN_WINDOW_DAYS) return badges;
 
   const urgencyTone = buildUrgencyTone(diffDays, COUNTDOWN_WINDOW_DAYS);
