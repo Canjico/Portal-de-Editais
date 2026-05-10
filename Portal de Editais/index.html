@@ -94,10 +94,21 @@
             <span class="badge" id="savedBadge" hidden>0</span>
           </button>
 
-          <button class="icon-btn" type="button" aria-label="Notificações">
-            <i class="far fa-bell"></i>
-            <span class="badge" hidden>0</span>
-          </button>
+          <div class="notification-menu" id="clientNotificationMenu">
+            <button class="icon-btn" id="clientNotificationBtn" type="button" aria-label="Notificações" aria-expanded="false" aria-controls="clientNotificationDropdown">
+              <i class="far fa-bell"></i>
+              <span class="badge" id="clientNotificationBadge" hidden>0</span>
+            </button>
+            <div class="notification-dropdown" id="clientNotificationDropdown" hidden>
+              <div class="notification-dropdown__head">
+                <strong>Notificações</strong>
+                <button type="button" id="clientNotificationRefreshBtn">Atualizar</button>
+              </div>
+              <div class="notification-dropdown__list" id="clientNotificationList">
+                <p class="notification-empty">Nenhuma notificação ainda.</p>
+              </div>
+            </div>
+          </div>
 
           <button class="icon-btn" id="logoutIconBtn" type="button" title="Sair da conta" aria-label="Sair">
             <i class="fas fa-arrow-right-from-bracket"></i>
@@ -296,6 +307,6 @@
   <script src="./js/theme-init.js?v=20260317.2"></script>
   <script src="./js/consent.js?v=20260310.1"></script>
   <script src="./js/presence.js?v=20260309.2"></script>
-  <script type="module" src="./js/main.js?v=20260510.2"></script>
+  <script type="module" src="./js/main.js?v=20260510.3"></script>
 </body>
 </html>

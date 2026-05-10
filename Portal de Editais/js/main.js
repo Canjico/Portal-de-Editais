@@ -2,7 +2,7 @@
    Athos / Atimus — Editais (UX/UI novo + filtros + paginação)
    ========================================================= */
 
-import { renderEditais } from './render.js?v=20260510.2';
+import { renderEditais } from './render.js?v=20260510.3';
 import {
   parseAnyDateToTime,
   buildSearchQueryContext,
@@ -74,7 +74,7 @@ import {
 import { runDashboardBootstrapFlow } from './bootstrap-flows.js?v=20260416.1';
 import { readAuthHandoff } from './auth-handoff.js?v=20260422.1';
 
-console.info('[Athos][main.js] versão Athos datas saneadas + ícones corrigidos 20260510.2 carregada');
+console.info('[Athos][main.js] versão Athos interesses + notificações 20260510.3 carregada');
 
 const APP_BASE_URL = new URL('../', import.meta.url);
 const SHARE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{20,255}$/;
@@ -122,11 +122,13 @@ function extractShareTokenFromLink(link) {
 // =========================
 let editaisOriginais = [];
 let fuseInstance = null;
+let interessesSet = new Set();
+let clientNotifications = [];
 
 const PAGE_SIZE = 12;
 const ALL_EDITAIS_BACKGROUND_LIMIT = 2000;
 const ALL_EDITAIS_BACKGROUND_DELAY_MS = 650;
-const FAST_CARDS_CACHE_KEY = 'athos:editais:first-page:v20260510.2';
+const FAST_CARDS_CACHE_KEY = 'athos:editais:first-page:v20260510.3';
 const FAST_CARDS_CACHE_TTL_MS = 10 * 60 * 1000;
 const RELEVANCE_REFRESH_DELAY_MS = 350;
 let currentPage = 1;
@@ -145,6 +147,8 @@ let allEditaisHydrationSignature = '';
 let lastFastCardsRequestOptions = null;
 const loadEditaisSingleFlight = createSingleFlight(() => loadEditais());
 const loadFavoritosSingleFlight = createSingleFlight(() => loadFavoritos());
+const loadInteressesSingleFlight = createSingleFlight(() => loadInteresses());
+const loadClientNotificationsSingleFlight = createSingleFlight(() => loadClientNotifications());
 
 // Filtros aplicados (só mudam quando clicar em "Aplicar filtros")
 let applied = {
@@ -286,6 +290,12 @@ const logoutBtn = document.getElementById('logoutBtn');
 // Salvos
 const savedToggleBtn = document.getElementById('savedToggleBtn');
 const savedBadge = document.getElementById('savedBadge');
+const clientNotificationMenu = document.getElementById('clientNotificationMenu');
+const clientNotificationBtn = document.getElementById('clientNotificationBtn');
+const clientNotificationBadge = document.getElementById('clientNotificationBadge');
+const clientNotificationDropdown = document.getElementById('clientNotificationDropdown');
+const clientNotificationList = document.getElementById('clientNotificationList');
+const clientNotificationRefreshBtn = document.getElementById('clientNotificationRefreshBtn');
 
 // Modal
 const modalOverlay = document.getElementById('modal-overlay');
@@ -462,6 +472,8 @@ async function init() {
     loadEditais: loadEditaisSingleFlight,
     loadFavoritos: loadFavoritosSingleFlight,
     onEditaisReady: async () => {
+      await Promise.allSettled([loadInteressesSingleFlight(), loadClientNotificationsSingleFlight()]);
+      applyInteressesToLoadedEditais();
       hydrateDashboardAfterEditaisLoad({ resetPage: true });
     },
     onDeepLinkReady: openDeepLinkedEditalFromUrl,
@@ -1645,6 +1657,132 @@ function updateSaveButtonUI(btn, isSaved) {
 
 
 
+// =========================
+// INTERESSES + NOTIFICAÇÕES DO CLIENTE
+// =========================
+function applyInteressesToLoadedEditais() {
+  for (const edital of editaisOriginais) {
+    edital.has_interest = interessesSet.has(String(edital.id)) || Boolean(edital.has_interest);
+  }
+}
+
+async function loadInteresses() {
+  interessesSet = new Set();
+  try {
+    const { res, data } = await apiFetchJson('/cliente/interesses?ids_only=1', { method: 'GET' });
+    if (res.ok) {
+      const ids = Array.isArray(data) ? data : (Array.isArray(data?.ids) ? data.ids : []);
+      interessesSet = new Set((ids || []).map((value) => String(value)));
+    }
+  } catch (_) {
+    // não quebra o dashboard se o backend antigo ainda não tiver o endpoint
+  }
+  applyInteressesToLoadedEditais();
+}
+
+function updateInterestButtonUI(btn, isInterested) {
+  if (!btn) return;
+  btn.classList.toggle('is-interested', !!isInterested);
+  btn.setAttribute('title', isInterested ? 'Interesse enviado' : 'Tenho interesse');
+  btn.setAttribute('data-tooltip', isInterested ? 'Interesse enviado' : 'Tenho interesse');
+  const icon = btn.querySelector('i');
+  if (icon) {
+    icon.classList.toggle('fas', !!isInterested);
+    icon.classList.toggle('far', !isInterested);
+  }
+  const label = btn.querySelector('span');
+  if (label) label.textContent = isInterested ? 'Interesse enviado' : 'Tenho interesse';
+}
+
+async function registrarInteresse(editalId) {
+  const { res, data } = await apiFetchJson('/cliente/interesses', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ edital_id: Number(editalId) }),
+  });
+  if (!res.ok) {
+    const msg = (data && (data.detail || data.message || data.msg)) ? (data.detail || data.message || data.msg) : 'Não foi possível registrar o interesse.';
+    throw new Error(msg);
+  }
+  return data || {};
+}
+
+async function sinalizarInteresse(editalId) {
+  const idStr = String(editalId);
+  const edital = editaisOriginais.find((e) => String(e.id) === idStr);
+  if (edital?.has_interest || interessesSet.has(idStr)) {
+    return { ok: true, already: true, interested: true, edital };
+  }
+
+  if (edital) edital.has_interest = true;
+  interessesSet.add(idStr);
+  try {
+    const data = await registrarInteresse(editalId);
+    await loadClientNotifications();
+    return { ok: true, interested: true, edital, data };
+  } catch (error) {
+    if (edital) edital.has_interest = false;
+    interessesSet.delete(idStr);
+    throw error;
+  }
+}
+
+function renderClientNotifications() {
+  if (clientNotificationBadge) {
+    const unread = clientNotifications.filter((item) => !item.is_read).length;
+    clientNotificationBadge.hidden = unread <= 0;
+    clientNotificationBadge.textContent = String(unread);
+  }
+  if (!clientNotificationList) return;
+  if (!Array.isArray(clientNotifications) || clientNotifications.length === 0) {
+    clientNotificationList.innerHTML = '<p class="notification-empty">Nenhuma notificação ainda.</p>';
+    return;
+  }
+  clientNotificationList.innerHTML = clientNotifications.map((item) => {
+    const unreadClass = item.is_read ? '' : ' is-unread';
+    const dateLabel = item.created_at ? formatDateTimeLabel(item.created_at) : '';
+    return `
+      <button class="notification-item${unreadClass}" type="button" data-notification-id="${escapeHtml(item.id)}">
+        <strong>${escapeHtml(item.title || 'Notificação')}</strong>
+        <span>${escapeHtml(item.message || '')}</span>
+        ${dateLabel ? `<small>${escapeHtml(dateLabel)}</small>` : ''}
+      </button>
+    `;
+  }).join('');
+}
+
+async function loadClientNotifications() {
+  try {
+    const { res, data } = await apiFetchJson('/cliente/notificacoes?limit=20', { method: 'GET' });
+    if (!res.ok) return;
+    clientNotifications = Array.isArray(data?.items) ? data.items : [];
+    renderClientNotifications();
+  } catch (_) {
+    // silencioso: sininho não pode derrubar o painel
+  }
+}
+
+async function markClientNotificationRead(notificationId) {
+  const id = String(notificationId || '').trim();
+  if (!id) return;
+  const target = clientNotifications.find((item) => String(item.id) === id);
+  if (target) {
+    target.is_read = true;
+    renderClientNotifications();
+  }
+  try {
+    await apiFetchJson(`/cliente/notificacoes/${encodeURIComponent(id)}/lida`, { method: 'POST' });
+  } catch (_) {}
+}
+
+function formatDateTimeLabel(value) {
+  const dt = new Date(value);
+  if (Number.isNaN(dt.getTime())) return '';
+  return dt.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+
+
+
 function normalizeEdital(api) {
   const hasSummaryShape = Boolean(
     api &&
@@ -1753,8 +1891,10 @@ async function ensureEditalDetailLoaded(edital) {
 
     const normalized = normalizeEdital(data);
     const prevFavorite = Boolean(edital.is_favorite);
+    const prevInterest = Boolean(edital.has_interest);
     Object.assign(edital, normalized);
     edital.is_favorite = prevFavorite;
+    edital.has_interest = prevInterest || interessesSet.has(String(edital.id));
     edital.details_loaded = true;
   } catch (err) {
     console.warn('Falha ao carregar detalhes do edital:', err);
@@ -3347,6 +3487,40 @@ const doLogout = async () => {
     });
   }
 
+  if (clientNotificationBtn && clientNotificationDropdown) {
+    clientNotificationBtn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const willOpen = clientNotificationDropdown.hidden;
+      clientNotificationDropdown.hidden = !willOpen;
+      clientNotificationBtn.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+      if (willOpen) await loadClientNotifications();
+    });
+
+    document.addEventListener('click', (e) => {
+      if (clientNotificationMenu && !clientNotificationMenu.contains(e.target)) {
+        clientNotificationDropdown.hidden = true;
+        clientNotificationBtn.setAttribute('aria-expanded', 'false');
+      }
+    });
+  }
+
+  if (clientNotificationRefreshBtn) {
+    clientNotificationRefreshBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      void loadClientNotifications();
+    });
+  }
+
+  if (clientNotificationList) {
+    clientNotificationList.addEventListener('click', (e) => {
+      const item = e.target.closest('.notification-item[data-notification-id]');
+      if (!item) return;
+      void markClientNotificationRead(item.getAttribute('data-notification-id'));
+    });
+  }
+
   // aplicar / limpar filtros
   if (applyFiltersBtn) {
     applyFiltersBtn.addEventListener('click', () => {
@@ -3401,9 +3575,34 @@ const doLogout = async () => {
     });
   }
 
-  // abrir edital (apenas pelo botão) + salvar (estrela)
+  // abrir edital (apenas pelo botão) + salvar (estrela) + interesse
   if (container) {
     container.addEventListener('click', async (e) => {
+      const interestBtn = e.target.closest('.interest-btn');
+      if (interestBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        const id = interestBtn.getAttribute('data-id');
+        if (!id) return;
+        const prevDisabled = interestBtn.disabled;
+        interestBtn.disabled = true;
+        updateInterestButtonUI(interestBtn, true);
+        try {
+          const result = await sinalizarInteresse(id);
+          updateInterestButtonUI(interestBtn, true);
+          const message = result?.already
+            ? 'Interesse já registrado para este edital.'
+            : (result?.data?.message || 'Interesse enviado ao administrador da sua conta.');
+          showToast(message, 'success', 2600);
+        } catch (err) {
+          updateInterestButtonUI(interestBtn, interessesSet.has(String(id)));
+          showToast(err?.message || 'Não foi possível registrar interesse neste edital.', 'error');
+        } finally {
+          interestBtn.disabled = prevDisabled;
+        }
+        return;
+      }
+
       const saveBtn = e.target.closest('.save-btn');
       if (saveBtn) {
         e.preventDefault();
@@ -3883,6 +4082,10 @@ async function openModal(edital) {
           <i class="fas fa-link"></i> Copiar link
         </button>
 
+        <button class="modal-interest-btn interest-btn ${edital.has_interest ? 'is-interested' : ''}" type="button" id="modalInterestBtn" data-id="${escapeAttr(edital.id)}" title="${edital.has_interest ? 'Interesse enviado' : 'Tenho interesse'}" data-tooltip="${edital.has_interest ? 'Interesse enviado' : 'Tenho interesse'}">
+          <i class="${edital.has_interest ? 'fas' : 'far'} fa-handshake"></i> <span>${edital.has_interest ? 'Interesse enviado' : 'Tenho interesse'}</span>
+        </button>
+
         <button class="modal-save-btn" type="button" id="modalSaveBtn" title="${edital.is_favorite ? 'Remover dos salvos' : 'Salvar edital'}" data-tooltip="${edital.is_favorite ? 'Remover dos salvos' : 'Salvar edital'}">
           <i class="${edital.is_favorite ? 'fas' : 'far'} fa-star"></i> ${edital.is_favorite ? 'Salvo' : 'Salvar'}
         </button>
@@ -3939,6 +4142,27 @@ async function openModal(edital) {
       navigator.clipboard.writeText(shareLink)
         .then(() => showToast('Link copiado para compartilhar.', 'success', 1800))
         .catch(() => showToast('Não foi possível copiar o link.', 'error'));
+    });
+  }
+
+  const modalInterestBtn = modalContentContainer.querySelector('#modalInterestBtn');
+  if (modalInterestBtn) {
+    modalInterestBtn.addEventListener('click', async () => {
+      const prev = modalInterestBtn.disabled;
+      modalInterestBtn.disabled = true;
+      updateInterestButtonUI(modalInterestBtn, true);
+      try {
+        const result = await sinalizarInteresse(edital.id);
+        edital.has_interest = true;
+        updateInterestButtonUI(modalInterestBtn, true);
+        document.querySelectorAll(`.interest-btn[data-id="${String(edital.id)}"]`).forEach((btn) => updateInterestButtonUI(btn, true));
+        showToast(result?.already ? 'Interesse já registrado para este edital.' : 'Interesse enviado ao administrador da sua conta.', 'success', 2600);
+      } catch (err) {
+        updateInterestButtonUI(modalInterestBtn, Boolean(edital.has_interest));
+        showToast(err?.message || 'Não foi possível registrar interesse.', 'error');
+      } finally {
+        modalInterestBtn.disabled = prev;
+      }
     });
   }
 

@@ -173,10 +173,16 @@ export function renderEditais(container, editais, options = {}) {
 
       <div class="card-tags">${tagsHtml}</div>
 
-      <button class="open-edital-btn" type="button" data-id="${escapeAttr(edital.id)}">
-        Ver detalhes
-        <i class="fas fa-arrow-up-right-from-square" aria-hidden="true"></i>
-      </button>
+      <div class="card-footer-actions">
+        <button class="interest-btn ${edital.has_interest ? 'is-interested' : ''}" type="button" data-id="${escapeAttr(edital.id)}" title="${edital.has_interest ? 'Interesse enviado' : 'Tenho interesse'}" data-tooltip="${edital.has_interest ? 'Interesse enviado' : 'Tenho interesse'}" aria-label="Tenho interesse neste edital">
+          <i class="${edital.has_interest ? 'fas' : 'far'} fa-handshake" aria-hidden="true"></i>
+          <span>${edital.has_interest ? 'Interesse enviado' : 'Tenho interesse'}</span>
+        </button>
+        <button class="open-edital-btn" type="button" data-id="${escapeAttr(edital.id)}">
+          Ver detalhes
+          <i class="fas fa-arrow-up-right-from-square" aria-hidden="true"></i>
+        </button>
+      </div>
     `;
 
     container.appendChild(card);
