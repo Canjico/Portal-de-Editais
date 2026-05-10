@@ -1,4 +1,4 @@
-﻿/* =========================================================
+/* =========================================================
    Athos UI — layout, cards, filtros, paginação, modal, chat
    ========================================================= */
 
@@ -6418,6 +6418,31 @@ body.chat-open .e-contact-buttons__chat-button-container {
 .modal-interest-btn[disabled]{opacity:.7;cursor:wait;transform:none;}
 .modal-interest-btn{min-height:42px;background:#fff;}
 @media (min-width:720px){.card-footer-actions{grid-template-columns:1fr 1fr;align-items:center;}}
+/* Ajuste: botão "Tenho interesse" alinhado com "Ver detalhes" no card */
+.card-footer-actions .interest-btn,
+.card-footer-actions .open-edital-btn{
+  margin-top:0 !important;
+  min-height:44px;
+  height:44px;
+  padding:0 14px;
+  align-self:stretch;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  line-height:1.15;
+}
+.card-footer-actions .interest-btn span{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  min-height:100%;
+  text-align:center;
+}
+.card-footer-actions .interest-btn i,
+.card-footer-actions .open-edital-btn i{
+  flex:0 0 auto;
+}
+
 :root[data-theme='dark'] .notification-dropdown,
 :root[data-theme='dark'] .notification-item{background:#111827;border-color:rgba(148,163,184,.24);}
 :root[data-theme='dark'] .notification-item:hover{background:#172033;}
