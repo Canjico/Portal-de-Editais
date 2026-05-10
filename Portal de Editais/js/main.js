@@ -2,7 +2,7 @@
    Athos / Atimus — Editais (UX/UI novo + filtros + paginação)
    ========================================================= */
 
-import { renderEditais } from './render.js?v=20260509.7';
+import { renderEditais } from './render.js?v=20260509.8';
 import {
   parseAnyDateToTime,
   buildSearchQueryContext,
@@ -74,7 +74,7 @@ import {
 import { runDashboardBootstrapFlow } from './bootstrap-flows.js?v=20260416.1';
 import { readAuthHandoff } from './auth-handoff.js?v=20260422.1';
 
-console.info('[Athos][main.js] versão Athos cards rápidos + hidratação total 20260509.2 carregada');
+console.info('[Athos][main.js] versão Athos cards rápidos + filtros dinâmicos 20260509.8 carregada');
 
 const APP_BASE_URL = new URL('../', import.meta.url);
 const SHARE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{20,255}$/;
@@ -126,7 +126,7 @@ let fuseInstance = null;
 const PAGE_SIZE = 12;
 const ALL_EDITAIS_BACKGROUND_LIMIT = 2000;
 const ALL_EDITAIS_BACKGROUND_DELAY_MS = 650;
-const FAST_CARDS_CACHE_KEY = 'athos:editais:first-page:v20260509.7';
+const FAST_CARDS_CACHE_KEY = 'athos:editais:first-page:v20260509.8';
 const FAST_CARDS_CACHE_TTL_MS = 10 * 60 * 1000;
 const RELEVANCE_REFRESH_DELAY_MS = 350;
 let currentPage = 1;
@@ -142,6 +142,7 @@ let relevanceRefreshInProgress = false;
 let allEditaisHydrationTimerId = null;
 let allEditaisHydrationInProgress = false;
 let allEditaisHydrationSignature = '';
+let lastFastCardsRequestOptions = null;
 const loadEditaisSingleFlight = createSingleFlight(() => loadEditais());
 const loadFavoritosSingleFlight = createSingleFlight(() => loadFavoritos());
 
@@ -1449,6 +1450,10 @@ async function loadEditais(options = {}) {
     includeAttachments: Boolean(options.includeAttachments),
     includeRelevance: Boolean(options.includeRelevance),
   };
+
+  if (requestOptions.summary && !requestOptions.includeRelevance) {
+    lastFastCardsRequestOptions = { ...requestOptions };
+  }
 
   const cachedPayload = readFastCardsCache(requestOptions);
   let renderedFromCache = false;
@@ -2803,6 +2808,45 @@ function applyAssistantContextFilters(items) {
 // APLICAÇÃO DE FILTROS
 // =========================
 
+
+function hasScopedDashboardContext(searchContext = null) {
+  const hasTextOrDateSearch = Boolean(
+    String(searchInput?.value || '').trim() ||
+    searchContext?.textQuery ||
+    searchContext?.dateIntent
+  );
+  return Boolean(
+    hasTextOrDateSearch ||
+    hasAppliedFilters() ||
+    onlyFavoritos ||
+    assistantPanelContext
+  );
+}
+
+function ensureAllEditaisHydrationScheduled() {
+  const expectedTotal = Number(serverPageMeta?.total || 0);
+  if (!expectedTotal || expectedTotal <= (Array.isArray(editaisOriginais) ? editaisOriginais.length : 0)) return;
+  if (allEditaisHydrationInProgress || allEditaisHydrationTimerId) return;
+
+  const requestOptions = lastFastCardsRequestOptions || {
+    summary: true,
+    page: 1,
+    limit: PAGE_SIZE,
+    view: 'card',
+    includeAttachments: false,
+    includeRelevance: false,
+  };
+  scheduleAllEditaisHydration({
+    ...requestOptions,
+    summary: true,
+    page: 1,
+    limit: Number(requestOptions.limit || PAGE_SIZE),
+    view: 'card',
+    includeAttachments: false,
+    includeRelevance: false,
+  });
+}
+
 function applyFiltersAndRender({ resetPage } = { resetPage: false }) {
   if (resetPage) currentPage = 1;
 
@@ -2906,7 +2950,12 @@ function applyFiltersAndRender({ resetPage } = { resetPage: false }) {
     resultsMeta.textContent = `Mostrando ${a}-${b} de ${total} ${label}`;
   }
 
-  updateHeroStats(editaisOriginais, { globalStats: serverPageMeta.stats });
+  const shouldUseGlobalStats = !hasScopedDashboardContext(searchContext) && kpiFilter === 'all';
+  const heroStatsScope = onlyFavoritos
+    ? statsBase.filter((edital) => !!edital.is_favorite)
+    : statsBase;
+  updateHeroStats(heroStatsScope, { globalStats: shouldUseGlobalStats ? serverPageMeta.stats : null });
+  ensureAllEditaisHydrationScheduled();
   syncKpiButtons();
   renderActiveFilters();
   renderResultsStateHint(total);
