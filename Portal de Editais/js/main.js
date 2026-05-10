@@ -74,7 +74,7 @@ import {
 import { runDashboardBootstrapFlow } from './bootstrap-flows.js?v=20260416.1';
 import { readAuthHandoff } from './auth-handoff.js?v=20260422.1';
 
-console.info('[Athos][main.js] versão Athos interesses + lista de interesses 20260510.4 carregada');
+console.info('[Athos][main.js] versão Athos interesses + stats filtrados 20260510.5 carregada');
 
 const APP_BASE_URL = new URL('../', import.meta.url);
 const SHARE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{20,255}$/;
@@ -3120,6 +3120,7 @@ function hasScopedDashboardContext(searchContext = null) {
     hasTextOrDateSearch ||
     hasAppliedFilters() ||
     onlyFavoritos ||
+    onlyInteresses ||
     assistantPanelContext
   );
 }
@@ -3248,14 +3249,14 @@ function applyFiltersAndRender({ resetPage } = { resetPage: false }) {
   if (resultsMeta) {
     const a = total === 0 ? 0 : startIdx + 1;
     const b = endIdx;
-    const label = onlyFavoritos ? 'salvos' : 'editais';
+    const label = onlyFavoritos ? 'salvos' : (onlyInteresses ? 'interesses' : 'editais');
     resultsMeta.textContent = `Mostrando ${a}-${b} de ${total} ${label}`;
   }
 
   const shouldUseGlobalStats = !hasScopedDashboardContext(searchContext) && kpiFilter === 'all';
   const heroStatsScope = onlyFavoritos
     ? statsBase.filter((edital) => !!edital.is_favorite)
-    : statsBase;
+    : (onlyInteresses ? statsBase.filter((edital) => !!edital.has_interest) : statsBase);
   updateHeroStats(heroStatsScope, { globalStats: shouldUseGlobalStats ? serverPageMeta.stats : null });
   ensureAllEditaisHydrationScheduled();
   syncKpiButtons();
