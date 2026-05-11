@@ -337,14 +337,16 @@ export function buildStatusBadges(edital) {
     badges.push({ label: 'Pode interessar', className: 'status-chip status-chip--recommendation-muted' });
   }
 
+  if (explicitOpen === false) {
+    return [{ label: 'Encerrado', className: 'status-chip status-chip--closed' }];
+  }
+
+  if (fluxoContinuo) {
+    badges.push({ label: 'Fluxo contínuo', className: 'status-chip status-chip--open' });
+    return badges;
+  }
+
   if (t === null) {
-    if (explicitOpen === false) {
-      return [{ label: 'Encerrado', className: 'status-chip status-chip--closed' }];
-    }
-    if (fluxoContinuo) {
-      badges.push({ label: 'Fluxo contínuo', className: 'status-chip status-chip--open' });
-      return badges;
-    }
     badges.push({ label: 'Aberto', className: 'status-chip status-chip--open' });
     return badges;
   }

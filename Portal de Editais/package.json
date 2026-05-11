@@ -1,0 +1,11 @@
+{
+  "name": "athos-portal-editais",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test js/__tests__/*.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

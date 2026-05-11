@@ -1543,6 +1543,24 @@ async function loadEditais(options = {}) {
         return;
       }
 
+      if (requestOptions.summary && !requestOptions.includeRelevance) {
+        const legacyRequestOptions = {
+          ...requestOptions,
+          summary: false,
+          view: 'full',
+          includeAttachments: true,
+        };
+        console.warn('[Athos][editais] endpoint resumido indisponível; tentando fallback legado completo.');
+        const { res: legacyRes, data: legacyData } = await apiFetchJson(buildEditaisRequestPath(legacyRequestOptions), { method: 'GET' });
+        if (legacyRes.ok) {
+          const { rawList: legacyRawList, meta: legacyMeta } = unpackEditaisResponsePayload(legacyData);
+          serverPageMeta = legacyMeta;
+          editaisOriginais = legacyRawList.map(normalizeEdital).filter(Boolean);
+          writeFastCardsCache(legacyRequestOptions, legacyData);
+          return;
+        }
+      }
+
       throw new Error(`Erro na API (${res.status})`);
     }
 
@@ -3253,11 +3271,15 @@ function applyFiltersAndRender({ resetPage } = { resetPage: false }) {
     resultsMeta.textContent = `Mostrando ${a}-${b} de ${total} ${label}`;
   }
 
-  const shouldUseGlobalStats = !hasScopedDashboardContext(searchContext) && kpiFilter === 'all';
+  const shouldUseGlobalStats = !hasScopedDashboardContext(searchContext) && kpiFilter === 'all' && !onlyFavoritos && !onlyInteresses;
   const heroStatsScope = onlyFavoritos
     ? statsBase.filter((edital) => !!edital.is_favorite)
     : (onlyInteresses ? statsBase.filter((edital) => !!edital.has_interest) : statsBase);
-  updateHeroStats(heroStatsScope, { globalStats: shouldUseGlobalStats ? serverPageMeta.stats : null });
+  if (shouldUseGlobalStats) {
+    updateHeroStats(editaisOriginais, { globalStats: serverPageMeta.stats });
+  } else {
+    updateHeroStats(heroStatsScope, { globalStats: null });
+  }
   ensureAllEditaisHydrationScheduled();
   syncKpiButtons();
   renderActiveFilters();
