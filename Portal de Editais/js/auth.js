@@ -1,4 +1,4 @@
-/* =========================================================
+﻿/* =========================================================
    Athos / Atimus — Auth + Fetch (shared)
    - Centraliza API_BASE, token opcional, login redirect e fetch robusto
    ========================================================= */
@@ -138,57 +138,21 @@ export function authHeaders(extra = {}) {
   return base;
 }
 
-const AUTH_TOKEN_URL_KEYS = ['__athos_session', 'cliente_token', 'token'];
-
-function readTokenFromParams(params) {
-  if (!params) return '';
-  for (const key of AUTH_TOKEN_URL_KEYS) {
-    const token = String(params.get(key) || '').trim();
-    if (token) return token;
-  }
-  return '';
-}
-
-function removeTokenParams(params) {
-  if (!params) return false;
-  let changed = false;
-  for (const key of AUTH_TOKEN_URL_KEYS) {
-    if (!params.has(key)) continue;
-    params.delete(key);
-    changed = true;
-  }
-  return changed;
-}
-
 export function bootstrapAuthFromUrl() {
-  // Aceita token legado via query e hotfix via fragmento (#).
-  // O fragmento é preferível porque não é enviado ao servidor/logs HTTP e é limpo imediatamente.
+  // Se vier ?token= na URL (ex.: vindo do login), salva e limpa a query.
   try {
-    const url = new URL(window.location.href);
-    const queryParams = new URLSearchParams(url.search || '');
-    const hashParams = new URLSearchParams(String(url.hash || '').replace(/^#/, ''));
+    const params = new URLSearchParams(window.location.search);
+    const t = params.get('token');
+    if (!t) return;
 
-    const tokenFromHash = readTokenFromParams(hashParams);
-    const tokenFromQuery = readTokenFromParams(queryParams);
-    const token = tokenFromHash || tokenFromQuery;
-    if (!token) return;
+    persistClienteToken(t, { remember: true });
+    debugAuth('bootstrap_token_from_url', { hasToken: true });
 
-    persistClienteToken(token, { remember: true });
-    debugAuth('bootstrap_token_from_url', {
-      hasToken: true,
-      source: tokenFromHash ? 'hash' : 'query',
-    });
-
-    const queryChanged = removeTokenParams(queryParams);
-    const hashChanged = removeTokenParams(hashParams);
-
-    if (queryChanged || hashChanged) {
-      const newQuery = queryParams.toString();
-      const newHash = hashParams.toString();
-      const newUrl = `${window.location.pathname}${newQuery ? `?${newQuery}` : ''}${newHash ? `#${newHash}` : ''}`;
-      window.history.replaceState({}, document.title, newUrl);
-      debugAuth('bootstrap_token_url_cleaned', { newUrl });
-    }
+    params.delete('token');
+    const newQuery = params.toString();
+    const newUrl = window.location.pathname + (newQuery ? `?${newQuery}` : '');
+    window.history.replaceState({}, document.title, newUrl);
+    debugAuth('bootstrap_token_query_cleaned', { newUrl });
   } catch (_) {}
 }
 
