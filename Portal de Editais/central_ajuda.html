@@ -299,7 +299,7 @@
         : 'https://login.atimus.agr.br';
 
       function getStoredToken() {
-        try { return sessionStorage.getItem('cliente_token'); } catch (_) { return null; }
+        try { return localStorage.getItem('cliente_token') || sessionStorage.getItem('cliente_token'); } catch (_) { return null; }
       }
 
       function authHeaders() {
@@ -316,6 +316,10 @@
           const params = new URLSearchParams(window.location.search);
           const t = params.get('token');
           if (!t) return;
+
+          try { localStorage.setItem('cliente_token', t); } catch (_) {
+            try { sessionStorage.setItem('cliente_token', t); } catch (_) {}
+          }
 
           params.delete('token');
           const newQuery = params.toString();

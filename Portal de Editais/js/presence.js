@@ -42,7 +42,7 @@
 
   function getStoredToken() {
     try {
-      return sessionStorage.getItem('cliente_token');
+      return localStorage.getItem('cliente_token') || sessionStorage.getItem('cliente_token');
     } catch (_) {
       return null;
     }
