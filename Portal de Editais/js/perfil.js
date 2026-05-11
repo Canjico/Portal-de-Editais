@@ -1,4 +1,4 @@
-﻿/* =========================================================
+/* =========================================================
    Athos / Atimus - Perfil
    ========================================================= */
 
@@ -14,7 +14,7 @@ import {
   resolvePasswordChangeRedirectTarget,
   resolveAuthFailureRedirectTarget,
   redirectWithAuthGuard,
-} from './auth.js?v=20260416.1';
+} from './auth.js?v=20260511.1';
 import {
   normalizeTextValue,
   normalizeDigits,
