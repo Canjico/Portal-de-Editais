@@ -54,7 +54,7 @@ function isAuthDebugEnabled() {
 // =========================
 export function getStoredToken() {
   try {
-    return localStorage.getItem(CLIENTE_TOKEN_KEY) || sessionStorage.getItem(CLIENTE_TOKEN_KEY);
+    return sessionStorage.getItem(CLIENTE_TOKEN_KEY);
   } catch (_) {
     return null;
   }
@@ -115,15 +115,10 @@ export function persistClienteToken(tokenValue, { remember = true } = {}) {
   } catch (_) {}
 
   try {
-    if (remember) {
-      localStorage.setItem(CLIENTE_TOKEN_KEY, token);
-    } else {
-      localStorage.removeItem(CLIENTE_TOKEN_KEY);
-    }
-    saved = true;
+    localStorage.removeItem(CLIENTE_TOKEN_KEY);
   } catch (_) {}
 
-  debugAuth('token_persisted', { saved, remember });
+  debugAuth('token_persisted_session_only', { saved, remember: false });
   return saved;
 }
 
@@ -139,14 +134,13 @@ export function authHeaders(extra = {}) {
 }
 
 export function bootstrapAuthFromUrl() {
-  // Se vier ?token= na URL (ex.: vindo do login), salva e limpa a query.
+  // Fluxo legado: se vier ?token= na URL, remove sem persistir token sensivel.
   try {
     const params = new URLSearchParams(window.location.search);
     const t = params.get('token');
     if (!t) return;
 
-    persistClienteToken(t, { remember: true });
-    debugAuth('bootstrap_token_from_url', { hasToken: true });
+    debugAuth('bootstrap_token_from_url_ignored', { hasToken: true });
 
     params.delete('token');
     const newQuery = params.toString();

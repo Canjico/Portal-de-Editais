@@ -329,6 +329,10 @@ export function buildStatusBadges(edital) {
   const t = parseAnyDateToTime(dataFechamento);
   const badges = [];
 
+  if (explicitOpen === false) {
+    return [{ label: 'Encerrado', className: 'status-chip status-chip--closed' }];
+  }
+
   if (highlighted) {
     badges.push({ label: getRecommendationBadgeLabel(edital), className: 'status-chip status-chip--highlight' });
   } else if (edital?.relevance_level === 'high') {
@@ -337,14 +341,12 @@ export function buildStatusBadges(edital) {
     badges.push({ label: 'Pode interessar', className: 'status-chip status-chip--recommendation-muted' });
   }
 
+  if (fluxoContinuo) {
+    badges.push({ label: 'Fluxo contínuo', className: 'status-chip status-chip--open' });
+    return badges;
+  }
+
   if (t === null) {
-    if (explicitOpen === false) {
-      return [{ label: 'Encerrado', className: 'status-chip status-chip--closed' }];
-    }
-    if (fluxoContinuo) {
-      badges.push({ label: 'Fluxo contínuo', className: 'status-chip status-chip--open' });
-      return badges;
-    }
     badges.push({ label: 'Aberto', className: 'status-chip status-chip--open' });
     return badges;
   }

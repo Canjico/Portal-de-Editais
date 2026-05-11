@@ -39,14 +39,15 @@ test('legacy fallback requests full dataset and does not use summary mode', () =
 });
 
 test('server paged hero uses global stats metadata from backend', () => {
-  assert.match(mainSource, /updateHeroStats\(editaisOriginais,\s*\{\s*globalStats:\s*serverPageMeta\.stats\s*\}\)/);
+  assert.match(mainSource, /const shouldUseGlobalStats = !hasScopedDashboardContext\(searchContext\) && kpiFilter === 'all';/);
+  assert.match(mainSource, /updateHeroStats\(heroStatsScope,\s*\{\s*globalStats:\s*shouldUseGlobalStats \? serverPageMeta\.stats : null\s*\}\)/);
   assert.match(mainSource, /function normalizeHeroStatsFromMeta\(globalStats, fallbackStats\)/);
 });
 
 test('chat refinement build is cache busted and logged', () => {
-  assert.match(indexSource, /src="\.\/js\/main\.js\?v=20260426\.4"/);
-  assert.match(indexSource, /href="\.\/CSS\/style\.css\?v=20260426\.1"/);
-  assert.match(mainSource, /console\.info\('\[Athos\]\[main\.js\] versão chat documental RAG 20260426\.4 carregada'\)/);
+  assert.match(indexSource, /src="\.\/js\/main\.js\?v=20260510\.6"/);
+  assert.match(indexSource, /href="\.\/CSS\/style\.css\?v=20260510\.4"/);
+  assert.match(mainSource, /console\.info\('\[Athos\]\[main\.js\] versão Athos interesses \+ stats filtrados 20260510\.6 carregada'\)/);
 });
 
 test('dashboard refinements use accumulated filters and dashboard intelligence endpoint', () => {

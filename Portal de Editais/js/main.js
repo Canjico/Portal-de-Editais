@@ -74,7 +74,7 @@ import {
 import { runDashboardBootstrapFlow } from './bootstrap-flows.js?v=20260416.1';
 import { readAuthHandoff } from './auth-handoff.js?v=20260422.1';
 
-console.info('[Athos][main.js] versão Athos interesses + stats filtrados 20260510.5 carregada');
+console.info('[Athos][main.js] versão Athos interesses + stats filtrados 20260510.6 carregada');
 
 const APP_BASE_URL = new URL('../', import.meta.url);
 const SHARE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{20,255}$/;
@@ -1519,7 +1519,26 @@ async function loadEditais(options = {}) {
   }
 
   try {
-    const { res, data } = await apiFetchJson(buildEditaisRequestPath(requestOptions), { method: 'GET' });
+    let effectiveRequestOptions = requestOptions;
+    let { res, data } = await apiFetchJson(buildEditaisRequestPath(effectiveRequestOptions), { method: 'GET' });
+
+    if (!res.ok && effectiveRequestOptions.summary && res.status !== 401 && res.status !== 403) {
+      const legacyFallbackRequestOptions = {
+        ...effectiveRequestOptions,
+        summary: false,
+        page: 1,
+        limit: ALL_EDITAIS_BACKGROUND_LIMIT,
+        view: 'full',
+        includeAttachments: true,
+      };
+      console.warn('[Athos][editais] endpoint resumido falhou; tentando carga completa legada.', { status: res.status });
+      const fallbackResponse = await apiFetchJson(buildEditaisRequestPath(legacyFallbackRequestOptions), { method: 'GET' });
+      if (fallbackResponse.res.ok) {
+        effectiveRequestOptions = legacyFallbackRequestOptions;
+        res = fallbackResponse.res;
+        data = fallbackResponse.data;
+      }
+    }
 
     if (!res.ok) {
       if (isPasswordChangeRequiredResponse(res, data) || isPasswordChangeRequiredPayload(data)) {
@@ -1549,11 +1568,13 @@ async function loadEditais(options = {}) {
     const { rawList, meta } = unpackEditaisResponsePayload(data);
     serverPageMeta = meta;
     editaisOriginais = rawList.map(normalizeEdital).filter(Boolean);
-    writeFastCardsCache(requestOptions, data);
+    if (effectiveRequestOptions.summary) {
+      writeFastCardsCache(effectiveRequestOptions, data);
+    }
 
-    if (!requestOptions.includeRelevance) {
-      scheduleAllEditaisHydration(requestOptions);
-      scheduleRelevanceRefresh(requestOptions);
+    if (!effectiveRequestOptions.includeRelevance && effectiveRequestOptions.summary) {
+      scheduleAllEditaisHydration(effectiveRequestOptions);
+      scheduleRelevanceRefresh(effectiveRequestOptions);
     }
   } catch (e) {
     console.error('Erro ao carregar editais:', e);
@@ -3351,6 +3372,9 @@ function buildEmptyState({ total, termo }) {
 }
 
 function isClosedEdital(edital) {
+  if (typeof edital?.is_open === 'boolean' && edital.is_open === false) return true;
+  if (edital?.fluxo_continuo === true) return false;
+
   const t = parseAnyDateToTime(edital?.data_fechamento);
   if (t !== null) {
     const d = new Date(t);
@@ -3359,8 +3383,6 @@ function isClosedEdital(edital) {
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
     return prazo < today;
   }
-  if (typeof edital?.is_open === 'boolean') return !edital.is_open;
-  if (edital?.fluxo_continuo === true) return false;
   return false;
 }
 
