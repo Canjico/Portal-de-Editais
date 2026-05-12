@@ -1475,6 +1475,22 @@ function normalizeServerPageMeta(data) {
   };
 }
 
+async function loadLegacyFullEditaisFallback() {
+  const legacyRequestOptions = {
+    summary: false,
+    view: 'full',
+    includeAttachments: true,
+    includeRelevance: false,
+  };
+  const { res, data } = await apiFetchJson(buildEditaisRequestPath(legacyRequestOptions), { method: 'GET' });
+  if (!res.ok) return false;
+
+  const { rawList, meta } = unpackEditaisResponsePayload(data);
+  serverPageMeta = meta;
+  editaisOriginais = rawList.map(normalizeEdital).filter(Boolean);
+  return true;
+}
+
 async function loadEditais(options = {}) {
   if (!container) return;
 
@@ -1543,6 +1559,11 @@ async function loadEditais(options = {}) {
           </section>
         `;
         return;
+      }
+
+      if (requestOptions.summary && !requestOptions.includeRelevance) {
+        const legacyLoaded = await loadLegacyFullEditaisFallback();
+        if (legacyLoaded) return;
       }
 
       throw new Error(`Erro na API (${res.status})`);

@@ -39,7 +39,7 @@ test('legacy fallback requests full dataset and does not use summary mode', () =
 });
 
 test('server paged hero uses global stats metadata from backend', () => {
-  assert.match(mainSource, /updateHeroStats\(editaisOriginais,\s*\{\s*globalStats:\s*serverPageMeta\.stats\s*\}\)/);
+  assert.match(mainSource, /updateHeroStats\([^,]+,\s*\{\s*globalStats:\s*[^?]+?\?\s*serverPageMeta\.stats\s*:\s*null\s*\}\)/);
   assert.match(mainSource, /function normalizeHeroStatsFromMeta\(globalStats, fallbackStats\)/);
 });
 
