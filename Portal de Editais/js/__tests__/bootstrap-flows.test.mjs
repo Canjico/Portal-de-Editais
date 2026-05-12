@@ -99,7 +99,10 @@ test('dashboard usa handoff para liberar shell e confirma auth em background', a
   });
 
   const result = await runDashboardBootstrapFlow({
-    bootstrapAuthFromUrl: () => events.push('bootstrap_auth'),
+    bootstrapAuthFromUrl: () => {
+      events.push('bootstrap_auth');
+      return true;
+    },
     bootstrapChatSessionState: () => events.push('bootstrap_chat'),
     bootstrapTheme: () => events.push('bootstrap_theme'),
     readAuthHandoff: () => ({ id: 10, nome: 'Handoff User', email: 'handoff@athos.test' }),
@@ -141,7 +144,10 @@ test('perfil usa handoff para hidratar shell e valida auth em background', async
   });
 
   const result = await runProfileBootstrapFlow({
-    bootstrapAuthFromUrl: () => events.push('bootstrap_auth'),
+    bootstrapAuthFromUrl: () => {
+      events.push('bootstrap_auth');
+      return true;
+    },
     bootstrapTheme: () => events.push('bootstrap_theme'),
     readAuthHandoff: () => ({ id: 7, nome: 'Perfil Handoff', email: 'perfil@athos.test' }),
     checkAuth: async () => {
@@ -179,7 +185,10 @@ test('dashboard mantém shell com handoff mesmo quando confirmação de auth fal
   let capturedAuthError = null;
 
   const result = await runDashboardBootstrapFlow({
-    bootstrapAuthFromUrl: () => events.push('bootstrap_auth'),
+    bootstrapAuthFromUrl: () => {
+      events.push('bootstrap_auth');
+      return true;
+    },
     bootstrapChatSessionState: () => events.push('bootstrap_chat'),
     bootstrapTheme: () => events.push('bootstrap_theme'),
     readAuthHandoff: () => ({ id: 99, nome: 'Handoff resiliente' }),

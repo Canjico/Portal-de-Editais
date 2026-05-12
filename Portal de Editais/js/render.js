@@ -354,6 +354,10 @@ export function buildStatusBadges(edital) {
   const diffDays = Math.floor((target - today) / 86400000);
 
   if (diffDays < 0) {
+    if (fluxoContinuo && explicitOpen !== false) {
+      badges.push({ label: 'Fluxo contínuo', className: 'status-chip status-chip--open' });
+      return badges;
+    }
     return [{ label: 'Encerrado', className: 'status-chip status-chip--closed' }];
   }
 

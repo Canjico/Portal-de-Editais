@@ -44,9 +44,9 @@ test('server paged hero uses global stats metadata from backend', () => {
 });
 
 test('chat refinement build is cache busted and logged', () => {
-  assert.match(indexSource, /src="\.\/js\/main\.js\?v=20260426\.4"/);
-  assert.match(indexSource, /href="\.\/CSS\/style\.css\?v=20260426\.1"/);
-  assert.match(mainSource, /console\.info\('\[Athos\]\[main\.js\] versão chat documental RAG 20260426\.4 carregada'\)/);
+  assert.match(indexSource, /src="\.\/js\/main\.js\?v=20260512\.1"/);
+  assert.match(indexSource, /href="\.\/CSS\/style\.css\?v=20260510\.4"/);
+  assert.match(mainSource, /console\.info\('\[Athos\]\[main\.js\] vers\S*o Athos interesses \+ stats filtrados 20260510\.5 carregada'\)/);
 });
 
 test('dashboard refinements use accumulated filters and dashboard intelligence endpoint', () => {
@@ -67,5 +67,5 @@ test('refinement panel marks active filters and clears refinements locally', () 
   assert.match(mainSource, /action: 'clear_refinements'/);
   assert.match(mainSource, /function clearDashboardRefinementsFromChat\(\)/);
   assert.match(mainSource, /lastDashboardFilters: normalizeDashboardFilterState\(\)/);
-  assert.match(mainSource, /Refinamentos limpos\. Você pode buscar novamente ou aplicar outro filtro\./);
+  assert.match(mainSource, /Refinamentos limpos\. Voc\S* pode buscar novamente ou aplicar outro filtro\./);
 });
