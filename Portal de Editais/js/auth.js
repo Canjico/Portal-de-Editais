@@ -5,6 +5,8 @@
 
 export const API_BASE = 'https://atimus-api-acb4gfgagefcevb5.brazilsouth-01.azurewebsites.net';
 const CLIENTE_TOKEN_KEY = 'cliente_token';
+const AUTH_URL_TOKEN_KEYS = ['token', 'cliente_token', 'access_token', 'auth_token', '__athos_session'];
+const AUTH_HASH_TOKEN_KEYS = ['__athos_session', 'token', 'cliente_token', 'access_token', 'auth_token'];
 const AUTH_DEBUG_TAG = '[DEBUG_AUTH][Portal]';
 const AUTH_DEBUG_STORAGE_KEY = 'athos_auth_debug';
 let authRedirectInProgress = false;
@@ -138,22 +140,56 @@ export function authHeaders(extra = {}) {
   return base;
 }
 
+function readFirstParamValue(params, keys = []) {
+  for (const key of keys) {
+    const value = String(params.get(key) || '').trim();
+    if (value) return value;
+  }
+  return '';
+}
+
+function deleteParams(params, keys = []) {
+  let changed = false;
+  for (const key of keys) {
+    if (!params.has(key)) continue;
+    params.delete(key);
+    changed = true;
+  }
+  return changed;
+}
+
 export function bootstrapAuthFromUrl() {
-  // Se vier ?token= na URL (ex.: vindo do login), salva e limpa a query.
+  // Se vier token na URL (ex.: vindo do login), salva antes de qualquer chamada autenticada.
   try {
-    const params = new URLSearchParams(window.location.search);
-    const t = params.get('token');
-    if (!t) return;
+    const url = new URL(window.location.href);
+    const hashParams = new URLSearchParams(String(url.hash || '').replace(/^#/, ''));
+    const queryToken = readFirstParamValue(url.searchParams, AUTH_URL_TOKEN_KEYS);
+    const hashToken = readFirstParamValue(hashParams, AUTH_HASH_TOKEN_KEYS);
+    const token = queryToken || hashToken;
+    const tokenStored = token ? persistClienteToken(token, { remember: true }) : false;
 
-    persistClienteToken(t, { remember: true });
-    debugAuth('bootstrap_token_from_url', { hasToken: true });
+    if (token) {
+      debugAuth('bootstrap_token_from_url', {
+        hasToken: true,
+        tokenStored,
+        source: queryToken ? 'query' : 'hash',
+      });
+    }
 
-    params.delete('token');
-    const newQuery = params.toString();
-    const newUrl = window.location.pathname + (newQuery ? `?${newQuery}` : '');
-    window.history.replaceState({}, document.title, newUrl);
-    debugAuth('bootstrap_token_query_cleaned', { newUrl });
-  } catch (_) {}
+    const queryChanged = deleteParams(url.searchParams, AUTH_URL_TOKEN_KEYS);
+    const hashChanged = deleteParams(hashParams, AUTH_HASH_TOKEN_KEYS);
+    if (queryChanged || hashChanged) {
+      const nextSearch = url.searchParams.toString();
+      const nextHash = hashParams.toString();
+      const newUrl = `${url.pathname}${nextSearch ? `?${nextSearch}` : ''}${nextHash ? `#${nextHash}` : ''}`;
+      window.history.replaceState({}, document.title, newUrl);
+      debugAuth('bootstrap_token_query_cleaned', { newUrl });
+    }
+
+    return tokenStored;
+  } catch (_) {
+    return false;
+  }
 }
 
 function appendQueryParams(baseUrl, params = {}) {

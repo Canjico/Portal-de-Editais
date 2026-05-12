@@ -210,3 +210,63 @@ test('dashboard mantém shell com handoff mesmo quando confirmação de auth fal
   assert.equal(capturedAuthError instanceof Error, true);
   assert.equal(confirmed, null);
 });
+
+test('dashboard nao usa handoff visual quando token nao foi capturado no bootstrap', async () => {
+  const events = [];
+
+  const result = await runDashboardBootstrapFlow({
+    bootstrapAuthFromUrl: () => {
+      events.push('bootstrap_auth');
+      return false;
+    },
+    getStoredToken: () => 'token-antigo',
+    readAuthHandoff: () => {
+      events.push('read_handoff');
+      return { id: 77, nome: 'Handoff sem token novo' };
+    },
+    checkAuth: async () => {
+      events.push('check_auth');
+      return null;
+    },
+    hydrateSidebarUser: () => events.push('hydrate_sidebar'),
+    prepareShell: () => events.push('prepare_shell'),
+    markAppReady: () => events.push('mark_ready'),
+    loadEditais: async () => events.push('load_editais'),
+    loadFavoritos: async () => events.push('load_favoritos'),
+  });
+
+  assert.equal(result.me, null);
+  assert.ok(events.includes('read_handoff'));
+  assert.ok(events.includes('check_auth'));
+  assert.equal(events.includes('hydrate_sidebar'), false);
+  assert.equal(events.includes('mark_ready'), false);
+  assert.equal(events.includes('load_editais'), false);
+});
+
+test('dashboard usa handoff quando token foi salvo pelo bootstrap da URL', async () => {
+  const events = [];
+
+  const result = await runDashboardBootstrapFlow({
+    bootstrapAuthFromUrl: () => {
+      events.push('bootstrap_auth');
+      return true;
+    },
+    getStoredToken: () => 'token-novo',
+    readAuthHandoff: () => {
+      events.push('read_handoff');
+      return { id: 88, nome: 'Handoff com token novo' };
+    },
+    hydrateSidebarUser: () => events.push('hydrate_sidebar'),
+    prepareShell: () => events.push('prepare_shell'),
+    markAppReady: () => events.push('mark_ready'),
+    loadEditais: async () => events.push('load_editais'),
+    loadFavoritos: async () => events.push('load_favoritos'),
+    onEditaisReady: async () => events.push('editais_ready'),
+    onDeepLinkReady: async () => events.push('deep_link_ready'),
+  });
+
+  assert.equal(result.me?.id, 88);
+  assert.ok(events.includes('hydrate_sidebar'));
+  assert.ok(events.includes('mark_ready'));
+  assert.ok(events.includes('load_editais'));
+});

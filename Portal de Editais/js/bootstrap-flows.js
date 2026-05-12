@@ -1,6 +1,30 @@
+function didBootstrapAuthToken(result) {
+  if (result === true) return true;
+  if (result && typeof result === 'object' && result.tokenStored === true) return true;
+  return false;
+}
+
+function hasStoredToken(getStoredToken) {
+  if (typeof getStoredToken !== 'function') return false;
+  try {
+    return Boolean(String(getStoredToken() || '').trim());
+  } catch (_) {
+    return false;
+  }
+}
+
+function shouldUseAuthHandoff(handoff, bootstrapAuthResult, getStoredToken) {
+  if (!handoff || typeof handoff !== 'object') return false;
+  if (didBootstrapAuthToken(bootstrapAuthResult)) return true;
+  if (bootstrapAuthResult === undefined && hasStoredToken(getStoredToken)) return true;
+  if (bootstrapAuthResult === undefined && typeof getStoredToken !== 'function') return true;
+  return false;
+}
+
 export async function runProfileBootstrapFlow({
   bootstrapAuthFromUrl,
   bootstrapTheme,
+  getStoredToken,
   readAuthHandoff,
   checkAuth,
   onAuthConfirmed,
@@ -15,11 +39,11 @@ export async function runProfileBootstrapFlow({
   loadProfileDetailsInBackground,
   onBackgroundError,
 } = {}) {
-  bootstrapAuthFromUrl?.();
+  const bootstrapAuthResult = bootstrapAuthFromUrl?.();
   bootstrapTheme?.();
 
   const handoff = readAuthHandoff?.({ consume: true });
-  const hasFreshHandoff = Boolean(handoff && typeof handoff === 'object');
+  const hasFreshHandoff = shouldUseAuthHandoff(handoff, bootstrapAuthResult, getStoredToken);
 
   const me = hasFreshHandoff ? handoff : await checkAuth?.();
   if (!me) {
@@ -70,6 +94,7 @@ export async function runDashboardBootstrapFlow({
   bootstrapAuthFromUrl,
   bootstrapChatSessionState,
   bootstrapTheme,
+  getStoredToken,
   readAuthHandoff,
   checkAuth,
   onAuthConfirmed,
@@ -84,12 +109,12 @@ export async function runDashboardBootstrapFlow({
   onFavoritosReady,
   onFavoritosError,
 } = {}) {
-  bootstrapAuthFromUrl?.();
+  const bootstrapAuthResult = bootstrapAuthFromUrl?.();
   bootstrapChatSessionState?.();
   bootstrapTheme?.();
 
   const handoff = readAuthHandoff?.({ consume: true });
-  const hasFreshHandoff = Boolean(handoff && typeof handoff === 'object');
+  const hasFreshHandoff = shouldUseAuthHandoff(handoff, bootstrapAuthResult, getStoredToken);
 
   const me = hasFreshHandoff ? handoff : await checkAuth?.();
   if (!me) {

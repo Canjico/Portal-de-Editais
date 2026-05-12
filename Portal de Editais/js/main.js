@@ -64,14 +64,15 @@ import {
   apiFetch,
   bootstrapAuthFromUrl,
   buildLoginUrlWithNext,
+  getStoredToken,
   apiFetchJson,
   isPasswordChangeRequiredPayload,
   isPasswordChangeRequiredResponse,
   resolvePasswordChangeRedirectTarget,
   resolveAuthFailureRedirectTarget,
   redirectWithAuthGuard,
-} from './auth.js?v=20260416.1';
-import { runDashboardBootstrapFlow } from './bootstrap-flows.js?v=20260416.1';
+} from './auth.js?v=20260512.1';
+import { runDashboardBootstrapFlow } from './bootstrap-flows.js?v=20260512.1';
 import { readAuthHandoff } from './auth-handoff.js?v=20260422.1';
 
 console.info('[Athos][main.js] versão Athos interesses + stats filtrados 20260510.5 carregada');
@@ -448,6 +449,7 @@ async function init() {
     bootstrapAuthFromUrl,
     bootstrapChatSessionState,
     bootstrapTheme: () => window.AthosTheme?.bootstrap?.(),
+    getStoredToken,
     readAuthHandoff,
     checkAuth,
     onAuthConfirmed: (confirmedMe) => {

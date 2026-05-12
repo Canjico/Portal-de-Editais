@@ -7,6 +7,7 @@ import {
   LOGIN_URL,
   bootstrapAuthFromUrl,
   buildLoginUrlWithNext,
+  getStoredToken,
   apiFetch,
   apiFetchJson,
   isPasswordChangeRequiredPayload,
@@ -14,7 +15,7 @@ import {
   resolvePasswordChangeRedirectTarget,
   resolveAuthFailureRedirectTarget,
   redirectWithAuthGuard,
-} from './auth.js?v=20260416.1';
+} from './auth.js?v=20260512.1';
 import {
   normalizeTextValue,
   normalizeDigits,
@@ -23,7 +24,7 @@ import {
   isComparableFormDirty,
   resolveDirtyTrackingState,
 } from './perfil-dirty-state.js';
-import { runProfileBootstrapFlow } from './bootstrap-flows.js?v=20260416.1';
+import { runProfileBootstrapFlow } from './bootstrap-flows.js?v=20260512.1';
 import { readAuthHandoff } from './auth-handoff.js?v=20260422.1';
 
 const sidebarToggle = document.getElementById('sidebarToggle');
@@ -133,6 +134,7 @@ async function init() {
     await runProfileBootstrapFlow({
       bootstrapAuthFromUrl,
       bootstrapTheme: () => window.AthosTheme?.bootstrap?.(),
+      getStoredToken,
       readAuthHandoff,
       checkAuth,
       onAuthConfirmed: (confirmedMe) => {
