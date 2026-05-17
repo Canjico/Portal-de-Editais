@@ -1397,6 +1397,10 @@ async function hydrateAllEditaisInBackground(requestOptions = {}, signature = ''
       applyFavoritosToLoadedEditais();
       applyInteressesToLoadedEditais();
       applyFiltersAndRender({ resetPage: false });
+      if (hasPersonalizedRelevance(editaisOriginais)) {
+        renderResultsStateHint(Array.isArray(lastFiltered) ? lastFiltered.length : 0);
+        return;
+      }
       setResultsHintMessage('Todos os editais foram carregados. A aderência continua sendo calculada em segundo plano.');
     }
   } catch (error) {
@@ -1986,9 +1990,13 @@ function normalizeEdital(api) {
     area: api?.area,
     instrumento: api?.instrumento,
     tipo: api?.tipo,
-    valor_total: api?.valor_total,
+    valor_total: api?.valor_total || api?.valor,
     data_final_submissao: api?.data_final_submissao || api?.data_fechamento,
     data_fechamento: api?.data_fechamento || api?.data_final_submissao,
+    data_abertura: api?.data_abertura,
+    data_publicacao: api?.data_publicacao || api?.created_at || api?.criado_em,
+    tags: Array.isArray(api?.tags) ? api.tags : [],
+    icone_instituicao: api?.icone_instituicao || api?.icone,
   } : {};
   const jsonData = typeof api?.json_data === 'string' ? safeJsonParse(api.json_data, {}) : (api?.json_data || {});
   const data = { ...summaryData, ...jsonData };
