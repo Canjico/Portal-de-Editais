@@ -223,7 +223,7 @@ function renderStateCard({ title, message, toneClass = "" }) {
   `;
 }
 
-function normalizePublicPayload(raw) {
+export function normalizePublicPayload(raw) {
   const payload = raw && typeof raw === "object" ? raw : {};
 
   return {
@@ -241,7 +241,7 @@ function normalizePublicPayload(raw) {
     instrumento: sanitizePlainText(payload.instrumento || ""),
     fonte: sanitizePlainText(payload.fonte || ""),
     arquivos: normalizeArquivos(payload.arquivos),
-    shareLink: sanitizePlainText(payload.share_link || "") || window.location.href,
+    shareLink: sanitizeHttpUrl(payload.share_link, "") || sanitizeHttpUrl(window.location.href, window.location.href),
   };
 }
 
@@ -303,19 +303,26 @@ function extractFileExtension(name = "", url = "") {
   return match ? match[1].toLowerCase() : "";
 }
 
-function sanitizeHttpUrl(value) {
+export function sanitizeHttpUrl(value, fallback = "") {
   const raw = String(value || "").trim();
-  if (!raw) return "";
+  if (!raw) return fallback;
+  const compact = raw.replace(/[\u0000-\u001F\u007F\s]+/g, "").toLowerCase();
+  if (/^(?:javascript|data|vbscript):/.test(compact)) return fallback;
+  if (/[<>"'`\u0000-\u001F\u007F\\]/.test(raw)) return fallback;
+
+  const schemeMatch = compact.match(/^([a-z][a-z0-9+.-]*):/i);
+  if (schemeMatch && !/^https?:/i.test(compact)) return fallback;
+
   try {
     const parsed = new URL(raw, window.location.origin);
     if (parsed.protocol === "http:" || parsed.protocol === "https:") return parsed.href;
-    return "";
+    return fallback;
   } catch (_) {
-    return "";
+    return fallback;
   }
 }
 
-function renderPublicEdital(edital) {
+export function renderPublicEdital(edital) {
   if (!contentEl) return;
 
   const statusLabel = edital.status || (edital.fluxoContinuo ? "Fluxo contínuo" : "Aberto");

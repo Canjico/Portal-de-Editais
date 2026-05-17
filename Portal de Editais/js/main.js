@@ -2208,8 +2208,8 @@ function resolveIconPath(value) {
   const optimizedUrl = resolveOptimizedIconUrl(raw, APP_BASE_URL);
   if (optimizedUrl) return optimizedUrl;
 
-  if (/^(?:https?:|data:|blob:)/i.test(raw)) return raw;
-  if (raw.startsWith('//')) return `${window.location.protocol}${raw}`;
+  if (/^https?:/i.test(raw)) return safeUrl(raw, '');
+  if (raw.startsWith('//')) return safeUrl(`${window.location.protocol}${raw}`, '');
 
   const normalized = raw
     .replace(/^\.?\//, '')
@@ -2223,14 +2223,14 @@ function resolveIconPath(value) {
   const isBareImageFilename = /^[^/]+\.(?:png|jpe?g|gif|webp|svg|avif)$/i.test(normalized);
 
   if (isProjectIconPath) {
-    return new URL(normalized.replace(/^icons\//i, 'icons-optimized/').replace(/\.(?:png|jpe?g|gif|svg|avif)$/i, '.webp'), APP_BASE_URL).href;
+    return safeUrl(new URL(normalized.replace(/^icons\//i, 'icons-optimized/').replace(/\.(?:png|jpe?g|gif|svg|avif)$/i, '.webp'), APP_BASE_URL).href, '');
   }
 
   if (isBareImageFilename) {
-    return new URL(`icons-optimized/${normalized.replace(/\.(?:png|jpe?g|gif|svg|avif)$/i, '.webp')}`, APP_BASE_URL).href;
+    return safeUrl(new URL(`icons-optimized/${normalized.replace(/\.(?:png|jpe?g|gif|svg|avif)$/i, '.webp')}`, APP_BASE_URL).href, '');
   }
 
-  return raw;
+  return safeUrl(raw, '');
 }
 
 function generateSlug(text) {
@@ -4206,12 +4206,12 @@ function isNotInformedLabel(value) {
   );
 }
 
-async function openModal(edital) {
+export async function openModal(edital) {
   if (!modalOverlay || !modalContentContainer || !edital) return;
   edital = await ensureEditalDetailLoaded(edital);
   rememberAssistantOpenedCard(edital.id);
 
-  const shareLink = String(edital.share_link || '').trim();
+  const shareLink = safeUrl(edital.share_link || '', '');
 
   const uniqueTags = [];
   const seenTags = new Set();
@@ -4233,10 +4233,11 @@ async function openModal(edital) {
   const estadoTopTagHtml = estadoTopTag && !isNotInformedLabel(estadoTopTag)
     ? `<span class="pill gray">${escapeHtml(estadoTopTag)}</span>`
     : '';
+  const modalLogoSrc = safeUrl(edital.icone || '', '');
 
   const files = (Array.isArray(edital.arquivos) ? edital.arquivos : [])
     .map((file, index) => {
-      const url = String(file?.url || '').trim();
+      const url = safeUrl(file?.url || '', '');
       if (!url) return null;
       const ext = getFileExtension(file?.nome, url);
       return {
@@ -4294,7 +4295,7 @@ async function openModal(edital) {
 
     <div class="modal-topbar modal-topbar--premium">
       <div class="modal-top-left">
-        ${edital.icone ? `<img src="${escapeAttr(edital.icone)}" alt="${escapeHtml(edital.instituicao || '')}" class="modal-logo">` : '<div class="modal-logo-placeholder"><i class="fas fa-building"></i></div>'}
+        ${modalLogoSrc ? `<img src="${escapeAttr(modalLogoSrc)}" alt="${escapeHtml(edital.instituicao || '')}" class="modal-logo">` : '<div class="modal-logo-placeholder"><i class="fas fa-building"></i></div>'}
         <div class="modal-top-copy">
           <div class="modal-kicker">${escapeHtml(edital.instituicao || 'Instituição não informada')}</div>
           <div class="modal-status-row">
@@ -7374,4 +7375,37 @@ function escapeHtml(str) {
 
 function escapeAttr(str) {
   return escapeHtml(str).replaceAll('`', '');
+}
+
+function safeUrl(value, fallback = '#') {
+  const raw = String(value ?? '').trim();
+  if (!raw) return fallback;
+
+  const compact = raw.replace(/[\u0000-\u001F\u007F\s]+/g, '').toLowerCase();
+  if (/^(?:javascript|data|vbscript):/.test(compact)) return fallback;
+  if (/[<>"'`\u0000-\u001F\u007F\\]/.test(raw)) return fallback;
+
+  const schemeMatch = compact.match(/^([a-z][a-z0-9+.-]*):/i);
+  if (schemeMatch && !/^https?:/i.test(compact)) return fallback;
+
+  if (raw.startsWith('//')) {
+    try {
+      const protocol = globalThis.window?.location?.protocol === 'http:' ? 'http:' : 'https:';
+      const parsed = new URL(`${protocol}${raw}`);
+      return /^https?:$/.test(parsed.protocol) ? parsed.href : fallback;
+    } catch (_) {
+      return fallback;
+    }
+  }
+
+  if (/^https?:/i.test(raw)) {
+    try {
+      const parsed = new URL(raw);
+      return /^https?:$/.test(parsed.protocol) ? parsed.href : fallback;
+    } catch (_) {
+      return fallback;
+    }
+  }
+
+  return raw;
 }
