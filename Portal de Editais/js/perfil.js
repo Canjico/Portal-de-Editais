@@ -356,14 +356,11 @@ function applyRoleBasedUi() {
     companySessionsRefreshBtn.disabled = !isOwner;
   }
   if (!isOwner && companySubaccountSessionsList) {
-    companySubaccountSessionsList.innerHTML = `
-      <li>
-        <div>
-          <strong>Acesso restrito.</strong>
-          <small>Somente o dono da PJ pode gerenciar sessões de subcontas.</small>
-        </div>
-      </li>
-    `;
+    renderListMessage(
+      companySubaccountSessionsList,
+      'Acesso restrito.',
+      'Somente o dono da PJ pode gerenciar sessões de subcontas.'
+    );
   }
 }
 
@@ -531,10 +528,9 @@ function setupUI() {
       }
       const name = prompt('Nome da nova área de interesse:');
       if (!name) return;
-      const span = document.createElement('span');
-      span.className = 'chip';
-      span.innerHTML = `${escapeHtml(name)} <button type="button" class="chip-x" aria-label="Remover">&times;</button>`;
-      addAreaBtn.before(span);
+      const chip = createAreaInterestChip(name);
+      if (!chip) return;
+      addAreaBtn.before(chip);
       applyRoleBasedUi();
       updateDirtyState({ userInitiated: true });
     });
@@ -1359,7 +1355,7 @@ function setCompanyTicketFeedback(message, tone = '') {
   companyTicketFeedback.classList.toggle('is-error', tone === 'error');
 }
 
-function renderCompanyUsers(users) {
+export function renderCompanyUsers(users) {
   if (!companyUsersList) return;
   companyUsersList.innerHTML = '';
   const safeUsers = Array.isArray(users) ? users : [];
@@ -1395,7 +1391,7 @@ function renderCompanyUsers(users) {
   });
 }
 
-function renderCompanyTickets(tickets) {
+export function renderCompanyTickets(tickets) {
   if (!companyTicketsList) return;
   companyTicketsList.innerHTML = '';
   const safeTickets = Array.isArray(tickets) ? tickets : [];
@@ -1437,20 +1433,17 @@ function setCompanySubaccountSessionsFeedback(message, tone = '') {
   companySubaccountSessionsFeedback.classList.toggle('is-error', tone === 'error');
 }
 
-function renderCompanySubaccountSessions(subcontas) {
+export function renderCompanySubaccountSessions(subcontas) {
   if (!companySubaccountSessionsList) return;
   companySubaccountSessionsList.innerHTML = '';
 
   const safeSubcontas = Array.isArray(subcontas) ? subcontas : [];
   if (!safeSubcontas.length) {
-    companySubaccountSessionsList.innerHTML = `
-      <li>
-        <div>
-          <strong>Nenhuma sessão ativa de subconta</strong>
-          <small>Não há sessões para gerenciar no momento.</small>
-        </div>
-      </li>
-    `;
+    renderListMessage(
+      companySubaccountSessionsList,
+      'Nenhuma sessão ativa de subconta',
+      'Não há sessões para gerenciar no momento.'
+    );
     return;
   }
 
@@ -1530,7 +1523,7 @@ async function submitSubaccountSessionAction(actionType, subcontaId, sessionId =
   }
 }
 
-function renderCompanySummary(company) {
+export function renderCompanySummary(company) {
   const safe = company && typeof company === 'object' ? company : {};
   const status = String(safe.status || 'inactive').toLowerCase();
   const seatsTotal = Number(
@@ -1863,7 +1856,7 @@ async function loadProfileFromApi() {
   finalizeProfileHydration();
 }
 
-function fillProfileForm(data, { syncBaseline = false, refreshDirty = true } = {}) {
+export function fillProfileForm(data, { syncBaseline = false, refreshDirty = true } = {}) {
   const profile = (data && typeof data === 'object') ? data : {};
   isHydratingProfile = true;
 
@@ -1920,7 +1913,7 @@ function fillProfileForm(data, { syncBaseline = false, refreshDirty = true } = {
   }
 }
 
-function setAreasInteresse(areas) {
+export function setAreasInteresse(areas) {
   const add = document.getElementById('addAreaBtn');
   if (!add) return;
 
@@ -1931,14 +1924,45 @@ function setAreasInteresse(areas) {
   if (!Array.isArray(areas)) return;
 
   areas.forEach((area) => {
-    const text = String(area || '').trim();
-    if (!text) return;
-    const span = document.createElement('span');
-    span.className = 'chip';
-    span.innerHTML = `${escapeHtml(text)} <button type="button" class="chip-x" aria-label="Remover">&times;</button>`;
-    add.before(span);
+    const chip = createAreaInterestChip(area);
+    if (chip) add.before(chip);
   });
   applyRoleBasedUi();
+}
+
+function createAreaInterestChip(value) {
+  const text = String(value || '').trim();
+  if (!text) return null;
+
+  const span = document.createElement('span');
+  span.className = 'chip';
+  span.appendChild(document.createTextNode(`${text} `));
+
+  const removeBtn = document.createElement('button');
+  removeBtn.type = 'button';
+  removeBtn.className = 'chip-x';
+  removeBtn.setAttribute('aria-label', 'Remover');
+  removeBtn.textContent = '×';
+  span.appendChild(removeBtn);
+
+  return span;
+}
+
+function renderListMessage(list, titleText, descriptionText) {
+  if (!list) return;
+  list.innerHTML = '';
+
+  const li = document.createElement('li');
+  const info = document.createElement('div');
+  const title = document.createElement('strong');
+  title.textContent = String(titleText || '');
+  const desc = document.createElement('small');
+  desc.textContent = String(descriptionText || '');
+
+  info.appendChild(title);
+  info.appendChild(desc);
+  li.appendChild(info);
+  list.appendChild(li);
 }
 
 function toast(msg, type = 'info') {
