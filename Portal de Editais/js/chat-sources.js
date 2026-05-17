@@ -6,6 +6,41 @@ function normalizeKey(value) {
   return cleanString(value).toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
+function safeUrlFromLabel(value) {
+  const label = cleanString(value);
+  if (!/^(?:https?:\/\/|\/(?!\/)|\.\/)/i.test(label)) return '';
+  return safeSourceUrl(label);
+}
+
+export function safeSourceUrl(value) {
+  const rawInput = String(value ?? '');
+  if (/[\u0000-\u001F\u007F]/.test(rawInput)) return '';
+
+  const raw = rawInput.trim();
+  if (!raw || /\s/.test(raw) || /[<>"'`\\]/.test(raw)) return '';
+
+  const schemeMatch = raw.match(/^([a-z][a-z0-9+.-]*):/i);
+  if (schemeMatch) {
+    const scheme = schemeMatch[1].toLowerCase();
+    if (scheme !== 'http' && scheme !== 'https') return '';
+    if (!/^https?:\/\//i.test(raw)) return '';
+    try {
+      const parsed = new URL(raw);
+      return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.href : '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  if (raw.startsWith('//') || raw.startsWith('/\\')) return '';
+  if (raw.startsWith('/')) return raw;
+  if (raw.startsWith('./') && raw.length > 2) return raw;
+  if (raw.startsWith('../') || raw === '.' || raw === '..' || raw.startsWith('#') || raw.startsWith('?')) return '';
+  if (raw.includes(':')) return '';
+
+  return /^[A-Za-z0-9][A-Za-z0-9._~!$&()*+,;=@/%?-]*$/.test(raw) ? raw : '';
+}
+
 function normalizeSourceStatus(source) {
   const status = cleanString(source?.status).toLowerCase();
   if (status) return status;
@@ -39,12 +74,13 @@ function normalizeSourceLike(source, idx = 0) {
   if (!source || typeof source !== 'object') return null;
 
   const rawTitle = cleanString(source.title || source.source_name || source.name || source.nome);
-  const url = cleanString(source.source_url || source.url || source.link);
+  const rawUrl = cleanString(source.source_url || source.url || source.link);
+  const url = safeSourceUrl(rawUrl);
   const error = cleanString(source.error);
 
-  if (!rawTitle && !url && !error) return null;
+  if (!rawTitle && !rawUrl && !error) return null;
 
-  const title = rawTitle || url || `Fonte ${idx + 1}`;
+  const title = rawTitle || rawUrl || `Fonte ${idx + 1}`;
   const status = normalizeSourceStatus(source);
   const type = cleanString(source.source_type || source.type);
   const editalId = source.edital_id ?? source.editalId ?? null;
@@ -99,7 +135,7 @@ export function normalizeSources(rawSources, fallbackNames = []) {
         if (!label) return;
         addNormalizedSource({
           title: label,
-          url: /^https?:\/\//i.test(label) ? label : '',
+          url: safeUrlFromLabel(label),
           status: 'ok',
           type: '',
           error: '',
@@ -118,7 +154,7 @@ export function normalizeSources(rawSources, fallbackNames = []) {
       if (!label) return;
       addNormalizedSource({
         title: label,
-        url: /^https?:\/\//i.test(label) ? label : '',
+        url: safeUrlFromLabel(label),
         status: 'ok',
         type: '',
         error: '',

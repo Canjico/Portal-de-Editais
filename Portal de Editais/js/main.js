@@ -49,7 +49,7 @@ import {
 import {
   buildSourcesDetails,
   normalizeSources,
-} from './chat-sources.js?v=20260425.1';
+} from './chat-sources.js?v=20260517.1';
 import {
   isConceptualOrAdvisoryQuestion,
   isDocumentalSemanticQuestion,
