@@ -4549,11 +4549,12 @@ function startEditalChat(edital) {
 }
 
 function stripHtmlPreserveBreaks(htmlStr) {
-  const s = String(htmlStr ?? '');
-  const withBreaks = s.replace(/<br\s*\/?\s*>/gi, '\n');
-  const tmp = document.createElement('div');
-  tmp.innerHTML = withBreaks;
-  return (tmp.textContent || tmp.innerText || '').trim();
+  return String(htmlStr ?? '')
+    .replace(/<br\s*\/?\s*>/gi, '\n')
+    .replace(/<\/(?:p|div|li|h[1-6])\s*>/gi, '\n')
+    .replace(/<[^>]*>/g, '')
+    .replace(/(?:\r?\n){3,}/g, '\n\n')
+    .trim();
 }
 
 function sanitizeAssistantReplyText(text) {
@@ -4603,11 +4604,63 @@ function normalizeConciseBotText(value, { maxLines = 3 } = {}) {
   return lines.slice(0, Math.max(1, maxLines)).join('\n');
 }
 
-function renderSimpleMarkdown(text) {
-  // Escapa HTML e depois aplica apenas negrito com **texto**.
+export function safeChatUrl(value) {
+  const rawInput = String(value ?? '');
+  if (/[\u0000-\u001F\u007F]/.test(rawInput)) return '';
+
+  const raw = rawInput.trim();
+  if (!raw || raw !== rawInput || /\s/.test(raw) || /[<>"'`\\]/.test(raw)) return '';
+
+  const schemeMatch = raw.match(/^([a-z][a-z0-9+.-]*):/i);
+  if (schemeMatch) {
+    const scheme = schemeMatch[1].toLowerCase();
+    if (scheme !== 'http' && scheme !== 'https') return '';
+    if (!/^https?:\/\//i.test(raw)) return '';
+    try {
+      const parsed = new URL(raw);
+      return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.href : '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  if (raw.startsWith('//') || raw.startsWith('/\\')) return '';
+  if (raw.startsWith('/')) return raw;
+  if (raw.startsWith('./') && raw.length > 2) return raw;
+  if (raw.startsWith('../') || raw === '.' || raw === '..' || raw.startsWith('#') || raw.startsWith('?')) return '';
+  if (raw.includes(':')) return '';
+
+  return /^[A-Za-z0-9][A-Za-z0-9._~!$&()*+,;=@/%?-]*$/.test(raw) ? raw : '';
+}
+
+function renderAssistantInlineMarkdown(text) {
   const safe = escapeHtml(String(text ?? ''));
-  const withBold = safe.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-  return withBold.replace(/\n/g, '<br>');
+  return safe.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+}
+
+export function renderSimpleMarkdown(text) {
+  const raw = String(text ?? '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const linkPattern = /\[([^\]\n]{1,300})\]\(((?:[^()\n]|\([^()\n]*\)){1,2048})\)/g;
+  let lastIndex = 0;
+  let html = '';
+  let match;
+
+  while ((match = linkPattern.exec(raw)) !== null) {
+    const [fullMatch, label, url] = match;
+    html += renderAssistantInlineMarkdown(raw.slice(lastIndex, match.index));
+
+    const safeUrl = safeChatUrl(url);
+    if (safeUrl) {
+      html += `<a href="${escapeAttr(safeUrl)}" target="_blank" rel="noopener noreferrer">${renderAssistantInlineMarkdown(label)}</a>`;
+    } else {
+      html += renderAssistantInlineMarkdown(label);
+    }
+
+    lastIndex = match.index + fullMatch.length;
+  }
+
+  html += renderAssistantInlineMarkdown(raw.slice(lastIndex));
+  return html.replace(/\n/g, '<br>');
 }
 
 function extractEmbeddedSources(text) {

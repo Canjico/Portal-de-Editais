@@ -44,7 +44,7 @@ test('server paged hero uses global stats metadata from backend', () => {
 });
 
 test('chat refinement build is cache busted and logged', () => {
-  assert.match(indexSource, /src="\.\/js\/main\.js\?v=20260512\.1"/);
+  assert.match(indexSource, /src="\.\/js\/main\.js\?v=20260517\.2"/);
   assert.match(indexSource, /href="\.\/CSS\/style\.css\?v=20260510\.4"/);
   assert.match(mainSource, /console\.info\('\[Athos\]\[main\.js\] vers\S*o Athos interesses \+ stats filtrados 20260510\.5 carregada'\)/);
 });
