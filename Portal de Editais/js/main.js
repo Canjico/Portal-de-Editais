@@ -2,7 +2,7 @@
    Athos / Atimus — Editais (UX/UI novo + filtros + paginação)
    ========================================================= */
 
-import { renderEditais } from './render.js?v=20260510.4';
+import { renderEditais } from './render.js?v=20260516.1';
 import {
   parseAnyDateToTime,
   buildSearchQueryContext,

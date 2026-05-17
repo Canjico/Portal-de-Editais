@@ -112,7 +112,7 @@ export function renderEditais(container, editais, options = {}) {
       ...tagsExtras.map((t) => `<span class="pill gray">${escapeHtml(t)}</span>`),
     ].filter(Boolean).join('');
 
-    const shareLink = String(edital.share_link || '').trim();
+    const shareLink = safeUrl(edital.share_link || '', '');
 
     const instituicao = edital.instituicao || 'Instituição';
     const logoSrc = resolveLogoSrc(edital.icone || edital.instituicao, edital.instituicao);
@@ -296,8 +296,8 @@ function resolveLogoSrc(value, institutionFallback = '') {
   const optimized = resolveOptimizedLogoSrc(raw) || resolveOptimizedLogoSrc(institutionFallback);
   if (optimized) return optimized;
 
-  if (/^(?:https?:|data:|blob:)/i.test(raw)) return raw;
-  if (raw.startsWith('//')) return `${window.location.protocol}${raw}`;
+  if (/^https?:/i.test(raw)) return safeUrl(raw, '');
+  if (raw.startsWith('//')) return safeUrl(`${window.location.protocol}${raw}`, '');
 
   const normalized = raw
     .replace(/^\.?\//, '')
@@ -313,11 +313,11 @@ function resolveLogoSrc(value, institutionFallback = '') {
     const iconFile = normalized.split('/').pop() || '';
     const optimizedUrl = resolveOptimizedLogoSrc(iconFile);
     if (optimizedUrl) return optimizedUrl;
-    return new URL(`icons-optimized/${iconFile.replace(/\.(?:png|jpe?g|gif|svg|avif)$/i, '.webp')}`, document.baseURI).href;
+    return safeUrl(new URL(`icons-optimized/${iconFile.replace(/\.(?:png|jpe?g|gif|svg|avif)$/i, '.webp')}`, document.baseURI).href, '');
   }
-  if (isBareImageFilename) return new URL(`icons-optimized/${normalized.replace(/\.(?:png|jpe?g|gif|svg|avif)$/i, '.webp')}`, document.baseURI).href;
+  if (isBareImageFilename) return safeUrl(new URL(`icons-optimized/${normalized.replace(/\.(?:png|jpe?g|gif|svg|avif)$/i, '.webp')}`, document.baseURI).href, '');
 
-  return raw;
+  return safeUrl(raw, '');
 }
 
 export function buildStatusBadges(edital) {
@@ -543,4 +543,37 @@ function escapeHtml(str) {
 
 function escapeAttr(str) {
   return escapeHtml(str).replaceAll('`', '');
+}
+
+function safeUrl(value, fallback = '#') {
+  const raw = String(value ?? '').trim();
+  if (!raw) return fallback;
+
+  const compact = raw.replace(/[\u0000-\u001F\u007F\s]+/g, '').toLowerCase();
+  if (/^(?:javascript|data|vbscript):/.test(compact)) return fallback;
+  if (/[<>"'`\u0000-\u001F\u007F\\]/.test(raw)) return fallback;
+
+  const schemeMatch = compact.match(/^([a-z][a-z0-9+.-]*):/i);
+  if (schemeMatch && !/^https?:/i.test(compact)) return fallback;
+
+  if (raw.startsWith('//')) {
+    try {
+      const protocol = globalThis.window?.location?.protocol === 'http:' ? 'http:' : 'https:';
+      const parsed = new URL(`${protocol}${raw}`);
+      return /^https?:$/.test(parsed.protocol) ? parsed.href : fallback;
+    } catch (_) {
+      return fallback;
+    }
+  }
+
+  if (/^https?:/i.test(raw)) {
+    try {
+      const parsed = new URL(raw);
+      return /^https?:$/.test(parsed.protocol) ? parsed.href : fallback;
+    } catch (_) {
+      return fallback;
+    }
+  }
+
+  return raw;
 }
