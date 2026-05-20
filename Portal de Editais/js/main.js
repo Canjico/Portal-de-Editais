@@ -54,6 +54,7 @@ import {
   isConceptualOrAdvisoryQuestion,
   isDocumentalSemanticQuestion,
 } from './chat-routing-detector.js?v=20260429.1';
+import { groupAttachmentsForDisplay } from './attachments_display.js?v=20260519.1';
 
 // =========================
 // CONFIGURAÇÕES & SEGURANÇA
@@ -4235,44 +4236,82 @@ export async function openModal(edital) {
     : '';
   const modalLogoSrc = safeUrl(edital.icone || '', '');
 
-  const files = (Array.isArray(edital.arquivos) ? edital.arquivos : [])
-    .map((file, index) => {
-      const url = safeUrl(file?.url || '', '');
-      if (!url) return null;
-      const ext = getFileExtension(file?.nome, url);
+  const attachmentGroups = groupAttachmentsForDisplay(Array.isArray(edital.arquivos) ? edital.arquivos : [])
+    .map((group) => {
+      const items = group.items
+        .map((file) => {
+          const url = safeUrl(file?.url || '', '');
+          if (!url) return null;
+          const ext = getFileExtension(file?.nome, url);
+          const originalIndex = Number.isFinite(Number(file?.originalIndex)) ? Number(file.originalIndex) : 0;
+          return {
+            url,
+            ext,
+            icon: getFileIcon(ext),
+            name: friendlyAttachmentName(file?.nome, url, originalIndex),
+            categoryLabel: String(file?.category_label || '').trim(),
+          };
+        })
+        .filter(Boolean);
+
+      if (!items.length) return null;
       return {
-        url,
-        ext,
-        icon: getFileIcon(ext),
-        name: friendlyAttachmentName(file?.nome, url, index),
+        group: group.group || 'Outros documentos',
+        priority: group.priority,
+        items,
       };
     })
     .filter(Boolean);
+  const attachmentCount = attachmentGroups.reduce((total, group) => total + group.items.length, 0);
+  const attachmentSectionSuffix = String(edital.id ?? 'edital')
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]/g, '-')
+    .replace(/-+/g, '-')
+    .slice(0, 64) || 'edital';
+  const attachmentsWrapperId = `attachments-wrapper-${attachmentSectionSuffix}`;
+  const attachmentCountLabel = attachmentCount === 1
+    ? '1 arquivo disponível'
+    : `${attachmentCount} arquivos disponíveis`;
+  const attachmentDisplayGroups = attachmentGroups.map((group, groupIndex) => ({
+    ...group,
+    titleId: `attachment-group-title-${attachmentSectionSuffix}-${groupIndex}`,
+    countLabel: group.items.length === 1 ? '1 arquivo' : `${group.items.length} arquivos`,
+  }));
 
-  const arquivosHtml = files.length
+  const arquivosHtml = attachmentCount
     ? `
       <div class="attachments-section">
-        <div class="attachments-summary" role="button" tabindex="0" aria-label="Abrir recursos e documentos">
+        <div class="attachments-summary" role="button" tabindex="0" aria-label="Abrir recursos e documentos" aria-expanded="false" aria-controls="${escapeAttr(attachmentsWrapperId)}">
           <div class="attachments-label">
             <h3>Recursos e documentos</h3>
-            <span class="attachments-hint">${files.length} arquivo(s) disponível(is)</span>
+            <span class="attachments-hint">${escapeHtml(attachmentCountLabel)}</span>
           </div>
-          <i class="fas fa-chevron-right"></i>
+          <i class="fas fa-chevron-right" aria-hidden="true"></i>
         </div>
-        <div class="attachments-wrapper">
-          <ul class="attachment-list">
-            ${files.map((file) => `
-              <li>
-                <a href="${escapeAttr(file.url)}" target="_blank" rel="noopener noreferrer">
-                  <i class="fas ${file.icon}" aria-hidden="true"></i>
-                  <span class="attachment-item-copy">
-                    <strong>${escapeHtml(file.name)}</strong>
-                    <small>${escapeHtml(file.ext ? file.ext.toUpperCase() : 'Arquivo')}</small>
-                  </span>
-                </a>
-              </li>
+        <div class="attachments-wrapper" id="${escapeAttr(attachmentsWrapperId)}" aria-hidden="true">
+          <div class="attachment-groups">
+            ${attachmentDisplayGroups.map((group) => `
+              <section class="attachment-group" aria-labelledby="${escapeAttr(group.titleId)}">
+                <div class="attachment-group-header">
+                  <h4 class="attachment-group-title" id="${escapeAttr(group.titleId)}">${escapeHtml(group.group)}</h4>
+                  <span class="attachment-group-count">${escapeHtml(group.countLabel)}</span>
+                </div>
+                <ul class="attachment-list">
+                  ${group.items.map((file) => `
+                    <li>
+                      <a href="${escapeAttr(file.url)}" target="_blank" rel="noopener noreferrer" aria-label="${escapeAttr(`${file.name} - ${file.categoryLabel || group.group}`)}">
+                        <i class="fas ${file.icon}" aria-hidden="true"></i>
+                        <span class="attachment-item-copy">
+                          <strong>${escapeHtml(file.name)}</strong>
+                          <small>${escapeHtml(file.categoryLabel || (file.ext ? file.ext.toUpperCase() : 'Arquivo'))}</small>
+                        </span>
+                      </a>
+                    </li>
+                  `).join('')}
+                </ul>
+              </section>
             `).join('')}
-          </ul>
+          </div>
         </div>
       </div>
     `
@@ -4435,6 +4474,8 @@ export async function openModal(edital) {
       const icon = summary.querySelector('i');
       const isOpen = wrapper.classList.toggle('open');
       summary.classList.toggle('open', isOpen);
+      summary.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+      wrapper.setAttribute('aria-hidden', isOpen ? 'false' : 'true');
       if (isOpen) {
         icon.classList.remove('fa-chevron-right');
         icon.classList.add('fa-chevron-down');
