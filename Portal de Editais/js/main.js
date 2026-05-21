@@ -54,7 +54,7 @@ import {
   isConceptualOrAdvisoryQuestion,
   isDocumentalSemanticQuestion,
 } from './chat-routing-detector.js?v=20260429.1';
-import { groupAttachmentsForDisplay } from './attachments_display.js?v=20260521.1';
+import { groupAttachmentsForDisplay } from './attachments_display.js?v=20260521.2';
 
 // =========================
 // CONFIGURAÇÕES & SEGURANÇA
@@ -131,7 +131,7 @@ let clientNotifications = [];
 const PAGE_SIZE = 12;
 const ALL_EDITAIS_BACKGROUND_LIMIT = 2000;
 const ALL_EDITAIS_BACKGROUND_DELAY_MS = 650;
-const FAST_CARDS_CACHE_KEY = 'athos:editais:first-page:v20260510.4';
+const FAST_CARDS_CACHE_KEY = 'athos:editais:first-page:v20260521.2';
 const FAST_CARDS_CACHE_TTL_MS = 10 * 60 * 1000;
 const RELEVANCE_REFRESH_DELAY_MS = 350;
 let currentPage = 1;

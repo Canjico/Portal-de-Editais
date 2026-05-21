@@ -179,7 +179,12 @@ test('modal renders edital attachments grouped by display group', async () => {
         {
           nome: 'goias.gov.br',
           url: 'https://goias.gov.br/fapeg/chamada-publica-no-08-2026/',
-          category: 'pagina_oficial',
+          category: 'edital_principal',
+          category_label: 'Edital principal',
+          display_group: 'Documentos principais',
+          priority: 10,
+          is_primary: true,
+          source_role: 'official_page',
         },
         { nome: 'Resultado final.pdf', url: 'https://site.gov.br/resultado.pdf', category: 'resultado_homologacao' },
         { nome: 'Anexo I.pdf', url: 'https://site.gov.br/anexo-i.pdf', category: 'anexo_tecnico' },
@@ -215,6 +220,8 @@ test('modal renders edital attachments grouped by display group', async () => {
     const linksStart = html.indexOf('Links oficiais');
     const linksHtml = html.slice(linksStart, documentosStart);
     assert.match(linksHtml, /P\u00e1gina oficial - goias\.gov\.br/);
+    assert.match(linksHtml, /P\u00e1gina oficial/);
+    assert.doesNotMatch(linksHtml, /Edital principal/);
     assert.doesNotMatch(linksHtml, /Edital completo/);
     const documentosHtml = html.slice(documentosStart, cronogramaStart);
     assertInOrder(documentosHtml, ['Edital completo', 'Retificacao']);

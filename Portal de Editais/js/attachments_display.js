@@ -64,13 +64,14 @@ export function normalizeAttachmentForDisplay(attachment, originalIndex = 0) {
     ? source.category.trim()
     : 'outros';
   const sourceRole = stringOrFallback(source.source_role, '').toLowerCase();
-  const category = CATEGORY_META[rawCategory]
-    ? rawCategory
-    : sourceRole === 'official_page'
-      ? 'pagina_oficial'
+  const category = sourceRole === 'official_page'
+    ? 'pagina_oficial'
+    : CATEGORY_META[rawCategory]
+      ? rawCategory
       : 'outros';
   const meta = getAttachmentCategoryMeta(category);
-  const priority = coercePriority(source.priority, meta.priority);
+  const isOfficialPage = category === 'pagina_oficial';
+  const priority = isOfficialPage ? meta.priority : coercePriority(source.priority, meta.priority);
   const displayName = category === 'pagina_oficial'
     ? officialPageDisplayName(source.nome, source.url)
     : stringOrFallback(source.nome, 'Documento');
@@ -81,13 +82,15 @@ export function normalizeAttachmentForDisplay(attachment, originalIndex = 0) {
     url: stringOrFallback(source.url, ''),
     tipo: stringOrFallback(source.tipo, ''),
     category,
-    category_label: stringOrFallback(source.category_label, meta.label),
-    display_group: stringOrFallback(source.display_group, meta.group),
+    category_label: isOfficialPage ? meta.label : stringOrFallback(source.category_label, meta.label),
+    display_group: isOfficialPage ? meta.group : stringOrFallback(source.display_group, meta.group),
     priority,
-    is_primary: typeof source.is_primary === 'boolean'
+    is_primary: isOfficialPage
+      ? false
+      : typeof source.is_primary === 'boolean'
       ? source.is_primary
       : category === 'edital_principal',
-    source_role: stringOrFallback(source.source_role, category === 'pagina_oficial'
+    source_role: isOfficialPage ? 'official_page' : stringOrFallback(source.source_role, category === 'pagina_oficial'
       ? 'official_page'
       : category === 'outros'
         ? 'outros'

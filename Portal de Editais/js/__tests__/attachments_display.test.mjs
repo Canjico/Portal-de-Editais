@@ -64,6 +64,32 @@ test('pagina_oficial aparece como link oficial antes de documentos', () => {
   assert.equal(groups[1].group, 'Documentos principais');
 });
 
+test('source_role official_page prevalece sobre metadados visuais antigos', () => {
+  const groups = groupAttachmentsForDisplay([
+    {
+      nome: 'goias.gov',
+      url: 'https://goias.gov.br/fapeg/chamada-publica-no-08-2026/',
+      category: 'edital_principal',
+      category_label: 'Edital principal',
+      display_group: 'Documentos principais',
+      priority: 10,
+      is_primary: true,
+      source_role: 'official_page',
+    },
+    { nome: 'CHAMADA.pdf', url: 'https://site.gov.br/chamada.pdf', category: 'edital_principal' },
+  ]);
+
+  assert.equal(groups[0].group, 'Links oficiais');
+  assert.equal(groups[0].items[0].category, 'pagina_oficial');
+  assert.equal(groups[0].items[0].category_label, 'P\u00e1gina oficial');
+  assert.equal(groups[0].items[0].display_group, 'Links oficiais');
+  assert.equal(groups[0].items[0].priority, 5);
+  assert.equal(groups[0].items[0].is_primary, false);
+  assert.equal(groups[0].items[0].source_role, 'official_page');
+  assert.equal(groups[1].group, 'Documentos principais');
+  assert.equal(groups[1].items[0].category_label, 'Edital principal');
+});
+
 test('ordena itens dentro do grupo', () => {
   const groups = groupAttachmentsForDisplay([
     {
