@@ -1,4 +1,9 @@
 const CATEGORY_META = {
+  pagina_oficial: {
+    label: 'P\u00e1gina oficial',
+    group: 'Links oficiais',
+    priority: 5,
+  },
   edital_principal: {
     label: 'Edital principal',
     group: 'Documentos principais',
@@ -58,13 +63,21 @@ export function normalizeAttachmentForDisplay(attachment, originalIndex = 0) {
   const rawCategory = typeof source.category === 'string' && source.category.trim()
     ? source.category.trim()
     : 'outros';
-  const category = CATEGORY_META[rawCategory] ? rawCategory : 'outros';
+  const sourceRole = stringOrFallback(source.source_role, '').toLowerCase();
+  const category = CATEGORY_META[rawCategory]
+    ? rawCategory
+    : sourceRole === 'official_page'
+      ? 'pagina_oficial'
+      : 'outros';
   const meta = getAttachmentCategoryMeta(category);
   const priority = coercePriority(source.priority, meta.priority);
+  const displayName = category === 'pagina_oficial'
+    ? officialPageDisplayName(source.nome, source.url)
+    : stringOrFallback(source.nome, 'Documento');
 
   return {
     ...source,
-    nome: stringOrFallback(source.nome, 'Documento'),
+    nome: displayName,
     url: stringOrFallback(source.url, ''),
     tipo: stringOrFallback(source.tipo, ''),
     category,
@@ -74,7 +87,11 @@ export function normalizeAttachmentForDisplay(attachment, originalIndex = 0) {
     is_primary: typeof source.is_primary === 'boolean'
       ? source.is_primary
       : category === 'edital_principal',
-    source_role: stringOrFallback(source.source_role, category === 'outros' ? 'outros' : category),
+    source_role: stringOrFallback(source.source_role, category === 'pagina_oficial'
+      ? 'official_page'
+      : category === 'outros'
+        ? 'outros'
+        : category),
     confidence: coerceNumber(source.confidence, 0),
     reasons: Array.isArray(source.reasons) ? [...source.reasons] : [],
     originalIndex: coerceOriginalIndex(originalIndex),
@@ -119,6 +136,49 @@ function stringOrFallback(value, fallback) {
   if (value === null || value === undefined) return fallback;
   const text = String(value).trim();
   return text || fallback;
+}
+
+function officialPageDisplayName(name, url) {
+  const rawName = stringOrFallback(name, '');
+  if (rawName && !isDomainLike(rawName) && !isOfficialPageGeneric(rawName)) {
+    return rawName;
+  }
+
+  const domain = domainFromValue(rawName) || domainFromValue(url);
+  return domain ? `P\u00e1gina oficial - ${domain}` : 'P\u00e1gina oficial do edital';
+}
+
+function isOfficialPageGeneric(value) {
+  const normalized = String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+  return ['pagina', 'pagina oficial', 'site', 'link', 'fonte', 'fonte oficial'].includes(normalized);
+}
+
+function isDomainLike(value) {
+  return Boolean(domainFromValue(value));
+}
+
+function domainFromValue(value) {
+  const text = String(value || '').trim().toLowerCase();
+  if (!text) return '';
+
+  try {
+    const parsed = new URL(/^https?:\/\//i.test(text) ? text : `https://${text}`);
+    const hostname = parsed.hostname.replace(/^www\./, '');
+    if (isSafeDomain(hostname)) return hostname;
+  } catch (_) {}
+
+  const match = text.match(/\b[a-z0-9-]+(?:\.[a-z0-9-]+)+\b/i);
+  if (!match) return '';
+  const hostname = match[0].replace(/^www\./, '');
+  return isSafeDomain(hostname) ? hostname : '';
+}
+
+function isSafeDomain(hostname) {
+  return /^[a-z0-9-]+(?:\.[a-z0-9-]+)+$/i.test(hostname);
 }
 
 function coercePriority(value, fallback) {

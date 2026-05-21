@@ -54,7 +54,7 @@ import {
   isConceptualOrAdvisoryQuestion,
   isDocumentalSemanticQuestion,
 } from './chat-routing-detector.js?v=20260429.1';
-import { groupAttachmentsForDisplay } from './attachments_display.js?v=20260519.1';
+import { groupAttachmentsForDisplay } from './attachments_display.js?v=20260521.1';
 
 // =========================
 // CONFIGURAÇÕES & SEGURANÇA
@@ -4244,11 +4244,14 @@ export async function openModal(edital) {
           if (!url) return null;
           const ext = getFileExtension(file?.nome, url);
           const originalIndex = Number.isFinite(Number(file?.originalIndex)) ? Number(file.originalIndex) : 0;
+          const isOfficialPage = file?.category === 'pagina_oficial' || file?.source_role === 'official_page';
           return {
             url,
             ext,
-            icon: getFileIcon(ext),
-            name: friendlyAttachmentName(file?.nome, url, originalIndex),
+            icon: isOfficialPage ? 'fa-arrow-up-right-from-square' : getFileIcon(ext),
+            name: isOfficialPage
+              ? (String(file?.nome || '').trim() || 'Página oficial do edital')
+              : friendlyAttachmentName(file?.nome, url, originalIndex),
             categoryLabel: String(file?.category_label || '').trim(),
           };
         })

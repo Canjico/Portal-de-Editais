@@ -176,6 +176,11 @@ test('modal renders edital attachments grouped by display group', async () => {
       estado: 'SP',
       area: 'Inovacao',
       arquivos: [
+        {
+          nome: 'goias.gov.br',
+          url: 'https://goias.gov.br/fapeg/chamada-publica-no-08-2026/',
+          category: 'pagina_oficial',
+        },
         { nome: 'Resultado final.pdf', url: 'https://site.gov.br/resultado.pdf', category: 'resultado_homologacao' },
         { nome: 'Anexo I.pdf', url: 'https://site.gov.br/anexo-i.pdf', category: 'anexo_tecnico' },
         { nome: 'Edital completo.pdf', url: 'https://site.gov.br/edital.pdf', category: 'edital_principal', is_primary: true },
@@ -191,10 +196,13 @@ test('modal renders edital attachments grouped by display group', async () => {
     assert.match(html, /aria-expanded="false"/);
     assert.match(html, /aria-controls="attachments-wrapper-modal-grouping-1"/);
     assert.match(html, /id="attachments-wrapper-modal-grouping-1" aria-hidden="true"/);
-    assert.match(html, /class="attachment-group-title" id="attachment-group-title-modal-grouping-1-0">Documentos principais<\/h4>/);
+    assert.match(html, /class="attachment-group-title" id="attachment-group-title-modal-grouping-1-0">Links oficiais<\/h4>/);
     assert.match(html, /class="attachment-group-count">2 arquivos<\/span>/);
     assert.match(html, /class="attachment-group-count">1 arquivo<\/span>/);
+    assert.match(html, /P\u00e1gina oficial - goias\.gov\.br/);
+    assert.match(html, /P\u00e1gina oficial/);
     assertInOrder(html, [
+      'Links oficiais',
       'Documentos principais',
       'Cronograma',
       'Formul\u00e1rios e modelos',
@@ -204,6 +212,10 @@ test('modal renders edital attachments grouped by display group', async () => {
 
     const documentosStart = html.indexOf('Documentos principais');
     const cronogramaStart = html.indexOf('Cronograma');
+    const linksStart = html.indexOf('Links oficiais');
+    const linksHtml = html.slice(linksStart, documentosStart);
+    assert.match(linksHtml, /P\u00e1gina oficial - goias\.gov\.br/);
+    assert.doesNotMatch(linksHtml, /Edital completo/);
     const documentosHtml = html.slice(documentosStart, cronogramaStart);
     assertInOrder(documentosHtml, ['Edital completo', 'Retificacao']);
   } finally {

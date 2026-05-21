@@ -8,6 +8,7 @@ import {
 
 test('agrupa anexos por display_group', () => {
   const groups = groupAttachmentsForDisplay([
+    { nome: 'goias.gov.br', url: 'https://goias.gov.br/fapeg/chamada-publica/', category: 'pagina_oficial' },
     { nome: 'Edital completo', category: 'edital_principal' },
     { nome: 'Retifica\u00e7\u00e3o', category: 'retificacao_adendo' },
     { nome: 'Formul\u00e1rio', category: 'formulario_modelo' },
@@ -17,6 +18,7 @@ test('agrupa anexos por display_group', () => {
 
   const byGroup = new Map(groups.map((group) => [group.group, group.items]));
 
+  assert.equal(byGroup.get('Links oficiais').length, 1);
   assert.equal(byGroup.get('Documentos principais').length, 2);
   assert.equal(byGroup.get('Formul\u00e1rios e modelos').length, 1);
   assert.equal(byGroup.get('Anexos t\u00e9cnicos').length, 1);
@@ -29,14 +31,37 @@ test('ordena grupos por prioridade', () => {
     { nome: 'Anexo I', category: 'anexo_tecnico' },
     { nome: 'Edital completo', category: 'edital_principal' },
     { nome: 'Cronograma', category: 'cronograma' },
+    { nome: 'site', url: 'https://site.gov.br/chamada-publica', category: 'pagina_oficial' },
   ]);
 
   assert.deepEqual(groups.map((group) => group.group), [
+    'Links oficiais',
     'Documentos principais',
     'Cronograma',
     'Anexos t\u00e9cnicos',
     'Resultados e homologa\u00e7\u00f5es',
   ]);
+});
+
+test('pagina_oficial aparece como link oficial antes de documentos', () => {
+  const groups = groupAttachmentsForDisplay([
+    { nome: 'Edital completo.pdf', category: 'edital_principal' },
+    {
+      nome: 'goias.gov.br',
+      url: 'https://goias.gov.br/fapeg/chamada-publica-no-08-2026/',
+      category: 'pagina_oficial',
+    },
+  ]);
+
+  assert.equal(groups[0].group, 'Links oficiais');
+  assert.equal(groups[0].items[0].category, 'pagina_oficial');
+  assert.equal(groups[0].items[0].category_label, 'P\u00e1gina oficial');
+  assert.equal(groups[0].items[0].display_group, 'Links oficiais');
+  assert.equal(groups[0].items[0].priority, 5);
+  assert.equal(groups[0].items[0].is_primary, false);
+  assert.equal(groups[0].items[0].source_role, 'official_page');
+  assert.equal(groups[0].items[0].nome, 'P\u00e1gina oficial - goias.gov.br');
+  assert.equal(groups[1].group, 'Documentos principais');
 });
 
 test('ordena itens dentro do grupo', () => {
